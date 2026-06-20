@@ -83,7 +83,7 @@ const DISPATCHER_PROMPT = [
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
   "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝낼 때까지 매일 아침 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. '~했어'·'N번 완료'·'취소' → complete_reminder(번호 또는 내용 일부, 둘 다에 적용).",
   "그 밖에 도구가 없는 일이면, '도구가 없다'를 장황히 설명하지 말고 — 아는 선에서 바로 도움이 되는 답을 주고, 정확한 데이터가 필요하면 어디(어느 시트·채널)를 보면 되는지 한 줄로만 짚어준다.",
-  "★중요: 너는 인터넷/웹 접근이 없다. WebSearch·WebFetch를 호출하지 마라(거부돼 무한 재시도만 함). 실시간 환율·뉴스·외부 시세 등 웹이 필요한 값은 못 가져오니, '그 값(예: 오늘 환율)은 내가 실시간으로 못 가져온다. 값을 알려주면 그걸로 계산해 주겠다'고 바로 답하라. 시트·TOTUS·노션 등 가진 도구로 되는 건 그걸로 하고.",
+  "★도구 라우팅(엄수·양방향 폴백 금지): ①운영·내부 데이터(작품·납품·일정·작업자·정산·고객사·스케줄 등)는 반드시 내부 도구(get_*·query_sheet·totus_*·read_tab·query_schedule 등)로만 조회한다. 못 찾으면 '못 찾았다'고 답하고 작품명 표기 확인을 요청한다 — 절대 웹으로 넘어가지 마라. ②WebSearch(웹 검색)는 사용자가 '웹에서/검색해줘'라고 명시했거나, 환율·일반상식·뉴스처럼 내부에 있을 리 없는 외부·실시간 정보일 때만 쓴다. 웹에서 못 찾으면 '웹에서 못 찾았다'고 답하고 내부 도구로 폴백하지 마라. ③즉 각 요청은 지정된 한쪽 출처에서만 처리하고, 미스는 '못 찾음'으로 끝낸다(반대편으로 안 넘어감). WebFetch(임의 URL 회수)는 쓰지 말고, 같은 검색을 2회 넘게 재시도하지 마라.",
   "비가역적이거나 고객사로 나가는 동작(발송·삭제·수정)은 절대 임의 실행하지 않고 먼저 확인을 받는다.",
   "모르면 모른다고 솔직하게, 추측이면 추측이라고 표시한다.",
 ].join("\n");
@@ -371,6 +371,8 @@ const RL_RE = /rate.?limit|\b429\b|overloaded|too many requests|usage limit|quot
 const isRateLimit = (s) => RL_RE.test(String(s || ""));
 const RL_BACKOFF = [8000, 20000];   // 재시도별 대기(ms). 배열 길이 = 최대 자동 재시도 횟수
 
+const TURN_HARD_TIMEOUT_MS = 210_000;   // 한 턴이 이 시간 넘게 안 끝나면(행/과부하) 중단·재시작(정상 턴은 ~1분 내라 안 걸림)
+
 async function* messageStream() {
   while (true) {
     if (queue.length === 0) await new Promise((r) => { wake = r; });
@@ -378,8 +380,15 @@ async function* messageStream() {
       const turn = queue.shift();
       currentTurn = turn;
       currentCtx = turn.ctx;   // 도구(발송·진행알림)가 '이 턴'의 자리로 답하도록 고정
+      // 하드 타임아웃: 행/과부하로 영영 안 끝나는 턴이 큐를 막지 않게 — 알림 후 프로세스 종료(run.bat가 ~5초 후 재기동)
+      const killer = setTimeout(async () => {
+        console.error(`[brain] 턴 하드타임아웃(>${TURN_HARD_TIMEOUT_MS / 1000}s) — 중단·재시작`);
+        try { await deliver(turn.ctx, "⚠️ 요청 처리가 너무 오래 걸려 중단했어요. 데이터가 많으면 범위를 줄이거나 더 작게 나눠서 다시 보내주세요."); } catch {}
+        process.exit(1);
+      }, TURN_HARD_TIMEOUT_MS);
       yield { type: "user", message: { role: "user", content: turn.content } };
       await new Promise((r) => { turnResolve = r; });   // 이 턴의 result가 처리될 때까지 대기(직렬화)
+      clearTimeout(killer);
     }
   }
 }
@@ -468,7 +477,8 @@ function startSession() {
         "mcp__apm__review_episode",
         "mcp__apm__send_message", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule",
-        "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder"],
+        "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
+        "WebSearch"],
     },
   });
   (async () => {
