@@ -1,0 +1,42 @@
+// TOTUS 게이트웨이 읽기(read-only). botV2 .env의 PLATFORM_API_URL/TOKEN 사용.
+// 베이스: https://totus-api.voithru-ai.com (명세의 {EC2}:9101을 공개 게이트웨이로 대체)
+import fs from "node:fs";
+
+const BOTV2_ENV = "c:/Users/P-205/Desktop/slack-inquiry-botV2/.env";
+
+function creds() {
+  const env = fs.readFileSync(BOTV2_ENV, "utf8");
+  const url = env.match(/^PLATFORM_API_URL=(.*)$/m)?.[1]?.trim().replace(/\/+$/, "");
+  const tok = env.match(/^PLATFORM_API_TOKEN=(.*)$/m)?.[1]?.trim().replace(/^['"]|['"]$/g, "");
+  if (!url || !tok) throw new Error("PLATFORM_API_URL/TOKEN 없음 (botV2 .env)");
+  return { url, tok };
+}
+
+async function getJSON(path, query) {
+  const { url, tok } = creds();
+  const params = query
+    ? "?" + new URLSearchParams(Object.entries(query).filter(([, v]) => v != null && v !== "")).toString()
+    : "";
+  const full = `${url}/api/v1${path}${params}`;
+  const r = await fetch(full, { headers: { Authorization: `Bearer ${tok}` }, signal: AbortSignal.timeout(30000) });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`TOTUS ${r.status}: ${text.slice(0, 300)}`);
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+// #56 PIVO ID → 프로젝트·견적(uuid·납품목표일·견적/작업 특이사항·작업량)
+export const quotationByPivo = (pivoId) => getJSON(`/quotations/by-pivo/${encodeURIComponent(pivoId)}`);
+// #1 작품명 검색 → projectUuid 등 어드민 목록
+export const findProject = (name) => getJSON(`/projects`, { name });
+// PIVO ID → 프로젝트(uuid). 신작은 ?pivoId= 로 바로 잡힘(검수 추출 체인용)
+export const projectByPivo = (pivoId) => getJSON(`/projects`, { pivoId });
+// #43 프로젝트 일정 현황 요약(공정별 지연/임박)
+export const scheduleSummary = (projectUuid) => getJSON(`/projects/${projectUuid}/schedule-summary`);
+// #6 JOB→Operation→Task 구조
+export const projectJobs = (projectUuid, episode) => getJSON(`/projects/${projectUuid}/jobs`, { episode });
+// #39 Task 목록(필터)
+export const taskList = (params) => getJSON(`/tasks`, params);
+// #35 Task 상세
+export const taskDetail = (taskUuid) => getJSON(`/tasks/${taskUuid}`);
+// #36 원문↔번역문 텍스트 쌍
+export const translationText = (taskUuid) => getJSON(`/tasks/${taskUuid}/translation-text`);

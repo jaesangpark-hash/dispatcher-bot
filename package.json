@@ -1,0 +1,19 @@
+{
+  "name": "apm-dispatcher-bot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "박재상 개인 업무 총괄 디스패처 (T3) — 슬랙 DM 소환 → Claude Agent SDK 브레인. 빌드 0.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/app.js"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.0.0",
+    "@anthropic-ai/claude-agent-sdk": "latest",
+    "dotenv": "^16.0.0",
+    "zod": "^3.23.0"
+  }
+}
