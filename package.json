@@ -11,9 +11,10 @@
     "start": "node src/app.js"
   },
   "dependencies": {
-    "@slack/bolt": "^4.0.0",
     "@anthropic-ai/claude-agent-sdk": "latest",
+    "@slack/bolt": "^4.0.0",
     "dotenv": "^16.0.0",
+    "xlsx": "^0.18.5",
     "zod": "^3.23.0"
   }
 }

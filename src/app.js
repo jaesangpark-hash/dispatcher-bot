@@ -13,6 +13,8 @@ import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, t
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, QA_INSTRUCTIONS } from "./review.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNag, dueScheduled } from "./reminders.js";
+import { missingOriginals, deliveryOnDate, workSchedule } from "./schedule.js";
+import * as XLSX from "xlsx";
 
 // ── 환경 ──────────────────────────────────────────────────────────
 const {
@@ -77,6 +79,7 @@ const DISPATCHER_PROMPT = [
   "- 번역 검수/QA 요청(예: '게임속기연 90 검수', '○○ ○○화 검수해줘') → review_episode(work, episode). 한일이면 lang 생략(ko-ja 기본), 중일이면 zh-ja. 스레드에서 작품명·회차가 보이면 그걸 읽어 호출한다. 도구가 돌려준 [검수 기준]과 pairs로 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성한다(작품/회차/단계 + task URL + 페이지-텍박 + 수정전→후 + 사유). 문제 없으면 '問題なし'. 이 검수표는 그대로 작업자에게 복붙되는 것이니 임의 해설·강조 없이 템플릿만 깔끔히. error가 오면 그 사유를 그대로 전한다.",
   "★ 검수 결과 전달 규칙: 검수표는 **그냥 네 답변 텍스트로 출력만** 해라 — 시스템이 사용자가 부른 바로 그 자리(스레드/DM)에 자동으로 전달한다. send_message 도구로 직접 보내거나, DM/채널로 따로 발송하거나, 작업자 DB(slack_id/채널)를 조회해 보내려 하지 마라. 'DM으로 보냈다'·'DB에 ID가 없어 못 보냈다' 같은 발송 관련 말도 하지 마라(전달은 시스템 몫). 진행 신호(🔎 추출 완료)도 시스템이 자동으로 띄우니 네가 따로 만들지 마라.",
   "- query_sheet 뷰에 없는 탭을 물으면 → read_tab(탭 이름). 시트 실제 헤더가 곧 필드명이라 사용자가 말한 헤더로 바로 거른다. 표 헤더가 중간 행이면 headerRow 지정. 알려진 6개 시트의 어떤 탭이든 조회 가능.",
+  "- '고객사 스케줄 시트'(중일, =내부 납품 시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. 'N/일 납품 회차 카운트'=mode:delivery_on+date, '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. ID 묻지 말 것(이 도구가 그 시트임).",
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
   "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝낼 때까지 매일 아침 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. '~했어'·'N번 완료'·'취소' → complete_reminder(번호 또는 내용 일부, 둘 다에 적용).",
   "그 밖에 도구가 없는 일이면, '도구가 없다'를 장황히 설명하지 말고 — 아는 선에서 바로 도움이 되는 답을 주고, 정확한 데이터가 필요하면 어디(어느 시트·채널)를 보면 되는지 한 줄로만 짚어준다.",
@@ -312,6 +315,20 @@ const apmTools = createSdkMcpServer({
       { pageId: z.string().describe("노션 페이지 ID") },
       async (a) => { try { return { content: [{ type: "text", text: capJson(await notionReadPage(a.pageId)) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: true } }),
+    tool("query_schedule",
+      "중일 '고객사 스케줄 시트'(내부 납품 시트와 다름) 조회. 블록 구조라 일반 query_sheet/read_tab으로는 안 되고 이 도구로만. mode: 'delivery_on'(특정 날짜에 납품 예정인 회차 집계, date 필수 예 '6/19') · 'missing'(런칭 임박인데 原本 미수급 회차, monthsAhead 기본1) · 'work'(작품별 주차 스케줄, work 필수). 작품명·고객사 일정·원본 수급·런칭/납품 회차 질문은 여기로.",
+      { mode: z.enum(["delivery_on", "missing", "work"]).describe("조회 종류"), date: z.string().optional().describe("delivery_on용 날짜 M/D (예 6/19)"), work: z.string().optional().describe("work용 작품명(한/일/중)"), monthsAhead: z.number().optional().describe("missing용 런칭 임박 개월(기본 1)") },
+      async ({ mode, date, work, monthsAhead }) => {
+        try {
+          let r;
+          if (mode === "delivery_on") r = await deliveryOnDate(date);
+          else if (mode === "missing") r = await missingOriginals({ monthsAhead: monthsAhead ?? 1 });
+          else if (mode === "work") r = await workSchedule(work);
+          else r = { error: "mode는 delivery_on|missing|work 중 하나" };
+          return { content: [{ type: "text", text: capJson(r) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("add_reminder",
       "재상 님이 '나중에 챙길 일'을 기억해달라고 할 때 저장한다(재촉 리마인더). 시간 지정 불필요 — 끝낼 때까지 매일 아침 자동으로 재촉 DM이 간다. '이거 기억해둬'·'나중에 ~해야 해'·'~하는 거 잊지마' 류에 사용.",
       { text: z.string().describe("기억할 내용") },
@@ -391,29 +408,45 @@ async function fetchThreadContext(client, channel, threadTs) {
     const lines = msgs
       .filter((m) => (m.text || "").trim())
       .map((m) => `${m.bot_id ? "봇" : `<@${m.user}>`}: ${m.text.replace(/\s+/g, " ").slice(0, 500)}`);
-    const imageFiles = [];
+    const attFiles = [];
     for (const m of msgs) for (const f of (m.files || []))
-      if ((f.mimetype || "").startsWith("image/")) imageFiles.push({ url: f.url_private_download || f.url_private, mimetype: f.mimetype });
-    return { text: lines.length ? lines.join("\n") : null, imageFiles };
+      attFiles.push({ url: f.url_private_download || f.url_private, mimetype: f.mimetype, filetype: f.filetype, name: f.name });
+    return { text: lines.length ? lines.join("\n") : null, attFiles };
   } catch (e) {
     console.error("[thread] 맥락 조회 실패:", e?.message ?? e);
-    return { text: null, imageFiles: [] };
+    return { text: null, attFiles: [] };
   }
 }
 
-// 슬랙 이미지(url_private)를 봇 토큰으로 받아 Claude 이미지 블록으로 변환. (files:read 스코프 필요)
-async function toImageBlocks(imageFiles, cap = 5) {
+// 슬랙 첨부(url_private)를 봇 토큰으로 받아 Claude content 블록으로 변환. (files:read 스코프 필요)
+// 이미지=image블록, PDF=document블록, 엑셀=시트별 CSV 텍스트, csv/txt/md/json 등=텍스트.
+async function toAttachmentBlocks(files, cap = 6) {
   const blocks = [], seen = new Set();
-  for (const f of imageFiles) {
-    if (!f.url || seen.has(f.url) || blocks.length >= cap) continue;
-    seen.add(f.url);
+  for (const f of files) {
+    const url = f.url; if (!url || seen.has(url) || blocks.length >= cap) continue;
+    seen.add(url);
+    const mt = (f.mimetype || "").toLowerCase(), ft = (f.filetype || "").toLowerCase(), name = f.name || "file";
     try {
-      const r = await fetch(f.url, { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } });
-      if (!r.ok) { console.error(`[image] 다운로드 ${r.status} (files:read 스코프/멤버십 확인)`); continue; }
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` } });
+      if (!r.ok) { console.error(`[file] ${name} 다운로드 ${r.status} (files:read 스코프/멤버십 확인)`); continue; }
       const buf = Buffer.from(await r.arrayBuffer());
-      if (buf.length > 4_800_000) { console.error("[image] 5MB 초과 스킵"); continue; }
-      blocks.push({ type: "image", source: { type: "base64", media_type: f.mimetype || "image/png", data: buf.toString("base64") } });
-    } catch (e) { console.error("[image] 변환 실패:", e?.message ?? e); }
+      if (mt.startsWith("image/")) {                                   // 이미지
+        if (buf.length > 4_800_000) { console.error(`[file] ${name} 이미지 5MB 초과 스킵`); continue; }
+        blocks.push({ type: "image", source: { type: "base64", media_type: mt || "image/png", data: buf.toString("base64") } });
+      } else if (mt === "application/pdf" || ft === "pdf") {           // PDF → 문서 블록
+        if (buf.length > 30_000_000) { console.error(`[file] ${name} PDF 과대 스킵`); continue; }
+        blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: buf.toString("base64") }, title: name });
+      } else if (/spreadsheet|excel/.test(mt) || ["xlsx", "xls"].includes(ft)) {  // 엑셀 → 시트별 CSV
+        const wb = XLSX.read(buf, { type: "buffer" });
+        let txt = "";
+        for (const sn of wb.SheetNames) txt += `## ${sn}\n${XLSX.utils.sheet_to_csv(wb.Sheets[sn])}\n\n`;
+        blocks.push({ type: "text", text: `[첨부 엑셀: ${name}]\n${txt.slice(0, 30000)}` });
+      } else if (mt.startsWith("text/") || /json|csv|markdown|xml|yaml/.test(mt) || ["csv", "tsv", "txt", "md", "markdown", "json", "log", "yaml", "yml", "xml"].includes(ft)) {  // 텍스트류
+        blocks.push({ type: "text", text: `[첨부 파일: ${name}]\n${buf.toString("utf8").slice(0, 30000)}` });
+      } else {
+        console.error(`[file] ${name} 미지원 타입 스킵 (mt=${mt}, ft=${ft})`);
+      }
+    } catch (e) { console.error(`[file] ${name} 처리 실패:`, e?.message ?? e); }
   }
   return blocks;
 }
@@ -433,6 +466,7 @@ function startSession() {
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text",
         "mcp__apm__review_episode",
         "mcp__apm__send_message", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
+        "mcp__apm__query_schedule",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder"],
     },
   });
@@ -482,25 +516,24 @@ function startSession() {
 async function handle({ text, channel, ts, threadTs, inThread, user, client, say, files }) {
   if (user !== DISPATCHER_USER_ID) return;            // 본인만
   // 메시지에 붙은 이미지 파일
-  const msgImages = (files || []).filter((f) => (f.mimetype || "").startsWith("image/"))
-    .map((f) => ({ url: f.url_private_download || f.url_private, mimetype: f.mimetype }));
-  if ((!text || !text.trim()) && !msgImages.length) return;   // 텍스트도 이미지도 없으면 무시
+  const msgFiles = (files || []).map((f) => ({ url: f.url_private_download || f.url_private, mimetype: f.mimetype, filetype: f.filetype, name: f.name }));
+  if ((!text || !text.trim()) && !msgFiles.length) return;   // 텍스트도 첨부도 없으면 무시
   if (processed.has(ts)) return;                       // 중복 차단 (메시지 ts 기준)
   processed.add(ts);
   const thread = threadTs || ts;                       // 답변·자리표시자를 달 스레드 루트
 
   // 스레드 안에서 소환되면 그 스레드 맥락(텍스트+이미지)을 읽어 함께 전달
-  let llmText = text || "(첨부된 이미지를 보고 답해줘)";
-  let imageFiles = msgImages;
+  let llmText = text || "(첨부된 파일을 보고 답해줘)";
+  let attFiles = msgFiles;
   if (inThread) {
     const tc = await fetchThreadContext(client, channel, thread);
-    if (tc.text) llmText = `아래는 이 슬랙 스레드의 대화 맥락이야. 참고해서 마지막 [요청]에 답해줘.\n\n[스레드 맥락]\n${tc.text}\n\n[요청]\n${text || "(첨부된 이미지 참고)"}`;
-    imageFiles = imageFiles.concat(tc.imageFiles);
+    if (tc.text) llmText = `아래는 이 슬랙 스레드의 대화 맥락이야. 참고해서 마지막 [요청]에 답해줘.\n\n[스레드 맥락]\n${tc.text}\n\n[요청]\n${text || "(첨부된 파일 참고)"}`;
+    attFiles = attFiles.concat(tc.attFiles);
   }
   // 현재 시각 주입 — '월요일 10시' 같은 상대 시각 리마인더를 브레인이 정확히 계산하도록
   const nowStr = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "full", timeStyle: "short" });
   llmText = `[현재 시각(KST): ${nowStr}]\n${llmText}`;
-  console.log(`[handle] 수신 (ch=${channel}, inThread=${inThread}, 이미지=${imageFiles.length}): ${String(text || "").slice(0, 80).replace(/\n/g, " ")}`);
+  console.log(`[handle] 수신 (ch=${channel}, inThread=${inThread}, 첨부=${attFiles.length}): ${String(text || "").slice(0, 80).replace(/\n/g, " ")}`);
 
   // currentCtx는 messageStream이 '이 턴을 실제로 처리할 때' 설정한다 (도착 순간 아님 → 도구 오배달 방지)
   const ph = await say({ text: "처리 중…", thread_ts: thread, ...SENDER });   // 자리표시자(완료 시 삭제되고 새 메시지로 답함)
@@ -512,8 +545,8 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
     return;
   }
   // 이미지가 있으면 다운로드해 멀티모달 content 배열로, 없으면 텍스트 문자열로
-  const imgBlocks = imageFiles.length ? await toImageBlocks(imageFiles) : [];
-  const content = imgBlocks.length ? [{ type: "text", text: llmText }, ...imgBlocks] : llmText;
+  const attBlocks = attFiles.length ? await toAttachmentBlocks(attFiles) : [];
+  const content = attBlocks.length ? [{ type: "text", text: llmText }, ...attBlocks] : llmText;
 
   // 턴을 큐에 넣고 한 번에 하나씩 처리 — 완료 시 deliver()가 '처리 중'을 지우고 새 메시지로 답한다
   const entry = { client, channel, threadTs: thread, ts: thread, placeholderTs: ph?.ts, startedAt: Date.now(), done: false };
