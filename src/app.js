@@ -344,17 +344,9 @@ let wake = null;          // 새 턴 도착 시 generator 깨우기
 let turnResolve = null;   // 현재 턴의 result 처리 완료 신호(다음 턴 진행 허용)
 let currentTurn = null;   // 지금 브레인이 처리 중인 턴
 
-// ── 모델 티어링: 단순 조회=빠른모델(Haiku), 검수·복합·이미지=메인(Sonnet), 애매하면 메인 ──
-const MODEL_MAIN = DISPATCHER_MODEL;
-const MODEL_FAST = "claude-haiku-4-5";
-let _session = null;            // query() 핸들 (turn별 setModel용)
-let _curModel = MODEL_MAIN;     // 현재 세션 모델 (불필요한 setModel 호출 방지)
-function pickModel(text) {
-  const t = String(text || "");
-  if (/검수|review|일정|지연|임박|보내|발송|변경|수정|분석|작전|왜\b|어떻게/.test(t)) return MODEL_MAIN; // 복합·판단
-  if (t.length < 200 && /(납품일|납품|작품|정보|리마인드|기억|완료|했어|끝냈|목록|언제|누구|며칠|몇\s*화|상태|화수|pivo|PIVO)/.test(t)) return MODEL_FAST; // 짧은 단순 조회/리마인더
-  return MODEL_MAIN;            // 애매하면 메인(안전)
-}
+// ── 모델: 봇 기능(조회·일정·리마인더·발송) 수행에 최적인 단일 Sonnet(DISPATCHER_MODEL)으로 통일.
+//    턴별 전환(Haiku 티어링) 제거 — 모델 고정이 프롬프트 캐시를 유지해 지연↓ + 품질 일관.
+//    무거운 판단(검수)은 외부 엔진으로 분리 예정이라 봇은 단일 모델로 충분.
 
 async function* messageStream() {
   while (true) {
@@ -363,9 +355,6 @@ async function* messageStream() {
       const turn = queue.shift();
       currentTurn = turn;
       currentCtx = turn.ctx;   // 도구(발송·진행알림)가 '이 턴'의 자리로 답하도록 고정
-      if (_session?.setModel && turn.model && turn.model !== _curModel) {
-        try { await _session.setModel(turn.model); _curModel = turn.model; } catch (e) { console.error("[model] setModel 실패:", e?.message); }
-      }
       yield { type: "user", message: { role: "user", content: turn.content } };
       await new Promise((r) => { turnResolve = r; });   // 이 턴의 result가 처리될 때까지 대기(직렬화)
     }
@@ -442,7 +431,6 @@ function startSession() {
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder"],
     },
   });
-  _session = session;   // turn별 setModel(모델 티어링)용 핸들
   (async () => {
     let buf = "";
     for await (const m of session) {
@@ -511,9 +499,7 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
 
   // 턴을 큐에 넣고 한 번에 하나씩 처리 — 완료 시 deliver()가 '처리 중'을 지우고 새 메시지로 답한다
   const entry = { client, channel, threadTs: thread, ts: thread, placeholderTs: ph?.ts, startedAt: Date.now(), done: false };
-  const model = (imageFiles.length || typeof content !== "string") ? MODEL_MAIN : pickModel(text);
-  console.log(`[model] ${model === MODEL_FAST ? "fast(haiku)" : "main(sonnet)"}`);
-  queue.push({ content, ctx: entry, model });
+  queue.push({ content, ctx: entry });
   if (wake) { const w = wake; wake = null; w(); }
 
   // 멈춤 감시: 제한시간 내 응답 없으면 '처리 중'을 지연 안내로 갱신(영영 멈춘 듯 보이지 않게)
