@@ -348,6 +348,11 @@ let currentTurn = null;   // 지금 브레인이 처리 중인 턴
 //    턴별 전환(Haiku 티어링) 제거 — 모델 고정이 프롬프트 캐시를 유지해 지연↓ + 품질 일관.
 //    무거운 판단(검수)은 외부 엔진으로 분리 예정이라 봇은 단일 모델로 충분.
 
+// ── rate-limit(사용량 한도) 처리: 감지 시 친절 안내 + 지수 백오프 자동 재시도 ──
+const RL_RE = /rate.?limit|\b429\b|overloaded|too many requests|usage limit|quota|exceeded/i;
+const isRateLimit = (s) => RL_RE.test(String(s || ""));
+const RL_BACKOFF = [8000, 20000];   // 재시도별 대기(ms). 배열 길이 = 최대 자동 재시도 횟수
+
 async function* messageStream() {
   while (true) {
     if (queue.length === 0) await new Promise((r) => { wake = r; });
@@ -443,20 +448,33 @@ function startSession() {
         const elapsed = ctx?.startedAt ? ((Date.now() - ctx.startedAt) / 1000).toFixed(1) : "?";
         console.log(`[brain] 응답 완료 (${elapsed}s, ${text.length}자${m.is_error ? ", is_error" : ""})`);
         if (m.is_error) console.log(`[brain] 에러내용: ${text.slice(0, 200).replace(/\n/g, " ")}`);
+        const rlTurn = currentTurn;   // rate-limit 재시도용 캡처
         currentTurn = null;
-        if (ctx?.client) deliver(ctx, text).catch((e) => console.error("[brain] 응답 전송 실패:", e?.message));
+        if (m.is_error && isRateLimit(text) && rlTurn && (rlTurn._retry || 0) < RL_BACKOFF.length) {
+          const n = (rlTurn._retry || 0) + 1;
+          const delay = RL_BACKOFF[n - 1];
+          console.log(`[brain] rate-limit — ${Math.round(delay / 1000)}s 후 자동 재시도 (${n}/${RL_BACKOFF.length})`);
+          if (ctx?.placeholderTs) ctx.client.chat.update({ channel: ctx.channel, ts: ctx.placeholderTs, text: `⏳ 사용량 한도예요. ${Math.round(delay / 1000)}초 후 자동으로 다시 시도할게요… (${n}/${RL_BACKOFF.length})` }).catch(() => {});
+          setTimeout(() => { queue.unshift({ content: rlTurn.content, ctx, _retry: n }); if (wake) { const w = wake; wake = null; w(); } }, delay);
+        } else if (ctx?.client) {
+          const out = (m.is_error && isRateLimit(text)) ? "지금 사용량 한도라 처리를 못 했어요 😢 잠시(1~2분) 뒤 다시 보내주세요." : text;
+          deliver(ctx, out).catch((e) => console.error("[brain] 응답 전송 실패:", e?.message));
+        }
         if (turnResolve) { const r = turnResolve; turnResolve = null; r(); }   // 다음 턴 진행 허용
       }
     }
     console.error("[brain] 세션 스트림 종료 — 재시작");
     startSession();
   })().catch((e) => {
-    console.error("[brain] 세션 루프 오류:", e?.message ?? e);
+    const msg = e?.message ?? String(e);
+    const rl = isRateLimit(msg);
+    console.error("[brain] 세션 루프 오류:", msg, rl ? "(rate-limit)" : "");
     const dead = [currentTurn, ...queue].filter(Boolean);
     currentTurn = null; queue.length = 0;
-    for (const t of dead) deliver(t.ctx, `⚠️ 브레인 오류: ${e?.message ?? e}`).catch(() => {});
+    const note = rl ? "⏳ 사용량 한도로 잠시 멈췄어요. 곧 자동 복구되니 1~2분 뒤 다시 보내주세요." : `⚠️ 브레인 오류: ${msg}`;
+    for (const t of dead) deliver(t.ctx, note).catch(() => {});
     if (turnResolve) { const r = turnResolve; turnResolve = null; r(); }
-    setTimeout(startSession, 1000);
+    setTimeout(startSession, rl ? 30000 : 1000);
   });
 }
 
