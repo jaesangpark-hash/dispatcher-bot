@@ -15,6 +15,7 @@ import { extractEpisode, QA_INSTRUCTIONS } from "./review.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNag, dueScheduled } from "./reminders.js";
 import { missingOriginals, deliveryOnDate, workSchedule } from "./schedule.js";
 import * as XLSX from "xlsx";
+import vm from "node:vm";
 
 // ── 환경 ──────────────────────────────────────────────────────────
 const {
@@ -83,6 +84,7 @@ const DISPATCHER_PROMPT = [
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
   "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝낼 때까지 매일 아침 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. '~했어'·'N번 완료'·'취소' → complete_reminder(번호 또는 내용 일부, 둘 다에 적용).",
   "그 밖에 도구가 없는 일이면, '도구가 없다'를 장황히 설명하지 말고 — 아는 선에서 바로 도움이 되는 답을 주고, 정확한 데이터가 필요하면 어디(어느 시트·채널)를 보면 되는지 한 줄로만 짚어준다.",
+  "★계산은 compute로(암산 금지): 다행 합계·환율 변환·벤더별 정산·통계·CSV 집계 등 숫자 계산은 절대 머리로 하지 말고 compute 도구로 코드 실행해 정확히 구한다. 첨부 CSV/엑셀은 compute 안에서 attachments[i].text로 직접 접근(원문 다시 옮겨적지 말 것). 큰 데이터를 직접 나열·암산하려 하지 말 것 — 느리고 틀린다.",
   "★도구 라우팅(엄수·양방향 폴백 금지): ①운영·내부 데이터(작품·납품·일정·작업자·정산·고객사·스케줄 등)는 반드시 내부 도구(get_*·query_sheet·totus_*·read_tab·query_schedule 등)로만 조회한다. 못 찾으면 '못 찾았다'고 답하고 작품명 표기 확인을 요청한다 — 절대 웹으로 넘어가지 마라. ②WebSearch(웹 검색)는 사용자가 '웹에서/검색해줘'라고 명시했거나, 환율·일반상식·뉴스처럼 내부에 있을 리 없는 외부·실시간 정보일 때만 쓴다. 웹에서 못 찾으면 '웹에서 못 찾았다'고 답하고 내부 도구로 폴백하지 마라. ③즉 각 요청은 지정된 한쪽 출처에서만 처리하고, 미스는 '못 찾음'으로 끝낸다(반대편으로 안 넘어감). WebFetch(임의 URL 회수)는 쓰지 말고, 같은 검색을 2회 넘게 재시도하지 마라.",
   "비가역적이거나 고객사로 나가는 동작(발송·삭제·수정)은 절대 임의 실행하지 않고 먼저 확인을 받는다.",
   "모르면 모른다고 솔직하게, 추측이면 추측이라고 표시한다.",
@@ -330,6 +332,18 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("compute",
+      "복잡한 계산은 암산하지 말고 이 도구로 JS 코드를 실행해 정확히 계산한다. 다행 합계·환율 변환·정산·통계·CSV 집계 등 숫자 계산은 반드시 이걸로. 첨부된 CSV/엑셀/텍스트 원문은 코드 안에서 `attachments`(배열 [{name,text}])로 바로 접근(전체 데이터, 다시 옮겨적지 말 것). 결과는 마지막 식이거나 `result` 변수에 담는다. 파일·네트워크 접근 없음(순수 계산), 5초 제한.",
+      { code: z.string().describe("실행할 JS. attachments[i].text로 첨부 원문 접근. 예: const rows=attachments[0].text.trim().split('\\n').map(r=>r.split(',')); result = rows.slice(1).reduce((s,r)=>s+Number(r[2]||0),0);") },
+      async ({ code }) => {
+        try {
+          const sandbox = { attachments: currentAttachments, Math, JSON, Number, String, Array, Object, Boolean, parseFloat, parseInt, isNaN, isFinite, result: undefined, console: { log() {} } };
+          const val = vm.runInNewContext(code, sandbox, { timeout: 5000 });
+          const out = sandbox.result !== undefined ? sandbox.result : val;
+          return { content: [{ type: "text", text: capJson({ result: out }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("add_reminder",
       "재상 님이 '나중에 챙길 일'을 기억해달라고 할 때 저장한다(재촉 리마인더). 시간 지정 불필요 — 끝낼 때까지 매일 아침 자동으로 재촉 DM이 간다. '이거 기억해둬'·'나중에 ~해야 해'·'~하는 거 잊지마' 류에 사용.",
       { text: z.string().describe("기억할 내용") },
@@ -361,6 +375,7 @@ const queue = [];         // 처리 대기 턴: { content, ctx }
 let wake = null;          // 새 턴 도착 시 generator 깨우기
 let turnResolve = null;   // 현재 턴의 result 처리 완료 신호(다음 턴 진행 허용)
 let currentTurn = null;   // 지금 브레인이 처리 중인 턴
+let currentAttachments = [];   // 이 턴에 첨부된 텍스트/CSV/엑셀 원문 [{name,text}] — compute 도구용
 
 // ── 모델: 봇 기능(조회·일정·리마인더·발송) 수행에 최적인 단일 Sonnet(DISPATCHER_MODEL)으로 통일.
 //    턴별 전환(Haiku 티어링) 제거 — 모델 고정이 프롬프트 캐시를 유지해 지연↓ + 품질 일관.
@@ -380,6 +395,7 @@ async function* messageStream() {
       const turn = queue.shift();
       currentTurn = turn;
       currentCtx = turn.ctx;   // 도구(발송·진행알림)가 '이 턴'의 자리로 답하도록 고정
+      currentAttachments = turn.attachTexts || [];   // compute 도구가 이 턴 첨부 원문을 쓰도록
       // 하드 타임아웃: 행/과부하로 영영 안 끝나는 턴이 큐를 막지 않게 — 알림 후 프로세스 종료(run.bat가 ~5초 후 재기동)
       const killer = setTimeout(async () => {
         console.error(`[brain] 턴 하드타임아웃(>${TURN_HARD_TIMEOUT_MS / 1000}s) — 중단·재시작`);
@@ -431,7 +447,7 @@ async function fetchThreadContext(client, channel, threadTs) {
 // 슬랙 첨부(url_private)를 봇 토큰으로 받아 Claude content 블록으로 변환. (files:read 스코프 필요)
 // 이미지=image블록, PDF=document블록, 엑셀=시트별 CSV 텍스트, csv/txt/md/json 등=텍스트.
 async function toAttachmentBlocks(files, cap = 6) {
-  const blocks = [], seen = new Set();
+  const blocks = [], texts = [], seen = new Set();
   for (const f of files) {
     const url = f.url; if (!url || seen.has(url) || blocks.length >= cap) continue;
     seen.add(url);
@@ -451,14 +467,17 @@ async function toAttachmentBlocks(files, cap = 6) {
         let txt = "";
         for (const sn of wb.SheetNames) txt += `## ${sn}\n${XLSX.utils.sheet_to_csv(wb.Sheets[sn])}\n\n`;
         blocks.push({ type: "text", text: `[첨부 엑셀: ${name}]\n${txt.slice(0, 30000)}` });
+        texts.push({ name, text: txt.slice(0, 500000) });   // compute용 전체(LLM 컨텍스트보다 넉넉히)
       } else if (mt.startsWith("text/") || /json|csv|markdown|xml|yaml/.test(mt) || ["csv", "tsv", "txt", "md", "markdown", "json", "log", "yaml", "yml", "xml"].includes(ft)) {  // 텍스트류
-        blocks.push({ type: "text", text: `[첨부 파일: ${name}]\n${buf.toString("utf8").slice(0, 30000)}` });
+        const t = buf.toString("utf8");
+        blocks.push({ type: "text", text: `[첨부 파일: ${name}]\n${t.slice(0, 30000)}` });
+        texts.push({ name, text: t.slice(0, 500000) });
       } else {
         console.error(`[file] ${name} 미지원 타입 스킵 (mt=${mt}, ft=${ft})`);
       }
     } catch (e) { console.error(`[file] ${name} 처리 실패:`, e?.message ?? e); }
   }
-  return blocks;
+  return { blocks, texts };
 }
 
 function startSession() {
@@ -476,7 +495,7 @@ function startSession() {
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text",
         "mcp__apm__review_episode",
         "mcp__apm__send_message", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
-        "mcp__apm__query_schedule",
+        "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "WebSearch"],
     },
@@ -556,12 +575,12 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
     return;
   }
   // 이미지가 있으면 다운로드해 멀티모달 content 배열로, 없으면 텍스트 문자열로
-  const attBlocks = attFiles.length ? await toAttachmentBlocks(attFiles) : [];
-  const content = attBlocks.length ? [{ type: "text", text: llmText }, ...attBlocks] : llmText;
+  const att = attFiles.length ? await toAttachmentBlocks(attFiles) : { blocks: [], texts: [] };
+  const content = att.blocks.length ? [{ type: "text", text: llmText }, ...att.blocks] : llmText;
 
   // 턴을 큐에 넣고 한 번에 하나씩 처리 — 완료 시 deliver()가 '처리 중'을 지우고 새 메시지로 답한다
   const entry = { client, channel, threadTs: thread, ts: thread, placeholderTs: ph?.ts, startedAt: Date.now(), done: false };
-  queue.push({ content, ctx: entry });
+  queue.push({ content, ctx: entry, attachTexts: att.texts });
   if (wake) { const w = wake; wake = null; w(); }
 
   // 멈춤 감시: 제한시간 내 응답 없으면 '처리 중'을 지연 안내로 갱신(영영 멈춘 듯 보이지 않게)
