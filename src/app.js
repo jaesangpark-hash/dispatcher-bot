@@ -9,7 +9,7 @@ import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell } from "./delivery-edit.js";
 import { setCell, getCell } from "./sheets-write.js";
 import { appendFileSync } from "node:fs";
-import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate } from "./totus.js";
+import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, deliverySourceGroups } from "./totus.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, QA_INSTRUCTIONS } from "./review.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNag, dueScheduled } from "./reminders.js";
@@ -361,6 +361,27 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }
     ),
+    tool(
+      "get_source_files",
+      "작품·회차의 원본(소스) 파일 목록 + 직접 다운로드 링크를 준다. TOTUS 소스그룹(delivery-source-groups)에서 가져오며, 출판사 외부 드라이브가 아니라 cf.totus.pro 서명 URL이라 로그인 없이 바로 다운로드된다. '원본 파일 받고싶어/다운로드/원고 파일' 요청에 쓴다. (출판사 드라이브 링크는 별개 — get_work_info)",
+      { work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"), episode: z.string().describe("회차 숫자(콤마로 복수 가능: 1,2,3)") },
+      async ({ work, episode }) => {
+        try {
+          const fp = await findProject(work);
+          const proj = (fp?.data || [])[0];
+          if (!proj?.uuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음.` }) }] };
+          const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
+          const r = await deliverySourceGroups(proj.uuid, String(episode));
+          const groups = r?.data || [];
+          if (!groups.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, msg: `${episode}화 원본(소스) 파일을 못 찾음. 회차 표기 확인 필요.` }) }] };
+          const out = groups.flatMap((g) => (g.파일목록 || []).map((f) => ({ episode: g.에피소드, file: f.파일이름, ext: f.확장자, url: f.다운로드URL })));
+          return { content: [{ type: "text", text: capJson({ work: projName, episode, 파일수: out.length, files: out, note: "다운로드URL은 서명된 직접 링크(로그인 불필요, 일정 시간 후 만료). 사용자에게 파일명과 링크를 그대로 안내." }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: true } }
+    ),
     tool("review_episode",
       "웹툰 번역 검수: 작품명+회차만 주면 납품탭에서 PIVO를 찾아 식자번역검수(없으면 번역검수/번역) 텍스트를 추출해 돌려준다. 한일이면 lang 'ko-ja'(기본), 중일이면 'zh-ja'. 검수 요청(예 '게임속기연 90 검수')이면 이 도구를 쓰고, 돌려받은 [검수 기준]대로 pairs를 2패스 검수해 문제 있는 항목만 [출력 템플릿]으로 작성한다. 결과에 error가 있으면 그 메시지를 그대로 사용자에게 전한다. taskUuid 직접 추출(translation_text)은 이 도구를 못 쓸 때만.",
       {
@@ -622,7 +643,7 @@ function startSession() {
       //  매 응답을 깨뜨리던 문제 차단 — 툰식이는 외부 커넥터가 필요 없음)
       strictMcpConfig: true,
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
-        "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url",
+        "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode",
         "mcp__apm__send_message", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",

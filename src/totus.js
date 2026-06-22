@@ -45,6 +45,8 @@ export const translationText = (taskUuid) => getJSON(`/tasks/${taskUuid}/transla
 export const jobProcesses = (projectUuid) => getJSON(`/projects/${projectUuid}/job-processes`);
 // #5 납품 진행 + 현재 납품예정일
 export const deliveryWorkProcesses = (projectUuid) => getJSON(`/projects/${projectUuid}/delivery-work-processes`);
+// #24 에피소드별 원본(소스) 파일 + 다운로드URL(서명, cf.totus.pro). episodes="1" 또는 "1,2,3"
+export const deliverySourceGroups = (projectUuid, episodes) => getJSON(`/projects/${projectUuid}/delivery-source-groups`, { episodes });
 
 // ── 쓰기(MUTATION) — JobProcess 납품예정일 일괄 변경 ────────────────
 // ★실제 변경. 봇의 게이트(확인 버튼) 핸들러에서만 호출할 것 (LLM 도구로 직접 노출 금지).
