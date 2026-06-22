@@ -115,6 +115,11 @@ let sendSeq = 0;
 const capJson = (obj) => { const s = JSON.stringify(obj); return s.length > 8000 ? s.slice(0, 8000) + `\n…(전체 ${s.length}자 중 8000자만. 필터/대상 좁혀 재조회)` : s; };
 const totusTool = (fn) => async (a) => { try { return { content: [{ type: "text", text: capJson(await fn(a)) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } };
 
+// JOB Task 조회 시 '식자검수 이후 후공정'(납품검수·PIVO 납품검수·고객검수·최종검수)은 기본 제외 — 식자검수까지만.
+const POST_SIKJA_OPS = ["납품검수", "고객검수", "최종검수"];   // 이름 부분일치(공백제거). 'PIVO 납품 검수'는 '납품검수'로 걸림
+const isPostSikjaOp = (op) => { const nm = String(op?.태스크?.[0]?.오퍼레이션유형명 || "").replace(/\s/g, ""); return !!nm && POST_SIKJA_OPS.some((e) => nm.includes(e)); };
+const trimJobsAtSikja = (j) => { for (const job of j?.data || []) if (Array.isArray(job.오퍼레이션)) job.오퍼레이션 = job.오퍼레이션.filter((op) => !isPostSikjaOp(op)); return j; };
+
 // ── 도구(모듈) — 빌드 1: 납품일 조회 (read-only) ───────────────────
 const apmTools = createSdkMcpServer({
   name: "apm",
@@ -302,9 +307,9 @@ const apmTools = createSdkMcpServer({
     tool("totus_schedule_summary", "TOTUS 프로젝트 일정 요약: 공정(오퍼레이션)별 전체/완료/진행/대기/지연/임박 집계. '이 작품 일정 지연·임박' 류.",
       { projectUuid: z.string().describe("프로젝트 UUID (totus_quotation/find_project로 확보)") },
       totusTool((a) => scheduleSummary(a.projectUuid)), { annotations: { readOnlyHint: true } }),
-    tool("totus_jobs", "TOTUS JOB→Operation→Task 구조: 회차별 작업·작업자·상태. episode로 특정 회차만.",
+    tool("totus_jobs", "TOTUS JOB→Operation→Task 구조: 회차별 작업·작업자·상태. episode로 특정 회차만. ★식자검수까지만 보여주고 후공정(납품검수·PIVO 납품검수·고객검수·최종검수)은 제외함.",
       { projectUuid: z.string(), episode: z.string().optional().describe("회차 숫자(생략 시 전체)") },
-      totusTool((a) => projectJobs(a.projectUuid, a.episode)), { annotations: { readOnlyHint: true } }),
+      totusTool((a) => projectJobs(a.projectUuid, a.episode).then(trimJobsAtSikja)), { annotations: { readOnlyHint: true } }),
     tool("totus_tasks", "TOTUS Task 목록(필터): 상태/오퍼레이션유형/JOB 등으로 조회. 결과 많으면 size로 제한.",
       { projectUuid: z.string().optional(), jobUuids: z.string().optional().describe("JOB UUID(쉼표구분)"), state: z.string().optional().describe("READY/PROCESSING/COMPLETED/CONFIRMED/DROP 등"), operationTypeCode: z.string().optional().describe("OTC0012 번역·OTC0014 식자 등"), size: z.number().optional() },
       totusTool((a) => taskList(a)), { annotations: { readOnlyHint: true } }),
