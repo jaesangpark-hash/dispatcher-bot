@@ -40,3 +40,27 @@ export const taskList = (params) => getJSON(`/tasks`, params);
 export const taskDetail = (taskUuid) => getJSON(`/tasks/${taskUuid}`);
 // #36 원문↔번역문 텍스트 쌍
 export const translationText = (taskUuid) => getJSON(`/tasks/${taskUuid}/translation-text`);
+
+// #4 JOB(JobProcess) 목록 — jobProcessUuid + 작업단위번호(회차) + 납품예정일 보유. 회차→jobProcessUuid 해석용.
+export const jobProcesses = (projectUuid) => getJSON(`/projects/${projectUuid}/job-processes`);
+// #5 납품 진행 + 현재 납품예정일
+export const deliveryWorkProcesses = (projectUuid) => getJSON(`/projects/${projectUuid}/delivery-work-processes`);
+
+// ── 쓰기(MUTATION) — JobProcess 납품예정일 일괄 변경 ────────────────
+// ★실제 변경. 봇의 게이트(확인 버튼) 핸들러에서만 호출할 것 (LLM 도구로 직접 노출 금지).
+async function postJSON(path, body, extra = {}) {
+  const { url, tok } = creds();
+  const r = await fetch(`${url}/api/v1${path}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json", ...extra },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30000),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`TOTUS ${r.status}: ${text.slice(0, 300)}`);
+  try { return JSON.parse(text); } catch { return text; }
+}
+// jps = [{ jobProcessUuid, deliveryDate(YYYY-MM-DD 또는 ISO), modificationReason? }]
+// dryRun=true면 부작용 없이 정규화 결과만. Prod warn 모드지만 X-Confirm-Mutation 권장.
+export const setDeliveryDate = (jps, dryRun = false) =>
+  postJSON(`/job-processes/dates`, { jobProcesses: jps, dryRun }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });

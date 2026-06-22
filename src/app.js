@@ -9,7 +9,7 @@ import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell } from "./delivery-edit.js";
 import { setCell, getCell } from "./sheets-write.js";
 import { appendFileSync } from "node:fs";
-import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText } from "./totus.js";
+import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate } from "./totus.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, QA_INSTRUCTIONS } from "./review.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNag, dueScheduled } from "./reminders.js";
@@ -73,6 +73,7 @@ const DISPATCHER_PROMPT = [
   "운영 데이터 질문은 추측하지 말고 도구로 실제 시트 값을 조회해 답한다. 작품을 못 찾으면 솔직히 알리고 작품명 표기 확인을 요청한다.",
   "★★ 절대 규칙(최우선): 작품명·고유명사는 도구가 돌려준 셀 값(원문 문자열)을 **글자 하나도 바꾸지 않고 그대로 복사해** 출력한다. 음역·번역·한자↔한글 변환·가나 변환·표기 정리 일체 금지 (예: '最弱'→'최약' 금지, '覇王'→'패왕' 금지). 어느 언어(중/한/일) 제목을 골라올지 판단이 틀릴 수는 있어도, 일단 가져온 제목 문자열은 무조건 셀 값 그대로 출력한다. 한국어·일본어 제목이 둘 다 있으면 섞지 말고 각각 원문대로.",
   "- 납품일/일정 → get_delivery_date (중일 기본, 한일은 ko-ja)",
+  "- 납품예정일 '변경' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영) / ②내부 납품관리시트 G열만 = propose_delivery_edit. 둘 다 게이트형(버튼 확인). 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고, 절대 '변경했다'고 단정하지 말 것(버튼 눌러야 반영).",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 그 외 운영 시트 → query_sheet (사용 가능한 뷰 목록·필드는 그 도구 설명에 들어있으니 거기 보고 고른다).",
   "query_sheet 효율 규칙(중요): 리스트/현황/기간 질문은 한 번의 호출로 서버측에서 좁혀 가져온다. filterField/filterOp/filterValue(예: 리테이크 미완료=filterField:done, filterOp:neq, filterValue:완료), dateField/dateFrom/dateTo(기간), distinct(중복 제거)를 적극 사용. work 없이 큰 시트를 통째로 가져오거나, 같은 호출을 반복하지 말 것. 한 번에 답이 되도록 필터를 설계해 호출 횟수를 최소화한다.",
@@ -95,6 +96,8 @@ const processed = new Set();
 
 // ── 게이트형 쓰기: 대기 변경 + 현재 메시지 컨텍스트(버튼 발송용) ───────
 const pendingEdits = new Map();   // changeId → { sheetId, cellA1, oldValue, newValue, workName, episode, tab, lang, createdAt }
+const pendingTotusDates = new Map();   // changeId → { jobProcessUuid, deliveryDate, reason, work, episode, createdAt } (TOTUS 납품예정일 게이트)
+let totusDateSeq = 0;
 let currentCtx = null;            // { client, channel, ts } — handle()가 메시지마다 갱신(단일 사용자·직렬 가정)
 let editSeq = 0;
 const EDIT_TTL_MS = 10 * 60 * 1000;
@@ -204,6 +207,51 @@ const apmTools = createSdkMcpServer({
             });
           }
           return { content: [{ type: "text", text: JSON.stringify({ proposed: true, workName: r.workName, episode: r.episode, from: r.currentDate, to: new_date, note: "확인 버튼을 보냈음. 사용자가 버튼을 눌러야 반영됨. '버튼을 눌러 확인해 주세요'라고만 안내하고, 변경 완료라고 말하지 말 것." }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: true } }
+    ),
+    tool(
+      "propose_totus_delivery_edit",
+      "TOTUS 시스템(어드민/카카오픽코마)의 실제 납품예정일(deliveryDate)을 '변경 제안'한다. 내부 납품관리시트 G열(propose_delivery_edit)과는 다른, 진짜 TOTUS 납품예정일이며 변경 시 PIVO에도 자동 반영된다. 즉시 안 바꾸고 작품·회차로 jobProcess를 찾아 확인 버튼을 보낸다 — 사용자가 버튼을 눌러야 실제 변경. 절대 '변경했다'고 단정 말 것(확인 대기).",
+      {
+        work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
+        episode: z.string().describe("회차 숫자(작업단위번호)"),
+        new_date: z.string().describe("새 납품예정일 YYYY-MM-DD (KST 23:59로 자동 변환됨)"),
+        reason: z.enum(["RETAKE", "CUSTOMER_REQUEST", "INTERNAL_REQUEST", "ETC"]).optional().describe("변경 사유(기본 CUSTOMER_REQUEST)"),
+      },
+      async ({ work, episode, new_date, reason }) => {
+        try {
+          const ctx = currentCtx;
+          const fp = await findProject(work);
+          const proj = (fp?.data || [])[0];
+          if (!proj?.uuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음. 작품명 표기 확인 필요.` }) }] };
+          const jp = await jobProcesses(proj.uuid);
+          const items = (jp?.data || []).flatMap((o) => o.JOB목록 || []);
+          const ep = Number(episode);
+          const matched = items.filter((x) => Number(x.작업단위번호) === ep);
+          if (!matched.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `${proj.프로젝트 || work}에서 ${episode}화(작업단위번호) JobProcess를 못 찾음. 회차 확인 필요.` }) }] };
+          if (matched.length > 1) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: `${episode}화에 JobProcess가 ${matched.length}개(주문/언어 복수). 어느 건지 사용자에게 되물어라.`, candidates: matched.map((x) => ({ jobProcessUuid: x.jobProcessUuid, 태스크상태: x.태스크상태 })) }) }] };
+          const jpUuid = matched[0].jobProcessUuid;
+          const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
+          const changeId = `tdate_${++totusDateSeq}`;
+          pendingTotusDates.set(changeId, { jobProcessUuid: jpUuid, deliveryDate: new_date, reason: reason || "CUSTOMER_REQUEST", work: projName, episode, createdAt: Date.now() });
+          if (ctx?.client && ctx?.channel) {
+            await ctx.client.chat.postMessage({
+              channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
+              text: `TOTUS 납품예정일 변경 확인: ${projName} ${episode}화 → ${new_date}`,
+              blocks: [
+                { type: "section", text: { type: "mrkdwn", text: `⚠️ *TOTUS 납품예정일 변경 확인*\n• 작품: *${projName}* ${episode}화\n• jobProcess: \`${jpUuid}\`\n• 새 납품예정일: *${new_date}*  (사유: ${reason || "CUSTOMER_REQUEST"})\n• ⚠️ 실제 TOTUS 변경 + PIVO 자동 반영` } },
+                { type: "actions", elements: [
+                  { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 변경" }, value: changeId, action_id: "totus_date_confirm" },
+                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: changeId, action_id: "totus_date_cancel" },
+                ] },
+              ],
+            });
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: projName, episode, jobProcessUuid: jpUuid, to: new_date, note: "확인 버튼을 보냈음. 사용자가 버튼을 눌러야 실제 변경됨. '버튼을 눌러 확인해 주세요'라고만 안내하고, 변경 완료라고 말하지 말 것." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -491,7 +539,7 @@ function startSession() {
       // (claude.ai 조직 커넥터의 깨진 헤더 'Bearer 복사한_토큰'이 봇 세션에 실려
       //  매 응답을 깨뜨리던 문제 차단 — 툰식이는 외부 커넥터가 필요 없음)
       strictMcpConfig: true,
-      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit",
+      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text",
         "mcp__apm__review_episode",
         "mcp__apm__send_message", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
@@ -645,6 +693,34 @@ app.action("delivery_edit_confirm", async ({ ack, body, client }) => {
 app.action("delivery_edit_cancel", async ({ ack, body, client }) => {
   await ack();
   pendingEdits.delete(body.actions?.[0]?.value);
+  await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+// ── TOTUS 납품예정일 변경 확인/취소 (실제 MUTATION은 LLM 밖, 여기서만) ──────
+app.action("totus_date_confirm", async ({ ack, body, client }) => {
+  await ack();
+  const changeId = body.actions?.[0]?.value;
+  const chan = body.channel?.id;
+  const thread = body.message?.thread_ts || body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+  if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
+  const p = pendingTotusDates.get(changeId);
+  if (!p) return reply("⌛ 만료됐거나 이미 처리된 변경이에요. 다시 요청해줘.");
+  pendingTotusDates.delete(changeId);
+  if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
+  try {
+    const res = await setDeliveryDate([{ jobProcessUuid: p.jobProcessUuid, deliveryDate: p.deliveryDate, modificationReason: p.reason }], false);
+    appendFileSync("logs/totus-dates.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, jobProcessUuid: p.jobProcessUuid, work: p.work, episode: p.episode, to: p.deliveryDate, reason: p.reason, ok: res?.success, resp: res?.data }) + "\n");
+    if (res?.success) await reply(`✅ TOTUS 납품예정일 변경 완료 — ${p.work} ${p.episode}화 → ${p.deliveryDate} (PIVO 자동 반영)`);
+    else await reply(`❌ 변경 실패 — 실패 ${res?.data?.실패 ?? "?"}건 (failed: ${JSON.stringify(res?.data?.failedJobProcessUuids || [])}). 회차/uuid 확인 필요.`);
+  } catch (e) {
+    await reply(`❌ 변경 실패: ${e?.message ?? e}`);
+  }
+});
+
+app.action("totus_date_cancel", async ({ ack, body, client }) => {
+  await ack();
+  pendingTotusDates.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
 
