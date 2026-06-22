@@ -76,7 +76,7 @@ const DISPATCHER_PROMPT = [
   "- 납품예정일 '변경' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영) / ②내부 납품관리시트 G열만 = propose_delivery_edit. 둘 다 게이트형(버튼 확인). 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고, 절대 '변경했다'고 단정하지 말 것(버튼 눌러야 반영).",
   "★납품예정일 '조회' 구분(중요): ①'TOTUS/실제 시스템 납품예정일'(JobProcess deliveryDate) = totus_delivery_date(work, episode). ②'내부 납품시트' 납품일 = get_delivery_date. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — 그걸 '납품예정일'이라 단정 금지. '실제 TOTUS 납품예정일'을 물으면 totus_delivery_date로 정확히 답해라.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
-  "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사는 {publisher}입니다'처럼 출판사(publisher)를 알려준다.",
+  "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수).",
   "- 그 외 운영 시트 → query_sheet (사용 가능한 뷰 목록·필드는 그 도구 설명에 들어있으니 거기 보고 고른다).",
   "query_sheet 효율 규칙(중요): 리스트/현황/기간 질문은 한 번의 호출로 서버측에서 좁혀 가져온다. filterField/filterOp/filterValue(예: 리테이크 미완료=filterField:done, filterOp:neq, filterValue:완료), dateField/dateFrom/dateTo(기간), distinct(중복 제거)를 적극 사용. work 없이 큰 시트를 통째로 가져오거나, 같은 호출을 반복하지 말 것. 한 번에 답이 되도록 필터를 설계해 호출 횟수를 최소화한다.",
   "- TOTUS(작품 진행상황·일정 지연/임박·작업자·번역텍스트·견적) → totus_* 도구. PIVO ID 있으면 totus_quotation으로 projectUuid부터 확보 → 그 uuid로 totus_schedule_summary(일정)·totus_jobs/totus_tasks(작업·상태). 작품명만 있으면 totus_find_project로 uuid. 진행/일정/작업자는 시트보다 TOTUS가 정확. 번역텍스트(totus_translation_text)는 양 많으니 필요한 Task에만.",
@@ -312,6 +312,37 @@ const apmTools = createSdkMcpServer({
     tool("totus_translation_text", "TOTUS 원문↔번역문 텍스트 쌍(Task 기준). 양이 많으니 필요한 Task에만.",
       { taskUuid: z.string() },
       totusTool((a) => translationText(a.taskUuid)), { annotations: { readOnlyHint: true } }),
+    tool(
+      "get_editor_url",
+      "회차+오퍼레이션명으로 TOTUS 에디터 URL을 준다(태스크 상태 무관, 가장 최신 task 기준 — 리테이크 있으면 최신본). 오퍼레이션명=번역·번역검수·식자·식자검수·식자번역검수·납품검수 등. 작품·회차로 JOB을 찾아 해당 오퍼레이션 태스크의 에디터 링크(main.totus.pro/ko/editor?uuid=) 반환.",
+      { work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"), episode: z.string().describe("회차 숫자"), operation: z.string().describe("오퍼레이션명(번역·식자·식자검수 등) 또는 OTC코드") },
+      async ({ work, episode, operation }) => {
+        try {
+          const fp = await findProject(work);
+          const proj = (fp?.data || [])[0];
+          if (!proj?.uuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음.` }) }] };
+          const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
+          let jobs = (await projectJobs(proj.uuid, episode))?.data || [];
+          if (!jobs.length) {   // episode 필터 0건(구작) → JOB명 회차 매칭 폴백 (review.js와 동일)
+            const n = parseInt(episode, 10); const re = new RegExp(`(?:第|-)0*${n}(?:\\D|$)`);
+            jobs = ((await projectJobs(proj.uuid))?.data || []).filter((x) => re.test((x.JOB명 || "").trim()));
+          }
+          const tasks = jobs.flatMap((j) => (j.오퍼레이션 || []).flatMap((op) => op.태스크 || []));
+          const qn = String(operation).replace(/\s/g, ""); const qc = qn.toUpperCase();
+          const nmOf = (t) => String(t.오퍼레이션유형명 || "").replace(/\s/g, "");
+          const cdOf = (t) => String(t.오퍼레이션유형 || "").toUpperCase();
+          let match = tasks.filter((t) => nmOf(t) === qn || cdOf(t) === qc);   // 정확 일치 우선('번역'이 번역검수/식자번역검수에 안 걸리게)
+          if (!match.length) match = tasks.filter((t) => { const nm = nmOf(t); return (nm && (nm.includes(qn) || qn.includes(nm))) || cdOf(t).includes(qc); });   // 폴백: 부분 일치
+          if (!match.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, msg: `${episode}화에 '${operation}' 오퍼레이션 task 없음.`, 가능한오퍼레이션: [...new Set(tasks.map((t) => t.오퍼레이션유형명).filter(Boolean))] }) }] };
+          match.sort((a, b) => String(b.시작일원본 || b.마감일원본 || "").localeCompare(String(a.시작일원본 || a.마감일원본 || "")));   // 최신 우선(시작일 desc)
+          const t = match[0];
+          return { content: [{ type: "text", text: JSON.stringify({ work: projName, episode, operation: t.오퍼레이션유형명, 상태: t.상태명 || t.상태, taskUuid: t.uuid, url: `https://main.totus.pro/ko/editor?uuid=${t.uuid}`, task수: match.length }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: true } }
+    ),
     tool("review_episode",
       "웹툰 번역 검수: 작품명+회차만 주면 납품탭에서 PIVO를 찾아 식자번역검수(없으면 번역검수/번역) 텍스트를 추출해 돌려준다. 한일이면 lang 'ko-ja'(기본), 중일이면 'zh-ja'. 검수 요청(예 '게임속기연 90 검수')이면 이 도구를 쓰고, 돌려받은 [검수 기준]대로 pairs를 2패스 검수해 문제 있는 항목만 [출력 템플릿]으로 작성한다. 결과에 error가 있으면 그 메시지를 그대로 사용자에게 전한다. taskUuid 직접 추출(translation_text)은 이 도구를 못 쓸 때만.",
       {
@@ -573,7 +604,7 @@ function startSession() {
       //  매 응답을 깨뜨리던 문제 차단 — 툰식이는 외부 커넥터가 필요 없음)
       strictMcpConfig: true,
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
-        "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text",
+        "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url",
         "mcp__apm__review_episode",
         "mcp__apm__send_message", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",
