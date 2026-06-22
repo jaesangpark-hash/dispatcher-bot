@@ -74,6 +74,7 @@ const DISPATCHER_PROMPT = [
   "★★ 절대 규칙(최우선): 작품명·고유명사는 도구가 돌려준 셀 값(원문 문자열)을 **글자 하나도 바꾸지 않고 그대로 복사해** 출력한다. 음역·번역·한자↔한글 변환·가나 변환·표기 정리 일체 금지 (예: '最弱'→'최약' 금지, '覇王'→'패왕' 금지). 어느 언어(중/한/일) 제목을 골라올지 판단이 틀릴 수는 있어도, 일단 가져온 제목 문자열은 무조건 셀 값 그대로 출력한다. 한국어·일본어 제목이 둘 다 있으면 섞지 말고 각각 원문대로.",
   "- 납품일/일정 → get_delivery_date (중일 기본, 한일은 ko-ja)",
   "- 납품예정일 '변경' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영) / ②내부 납품관리시트 G열만 = propose_delivery_edit. 둘 다 게이트형(버튼 확인). 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고, 절대 '변경했다'고 단정하지 말 것(버튼 눌러야 반영).",
+  "★주의(납품예정일 '조회'): 'TOTUS/실제 시스템 납품예정일(JobProcess deliveryDate)'을 봇이 직접 읽는 도구는 아직 없다. totus_jobs·totus_tasks·totus_schedule_summary가 주는 마감일/일정은 *오퍼레이션*(PIVO 납품검수 등)의 마감일이지 JobProcess 납품예정일이 아니다 — 절대 그 값을 '납품예정일'이라고 단정하지 마라. 납품일을 물으면 get_delivery_date(내부 납품시트)로 답하고, '실제 TOTUS 시스템 납품예정일'을 물으면 '봇이 직접 못 읽어 어드민에서 확인해야 한다'고 정직히 안내하라. (변경만 propose_totus_delivery_edit로 가능)",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 그 외 운영 시트 → query_sheet (사용 가능한 뷰 목록·필드는 그 도구 설명에 들어있으니 거기 보고 고른다).",
   "query_sheet 효율 규칙(중요): 리스트/현황/기간 질문은 한 번의 호출로 서버측에서 좁혀 가져온다. filterField/filterOp/filterValue(예: 리테이크 미완료=filterField:done, filterOp:neq, filterValue:완료), dateField/dateFrom/dateTo(기간), distinct(중복 제거)를 적극 사용. work 없이 큰 시트를 통째로 가져오거나, 같은 호출을 반복하지 말 것. 한 번에 답이 되도록 필터를 설계해 호출 횟수를 최소화한다.",
