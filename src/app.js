@@ -28,7 +28,17 @@ const {
   BOT_DISPLAY_NAME,   // 설정 시 chat.postMessage username 으로 표시명 강제 (chat:write.customize 스코프 필요)
   BOT_ICON_EMOJI,     // 선택: 표시 아이콘 (예: ":robot_face:")
   BOT_NAG_HOUR = "9", // 재촉 리마인더 데일리 발송 시각(시, 로컬). 기본 오전 9시
+  APM_USER_IDS = "", // 조회·검수만 허용할 APM Slack ID(콤마 구분). 변경·발송·리마인더는 재상(DISPATCHER_USER_ID)만.
 } = process.env;
+
+// 사용 허용 = 재상(소유자) + APM들. 소유자만 = 변경·발송·리마인더(쓰기/개인기능). 그 외(APM)는 조회·검수만.
+const OWNER_ID = DISPATCHER_USER_ID;
+const ALLOWED_USERS = new Set([OWNER_ID, ...APM_USER_IDS.split(",").map((s) => s.trim()).filter(Boolean)]);
+let currentUser = null;   // 지금 처리 중인 턴의 요청자 Slack ID (재상 전용 가드용)
+// 재상 전용(변경·발송·리마인더) 가드: APM이 호출하면 거부 content 반환, 재상이면 null
+const ownerOnly = () => (currentUser && currentUser !== OWNER_ID)
+  ? { content: [{ type: "text", text: JSON.stringify({ denied: true, error: "이 기능(납품예정일·시트 변경/삭제, 슬랙 발송, 리마인더)은 재상 님만 쓸 수 있어요. 조회·검수·링크·원본파일은 도와드릴 수 있어요." }) }] }
+  : null;
 
 // 발송 시 표시명/아이콘 강제용 — BOT_DISPLAY_NAME 없으면 빈 객체(무변경). chat:write.customize 승인 후 env만 켜면 활성.
 const SENDER = BOT_DISPLAY_NAME
@@ -67,6 +77,7 @@ const DISPATCHER_PROMPT = [
   "너는 '툰식이'다. 박재상(재상 님)의 개인 비서 챗봇으로, 재팬팀 운영자동화를 담당하는 재상 님의 일과 일상을 곁에서 같이 챙긴다. 누가 이름을 물으면 '툰식이'라고 답한다.",
   "호칭: 사용자는 항상 '재상 님'으로 부른다('재상 씨'는 쓰지 않는다). 작업자·APM·PM 등 등장하는 사람 이름에는 항상 '님'을 붙인다 (예: '서주원 님', '정태영 님', '오화진 님').",
   "말투: 따뜻하고 친근하게, 군더더기 없이. 표나 정형 양식은 꼭 필요할 때만 쓰고, 평소엔 사람처럼 자연스럽게 대화한다.",
+  "사용자 권한: 재상 님 외에 APM 두 분도 너에게 말을 건다(같은 '툰식이'로 똑같이 친절하게 응대). 단 '변경·발송·리마인더'(납품예정일/시트 변경·삭제, 슬랙 메시지 발송, 리마인더 등록·조회·완료)는 재상 님 전용이다. APM 분이 그런 요청을 하면 해당 도구가 거부(denied)를 돌려주는데, 그때는 '그건 재상 님만 할 수 있어요. 대신 조회·검수·링크·원본파일은 도와드릴게요'처럼 부드럽게 안내한다. 조회·검수·링크·원본 파일은 모두에게 열려 있다.",
   "내부 구현은 답변에 드러내지 않는다 — 도구명·뷰명(예: translator_grade, query_sheet)이나 '어느 탭·필드에서 어떤 로직으로 가져왔는지'를 괄호로 달거나 설명하지 말 것. 그건 나와 봇만 아는 내부 사정이다. 결과만 자연스럽게 말하고, 사용자가 직접 '어디서 가져왔어?'라고 물을 때만 출처를 짧게 답한다.",
   "강조 기호(**굵게)를 남용하지 않는다 — 정말 핵심 한두 군데만. 평소엔 일반 텍스트로. 표·불릿·헤더도 꼭 필요할 때만.",
   "업무 명령이든 가벼운 잡담이든 가리지 않고 받아준다. '그건 내 역할이 아니다' 같은 선긋기나 자기 한계 변명을 길게 늘어놓지 않는다.",
@@ -197,6 +208,7 @@ const apmTools = createSdkMcpServer({
       },
       async ({ work, episode, new_date, lang }) => {
         try {
+          const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
           const clearing = !new_date || /^(삭제|지움|지워|지우기|비우기|비움|없음|빈칸|clear|none|empty)$/i.test(String(new_date).trim());
           const newValue = clearing ? "" : new_date;
@@ -236,6 +248,7 @@ const apmTools = createSdkMcpServer({
       },
       async ({ work, episode, new_date, reason }) => {
         try {
+          const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
           const fp = await findProject(work);
           const proj = (fp?.data || [])[0];
@@ -426,6 +439,7 @@ const apmTools = createSdkMcpServer({
       { target: z.string().describe("받는 곳: 채널 ID(C…) 또는 사용자 ID(U…)"), text: z.string().describe("보낼 메시지 내용") },
       async ({ target, text }) => {
         try {
+          const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
           if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "발송 컨텍스트 없음" }) }] };
           if (target === DISPATCHER_USER_ID) {
@@ -511,21 +525,21 @@ const apmTools = createSdkMcpServer({
     tool("add_reminder",
       "재상 님이 '나중에 챙길 일'을 기억해달라고 할 때 저장한다(재촉 리마인더). 시간 지정 불필요 — 끝낼 때까지 매일 아침 자동으로 재촉 DM이 간다. '이거 기억해둬'·'나중에 ~해야 해'·'~하는 거 잊지마' 류에 사용.",
       { text: z.string().describe("기억할 내용") },
-      async (a) => { try { const r = addReminder(a.text); return { content: [{ type: "text", text: JSON.stringify({ saved: true, id: r.id, total: r.total, note: "매일 아침 재촉 예정. 완료되면 알려주면 지움." }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = addReminder(a.text); return { content: [{ type: "text", text: JSON.stringify({ saved: true, id: r.id, total: r.total, note: "매일 아침 재촉 예정. 완료되면 알려주면 지움." }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: false } }),
     tool("schedule_reminder",
       "특정 시각에 1회 리마인드. '월요일 오전 10시에 ~ 리마인드'처럼 시각이 주어질 때 사용. when은 ISO8601(예 2026-06-22T10:00:00+09:00) — 메시지 앞 [현재 시각(KST)] 기준으로 계산해서 넣어라. 시각 없이 '그냥 기억해둬'면 이게 아니라 add_reminder를 쓴다.",
       { text: z.string().describe("리마인드할 내용"), when: z.string().describe("발송 시각 ISO8601(KST 오프셋 +09:00 권장)") },
-      async (a) => { try { const r = addScheduled(a.text, a.when); if (r.error) return { content: [{ type: "text", text: JSON.stringify(r) }] }; return { content: [{ type: "text", text: JSON.stringify({ scheduled: true, id: r.id, dueAt: r.dueAt }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = addScheduled(a.text, a.when); if (r.error) return { content: [{ type: "text", text: JSON.stringify(r) }] }; return { content: [{ type: "text", text: JSON.stringify({ scheduled: true, id: r.id, dueAt: r.dueAt }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: false } }),
     tool("list_reminders", "저장된 리마인더 목록(재촉형+시각지정형, dueAt 있으면 시각지정). '내 할일/리마인더 뭐 있어' 류.",
       {},
-      async () => { try { return { content: [{ type: "text", text: JSON.stringify({ items: listReminders() }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      async () => { try { const _d = ownerOnly(); if (_d) return _d; return { content: [{ type: "text", text: JSON.stringify({ items: listReminders() }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: true } }),
     tool("complete_reminder",
       "재촉 리마인더를 완료 처리(삭제)한다. '~했어'·'N번 완료'·'~끝냈어' 류. 번호(예 '2') 또는 내용 일부(부분 일치)로 지정.",
       { match: z.string().describe("완료할 리마인더의 번호 또는 내용 일부") },
-      async (a) => { try { const r = completeReminder(a.match); return { content: [{ type: "text", text: JSON.stringify({ done: r.done, removed: r.removed.map((x) => x.text), remaining: r.remaining }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = completeReminder(a.match); return { content: [{ type: "text", text: JSON.stringify({ done: r.done, removed: r.removed.map((x) => x.text), remaining: r.remaining }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: false } }),
   ],
 });
@@ -560,6 +574,7 @@ async function* messageStream() {
       currentTurn = turn;
       currentCtx = turn.ctx;   // 도구(발송·진행알림)가 '이 턴'의 자리로 답하도록 고정
       currentAttachments = turn.attachTexts || [];   // compute 도구가 이 턴 첨부 원문을 쓰도록
+      currentUser = turn.user || null;                // 재상 전용 가드용 요청자
       // 하드 타임아웃: 행/과부하로 영영 안 끝나는 턴이 큐를 막지 않게 — 알림 후 프로세스 종료(run.bat가 ~5초 후 재기동)
       const killer = setTimeout(async () => {
         console.error(`[brain] 턴 하드타임아웃(>${TURN_HARD_TIMEOUT_MS / 1000}s) — 중단·재시작`);
@@ -708,7 +723,7 @@ function startSession() {
 
 // ── 핵심 처리: 본인 메시지 → ack → 세션에 투입 (응답은 세션 루프가 thread로) ──
 async function handle({ text, channel, ts, threadTs, inThread, user, client, say, files }) {
-  if (user !== DISPATCHER_USER_ID) return;            // 본인만
+  if (!ALLOWED_USERS.has(user)) return;               // 재상 + 허용 APM만 (그 외 무시)
   // 메시지에 붙은 이미지 파일
   const msgFiles = (files || []).map((f) => ({ url: f.url_private_download || f.url_private, mimetype: f.mimetype, filetype: f.filetype, name: f.name }));
   if ((!text || !text.trim()) && !msgFiles.length) return;   // 텍스트도 첨부도 없으면 무시
@@ -744,7 +759,7 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
 
   // 턴을 큐에 넣고 한 번에 하나씩 처리 — 완료 시 deliver()가 '처리 중'을 지우고 새 메시지로 답한다
   const entry = { client, channel, threadTs: thread, ts: thread, placeholderTs: ph?.ts, startedAt: Date.now(), done: false };
-  queue.push({ content, ctx: entry, attachTexts: att.texts });
+  queue.push({ content, ctx: entry, attachTexts: att.texts, user });
   if (wake) { const w = wake; wake = null; w(); }
 
   // 멈춤 감시: 제한시간 내 응답 없으면 '처리 중'을 지연 안내로 갱신(영영 멈춘 듯 보이지 않게)
