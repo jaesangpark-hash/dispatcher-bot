@@ -74,7 +74,7 @@ const DISPATCHER_PROMPT = [
   "★★ 절대 규칙(최우선): 작품명·고유명사는 도구가 돌려준 셀 값(원문 문자열)을 **글자 하나도 바꾸지 않고 그대로 복사해** 출력한다. 음역·번역·한자↔한글 변환·가나 변환·표기 정리 일체 금지 (예: '最弱'→'최약' 금지, '覇王'→'패왕' 금지). 어느 언어(중/한/일) 제목을 골라올지 판단이 틀릴 수는 있어도, 일단 가져온 제목 문자열은 무조건 셀 값 그대로 출력한다. 한국어·일본어 제목이 둘 다 있으면 섞지 말고 각각 원문대로.",
   "- 납품일/일정 → get_delivery_date (중일 기본, 한일은 ko-ja)",
   "- 납품예정일 '변경' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영) / ②내부 납품관리시트 G열만 = propose_delivery_edit. 둘 다 게이트형(버튼 확인). 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고, 절대 '변경했다'고 단정하지 말 것(버튼 눌러야 반영).",
-  "★주의(납품예정일 '조회'): 'TOTUS/실제 시스템 납품예정일(JobProcess deliveryDate)'을 봇이 직접 읽는 도구는 아직 없다. totus_jobs·totus_tasks·totus_schedule_summary가 주는 마감일/일정은 *오퍼레이션*(PIVO 납품검수 등)의 마감일이지 JobProcess 납품예정일이 아니다 — 절대 그 값을 '납품예정일'이라고 단정하지 마라. 납품일을 물으면 get_delivery_date(내부 납품시트)로 답하고, '실제 TOTUS 시스템 납품예정일'을 물으면 '봇이 직접 못 읽어 어드민에서 확인해야 한다'고 정직히 안내하라. (변경만 propose_totus_delivery_edit로 가능)",
+  "★납품예정일 '조회' 구분(중요): ①'TOTUS/실제 시스템 납품예정일'(JobProcess deliveryDate) = totus_delivery_date(work, episode). ②'내부 납품시트' 납품일 = get_delivery_date. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — 그걸 '납품예정일'이라 단정 금지. '실제 TOTUS 납품예정일'을 물으면 totus_delivery_date로 정확히 답해라.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 그 외 운영 시트 → query_sheet (사용 가능한 뷰 목록·필드는 그 도구 설명에 들어있으니 거기 보고 고른다).",
   "query_sheet 효율 규칙(중요): 리스트/현황/기간 질문은 한 번의 호출로 서버측에서 좁혀 가져온다. filterField/filterOp/filterValue(예: 리테이크 미완료=filterField:done, filterOp:neq, filterValue:완료), dateField/dateFrom/dateTo(기간), distinct(중복 제거)를 적극 사용. work 없이 큰 시트를 통째로 가져오거나, 같은 호출을 반복하지 말 것. 한 번에 답이 되도록 필터를 설계해 호출 횟수를 최소화한다.",
@@ -236,15 +236,16 @@ const apmTools = createSdkMcpServer({
           if (!matched.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `${proj.프로젝트 || work}에서 ${episode}화(작업단위번호) JobProcess를 못 찾음. 회차 확인 필요.` }) }] };
           if (matched.length > 1) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: `${episode}화에 JobProcess가 ${matched.length}개(주문/언어 복수). 어느 건지 사용자에게 되물어라.`, candidates: matched.map((x) => ({ jobProcessUuid: x.jobProcessUuid, 태스크상태: x.태스크상태 })) }) }] };
           const jpUuid = matched[0].jobProcessUuid;
+          const current = matched[0].납품예정일 ? String(matched[0].납품예정일).slice(0, 10) : null;   // ISO(UTC14:59=KST23:59)→KST 날짜
           const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
           const changeId = `tdate_${++totusDateSeq}`;
-          pendingTotusDates.set(changeId, { jobProcessUuid: jpUuid, deliveryDate: new_date, reason: reason || "CUSTOMER_REQUEST", work: projName, episode, createdAt: Date.now() });
+          pendingTotusDates.set(changeId, { jobProcessUuid: jpUuid, deliveryDate: new_date, reason: reason || "CUSTOMER_REQUEST", work: projName, episode, currentDate: current, createdAt: Date.now() });
           if (ctx?.client && ctx?.channel) {
             await ctx.client.chat.postMessage({
               channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
               text: `TOTUS 납품예정일 변경 확인: ${projName} ${episode}화 → ${new_date}`,
               blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `⚠️ *TOTUS 납품예정일 변경 확인*\n• 작품: *${projName}* ${episode}화\n• jobProcess: \`${jpUuid}\`\n• 새 납품예정일: *${new_date}*  (사유: ${reason || "CUSTOMER_REQUEST"})\n• ⚠️ 실제 TOTUS 변경 + PIVO 자동 반영` } },
+                { type: "section", text: { type: "mrkdwn", text: `⚠️ *TOTUS 납품예정일 변경 확인*\n• 작품: *${projName}* ${episode}화\n• 납품예정일: ${current || "미설정"} → *${new_date}*` } },
                 { type: "actions", elements: [
                   { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 변경" }, value: changeId, action_id: "totus_date_confirm" },
                   { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: changeId, action_id: "totus_date_cancel" },
@@ -252,7 +253,34 @@ const apmTools = createSdkMcpServer({
               ],
             });
           }
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: projName, episode, jobProcessUuid: jpUuid, to: new_date, note: "확인 버튼을 보냈음. 사용자가 버튼을 눌러야 실제 변경됨. '버튼을 눌러 확인해 주세요'라고만 안내하고, 변경 완료라고 말하지 말 것." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: projName, episode, from: current, to: new_date, note: "확인 버튼을 보냈음. 사용자가 버튼을 눌러야 실제 변경됨. '버튼을 눌러 확인해 주세요'라고만 안내하고, 변경 완료라고 말하지 말 것." }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: true } }
+    ),
+    tool(
+      "totus_delivery_date",
+      "TOTUS 시스템의 실제 납품예정일(JobProcess deliveryDate)을 조회한다. 작품·회차로 job-processes의 '납품예정일' 필드(jobProcessUuid 단위)를 읽음 — 변경(propose_totus_delivery_edit)과 같은 값. 'TOTUS 납품예정일'·'실제 시스템 납품일' 물으면 이걸 써라. 내부 시트 납품일은 get_delivery_date, 오퍼레이션(PIVO검수) 마감일은 totus_jobs로 별개.",
+      { work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"), episode: z.string().optional().describe("회차 숫자. 생략 시 납품예정일 set된 회차 전체") },
+      async ({ work, episode }) => {
+        try {
+          const fp = await findProject(work);
+          const proj = (fp?.data || [])[0];
+          if (!proj?.uuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음.` }) }] };
+          const jp = await jobProcesses(proj.uuid);
+          const items = (jp?.data || []).flatMap((o) => o.JOB목록 || []);
+          const fmt = (iso) => (iso ? String(iso).slice(0, 10) : null);
+          const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
+          if (episode != null && episode !== "") {
+            const ep = Number(episode);
+            const m = items.filter((x) => Number(x.작업단위번호) === ep);
+            if (!m.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, msg: `${episode}화를 못 찾음.` }) }] };
+            return { content: [{ type: "text", text: JSON.stringify({ work: projName, episode, 납품예정일: fmt(m[0].납품예정일) ?? "미설정", jobProcessUuid: m[0].jobProcessUuid }) }] };
+          }
+          const setOnes = items.filter((x) => x.납품예정일).map((x) => ({ episode: x.작업단위번호, 납품예정일: fmt(x.납품예정일) })).sort((a, b) => a.episode - b.episode);
+          return { content: [{ type: "text", text: capJson({ work: projName, 납품예정일있는회차: setOnes.length, items: setOnes }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -540,7 +568,7 @@ function startSession() {
       // (claude.ai 조직 커넥터의 깨진 헤더 'Bearer 복사한_토큰'이 봇 세션에 실려
       //  매 응답을 깨뜨리던 문제 차단 — 툰식이는 외부 커넥터가 필요 없음)
       strictMcpConfig: true,
-      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit",
+      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text",
         "mcp__apm__review_episode",
         "mcp__apm__send_message", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
