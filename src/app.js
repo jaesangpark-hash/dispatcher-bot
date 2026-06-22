@@ -181,26 +181,29 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "propose_delivery_edit",
-      "납품 시트 납품일(G열) 변경을 '제안'한다. 즉시 바꾸지 않고 대상 셀을 찾아 변경 프리뷰(기존→새 날짜)를 사용자에게 확인 버튼으로 보낸다. 사용자가 버튼을 눌러야 실제 반영된다. 납품일 변경/수정 요청이면 이 도구를 쓰고, 절대 '변경했다'고 단정하지 말 것(확인 대기 상태임).",
+      "납품 시트 납품일(G열) 변경/삭제를 '제안'한다. 즉시 바꾸지 않고 대상 셀을 찾아 프리뷰(기존→새값)를 확인 버튼으로 보낸다. 사용자가 버튼을 눌러야 반영. new_date에 날짜를 주면 변경, '삭제'(또는 빈 문자열)면 납품일을 지운다(빈칸). 절대 '변경/삭제했다'고 단정하지 말 것(확인 대기).",
       {
         work: z.string().describe("작품명(한/일/중 무엇이든)"),
         episode: z.string().describe("회차 숫자"),
-        new_date: z.string().describe("새 납품일 yyyy-mm-dd"),
+        new_date: z.string().describe("새 납품일 yyyy-mm-dd. 납품일을 '지우기/삭제'면 '삭제' 또는 빈 문자열을 넣는다."),
         lang: z.enum(["zh-ja", "ko-ja"]).optional().describe("중일=zh-ja(기본), 한일=ko-ja"),
       },
       async ({ work, episode, new_date, lang }) => {
         try {
           const ctx = currentCtx;
+          const clearing = !new_date || /^(삭제|지움|지워|지우기|비우기|비움|없음|빈칸|clear|none|empty)$/i.test(String(new_date).trim());
+          const newValue = clearing ? "" : new_date;
+          const shownNew = clearing ? "(삭제·빈칸)" : new_date;
           const r = await resolveDeliveryCell({ work, episode, lang: lang ?? "zh-ja" });
           if (!r.found) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' ${episode}화를 납품 시트에서 못 찾음. 작품명/회차 확인 필요.` }) }] };
           const changeId = `edit_${++editSeq}`;
-          pendingEdits.set(changeId, { sheetId: r.sheetId, cellA1: r.cellA1, oldValue: r.currentDate, newValue: new_date, workName: r.workName, episode: r.episode, tab: r.tab, lang: r.lang, createdAt: Date.now() });
+          pendingEdits.set(changeId, { sheetId: r.sheetId, cellA1: r.cellA1, oldValue: r.currentDate, newValue, clearing, workName: r.workName, episode: r.episode, tab: r.tab, lang: r.lang, createdAt: Date.now() });
           if (ctx?.client && ctx?.channel) {
             await ctx.client.chat.postMessage({
               channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
-              text: `납품일 변경 확인: ${r.workName} ${r.episode}화 ${r.currentDate || "(빈칸)"} → ${new_date}`,
+              text: `납품일 ${clearing ? "삭제" : "변경"} 확인: ${r.workName} ${r.episode}화 ${r.currentDate || "(빈칸)"} → ${shownNew}`,
               blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `⚠️ *납품일 변경 확인*\n• 작품: *${r.workName}* ${r.episode}화 (${r.lang})\n• 셀: \`${r.cellA1}\`\n• *${r.currentDate || "(빈칸)"}*  →  *${new_date}*` } },
+                { type: "section", text: { type: "mrkdwn", text: `⚠️ *납품일 ${clearing ? "삭제" : "변경"} 확인*\n• 작품: *${r.workName}* ${r.episode}화 (${r.lang})\n• 셀: \`${r.cellA1}\`\n• *${r.currentDate || "(빈칸)"}*  →  *${shownNew}*` } },
                 { type: "actions", elements: [
                   { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 변경" }, value: changeId, action_id: "delivery_edit_confirm" },
                   { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: changeId, action_id: "delivery_edit_cancel" },
@@ -208,7 +211,7 @@ const apmTools = createSdkMcpServer({
               ],
             });
           }
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, workName: r.workName, episode: r.episode, from: r.currentDate, to: new_date, note: "확인 버튼을 보냈음. 사용자가 버튼을 눌러야 반영됨. '버튼을 눌러 확인해 주세요'라고만 안내하고, 변경 완료라고 말하지 말 것." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, action: clearing ? "삭제" : "변경", workName: r.workName, episode: r.episode, from: r.currentDate, to: shownNew, note: "확인 버튼을 보냈음. 사용자가 버튼을 눌러야 반영됨. '버튼을 눌러 확인해 주세요'라고만 안내하고, 변경/삭제 완료라고 말하지 말 것." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -713,8 +716,8 @@ app.action("delivery_edit_confirm", async ({ ack, body, client }) => {
       return reply(`⚠️ 그새 값이 '${cur}'로 바뀌어 있어 안전하게 취소했어요. 다시 확인하고 요청해줘.`);
     }
     await setCell(p.sheetId, p.cellA1, p.newValue);
-    appendFileSync("logs/edits.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, cell: p.cellA1, work: p.workName, episode: p.episode, from: p.oldValue, to: p.newValue }) + "\n");
-    await reply(`✅ 반영 완료 — ${p.workName} ${p.episode}화 납품일: ${p.oldValue || "(빈칸)"} → ${p.newValue}`);
+    appendFileSync("logs/edits.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, cell: p.cellA1, work: p.workName, episode: p.episode, from: p.oldValue, to: p.newValue, clearing: !!p.clearing }) + "\n");
+    await reply(`✅ ${p.clearing ? "삭제" : "반영"} 완료 — ${p.workName} ${p.episode}화 납품일: ${p.oldValue || "(빈칸)"} → ${p.newValue || "(빈칸·삭제됨)"}`);
   } catch (e) {
     await reply(`❌ 반영 실패: ${e?.message ?? e}\n(SA가 '${p.tab}' 시트의 *편집자*인지 확인 필요)`);
   }
