@@ -78,7 +78,7 @@ const DISPATCHER_PROMPT = [
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수).",
   "- TOTUS 링크 요청: 작품 '프로젝트/작업진행 페이지 링크' = get_project_url(작품) (작품 단위, 회차 불필요). 특정 회차·오퍼레이션의 '에디터 링크' = get_editor_url(작품, 회차, 오퍼레이션명) (상태 무관 최신 task 기준).",
-  "- 원본/원고/소스 'PSD·파일 다운로드' 요청 → get_source_files(작품, 회차). 돌려받은 **파일명 + 다운로드 링크만 그대로 안내**한다(봇이 파일을 직접 받거나 슬랙에 올리지 말 것 — 대용량이라 링크로만). 링크는 cf.totus.pro 서명 URL이라 클릭하면 바로 받힌다(로그인 불필요·일정 시간 후 만료).",
+  "- 원본/원고/소스 'PSD·파일 다운로드' 요청 → get_source_files(작품, 회차[, page]). 특정 페이지만(예 '48화 2페이지', '3,4페이지')이면 page 인자에 번호를 넣는다. 돌려받은 **파일명 + 다운로드 링크만 그대로 안내**한다(봇이 파일을 직접 받거나 슬랙에 올리지 말 것 — 대용량이라 링크로만). 링크는 cf.totus.pro 서명 URL이라 클릭하면 바로 받힌다(로그인 불필요·일정 시간 후 만료).",
   "- 그 외 운영 시트 → query_sheet (사용 가능한 뷰 목록·필드는 그 도구 설명에 들어있으니 거기 보고 고른다).",
   "query_sheet 효율 규칙(중요): 리스트/현황/기간 질문은 한 번의 호출로 서버측에서 좁혀 가져온다. filterField/filterOp/filterValue(예: 리테이크 미완료=filterField:done, filterOp:neq, filterValue:완료), dateField/dateFrom/dateTo(기간), distinct(중복 제거)를 적극 사용. work 없이 큰 시트를 통째로 가져오거나, 같은 호출을 반복하지 말 것. 한 번에 답이 되도록 필터를 설계해 호출 횟수를 최소화한다.",
   "- TOTUS(작품 진행상황·일정 지연/임박·작업자·번역텍스트·견적) → totus_* 도구. PIVO ID 있으면 totus_quotation으로 projectUuid부터 확보 → 그 uuid로 totus_schedule_summary(일정)·totus_jobs/totus_tasks(작업·상태). 작품명만 있으면 totus_find_project로 uuid. 진행/일정/작업자는 시트보다 TOTUS가 정확. 번역텍스트(totus_translation_text)는 양 많으니 필요한 Task에만.",
@@ -364,9 +364,9 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "get_source_files",
-      "작품·회차의 원본(소스) 파일 목록 + 직접 다운로드 링크를 준다. TOTUS 소스그룹(delivery-source-groups)에서 가져오며, 출판사 외부 드라이브가 아니라 cf.totus.pro 서명 URL이라 로그인 없이 바로 다운로드된다. '원본 파일 받고싶어/다운로드/원고 파일' 요청에 쓴다. (출판사 드라이브 링크는 별개 — get_work_info)",
-      { work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"), episode: z.string().describe("회차 숫자(콤마로 복수 가능: 1,2,3)") },
-      async ({ work, episode }) => {
+      "작품·회차의 원본(소스) 파일 목록 + 직접 다운로드 링크를 준다. TOTUS 소스그룹(delivery-source-groups)에서 가져오며, 출판사 외부 드라이브가 아니라 cf.totus.pro 서명 URL이라 로그인 없이 바로 다운로드된다. '원본 파일/다운로드/원고 파일' 요청에 쓴다. page를 주면 특정 페이지(파일명 끝 번호, 예 48-2.psd=2)만 거른다('2페이지만', '3,4페이지'). (출판사 드라이브 링크는 별개 — get_work_info)",
+      { work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"), episode: z.string().describe("회차 숫자(콤마로 복수 가능: 1,2,3)"), page: z.string().optional().describe("특정 페이지만(파일명 끝 번호). 콤마 복수 가능 '2' 또는 '3,4'. 생략 시 회차 전체 파일") },
+      async ({ work, episode, page }) => {
         try {
           const fp = await findProject(work);
           const proj = (fp?.data || [])[0];
@@ -375,8 +375,15 @@ const apmTools = createSdkMcpServer({
           const r = await deliverySourceGroups(proj.uuid, String(episode));
           const groups = r?.data || [];
           if (!groups.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, msg: `${episode}화 원본(소스) 파일을 못 찾음. 회차 표기 확인 필요.` }) }] };
-          const out = groups.flatMap((g) => (g.파일목록 || []).map((f) => ({ episode: g.에피소드, file: f.파일이름, ext: f.확장자, url: f.다운로드URL })));
-          return { content: [{ type: "text", text: capJson({ work: projName, episode, 파일수: out.length, files: out, note: "다운로드URL은 서명된 직접 링크(로그인 불필요, 일정 시간 후 만료). 사용자에게 파일명과 링크를 그대로 안내." }) }] };
+          const pageOf = (name) => { const m = String(name).replace(/\.[^.]+$/, "").match(/\d+/g); return m ? parseInt(m[m.length - 1], 10) : null; };
+          let out = groups.flatMap((g) => (g.파일목록 || []).map((f) => ({ episode: g.에피소드, page: pageOf(f.파일이름), file: f.파일이름, ext: f.확장자, url: f.다운로드URL })));
+          const all = out;
+          if (page != null && String(page).trim() !== "") {
+            const want = String(page).split(/[,\s]+/).map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
+            out = all.filter((f) => want.includes(f.page));
+            if (!out.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, episode, msg: `${episode}화에서 페이지 ${page} 파일을 못 찾음.`, 전체파일: all.map((f) => `${f.file}(p${f.page})`) }) }] };
+          }
+          return { content: [{ type: "text", text: capJson({ work: projName, episode, page: page || "전체", 파일수: out.length, files: out, note: "다운로드URL은 서명된 직접 링크(로그인 불필요, 일정 시간 후 만료). 사용자에게 파일명과 링크를 그대로 안내." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
