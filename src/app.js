@@ -6,8 +6,8 @@ import { z } from "zod";
 import { lookupDelivery } from "./delivery.js";
 import { lookupWork } from "./works.js";
 import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
-import { resolveDeliveryCell } from "./delivery-edit.js";
-import { setCell, getCell } from "./sheets-write.js";
+import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
+import { setCell, getCell, setCells, getCells } from "./sheets-write.js";
 import { appendFileSync } from "node:fs";
 import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, deliverySourceGroups } from "./totus.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
@@ -39,6 +39,24 @@ let currentUser = null;   // 지금 처리 중인 턴의 요청자 Slack ID (재
 const ownerOnly = () => (currentUser && currentUser !== OWNER_ID)
   ? { content: [{ type: "text", text: JSON.stringify({ denied: true, error: "이 기능(납품예정일·시트 변경/삭제, 슬랙 발송, 리마인더)은 재상 님만 쓸 수 있어요. 조회·검수·링크·원본파일은 도와드릴 수 있어요." }) }] }
   : null;
+
+// "5" / "1-20" / "1,2,3" / "1-5,9,12-14" → 정렬·중복제거된 회차 배열. 최대 100건.
+function parseEpisodeSpec(spec) {
+  const out = new Set();
+  for (const part of String(spec).split(",").map((s) => s.trim()).filter(Boolean)) {
+    const m = part.match(/^(\d+)\s*[-~]\s*(\d+)$/);
+    if (m) { let a = +m[1], b = +m[2]; if (a > b) [a, b] = [b, a]; for (let i = a; i <= b && out.size < 100; i++) out.add(i); }
+    else { const n = part.match(/\d+/); if (n) out.add(+n[0]); }
+  }
+  return [...out].sort((a, b) => a - b);
+}
+// [1,2,3,5,6,20] → "1~3, 5~6, 20" (메시지 압축용)
+function compactRanges(nums) {
+  const s = [...nums].sort((a, b) => a - b);
+  const parts = []; let i = 0;
+  while (i < s.length) { let j = i; while (j + 1 < s.length && s[j + 1] === s[j] + 1) j++; parts.push(i === j ? `${s[i]}` : `${s[i]}~${s[j]}`); i = j + 1; }
+  return parts.join(", ");
+}
 
 // 발송 시 표시명/아이콘 강제용 — BOT_DISPLAY_NAME 없으면 빈 객체(무변경). chat:write.customize 승인 후 env만 켜면 활성.
 const SENDER = BOT_DISPLAY_NAME
@@ -85,6 +103,7 @@ const DISPATCHER_PROMPT = [
   "★★ 절대 규칙(최우선): 작품명·고유명사는 도구가 돌려준 셀 값(원문 문자열)을 **글자 하나도 바꾸지 않고 그대로 복사해** 출력한다. 음역·번역·한자↔한글 변환·가나 변환·표기 정리 일체 금지 (예: '最弱'→'최약' 금지, '覇王'→'패왕' 금지). 어느 언어(중/한/일) 제목을 골라올지 판단이 틀릴 수는 있어도, 일단 가져온 제목 문자열은 무조건 셀 값 그대로 출력한다. 한국어·일본어 제목이 둘 다 있으면 섞지 말고 각각 원문대로.",
   "- 납품일/일정 → get_delivery_date (중일 기본, 한일은 ko-ja)",
   "- 납품예정일 '변경' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영) / ②내부 납품관리시트 G열만 = propose_delivery_edit. 둘 다 게이트형(버튼 확인). 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고, 절대 '변경했다'고 단정하지 말 것(버튼 눌러야 반영).",
+  "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
   "★납품예정일 '조회' 구분(중요): ①'TOTUS/실제 시스템 납품예정일'(JobProcess deliveryDate) = totus_delivery_date(work, episode). ②'내부 납품시트' 납품일 = get_delivery_date. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — 그걸 '납품예정일'이라 단정 금지. '실제 TOTUS 납품예정일'을 물으면 totus_delivery_date로 정확히 답해라.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수).",
@@ -199,11 +218,11 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "propose_delivery_edit",
-      "납품 시트 납품일(G열) 변경/삭제를 '제안'한다. 즉시 바꾸지 않고 대상 셀을 찾아 프리뷰(기존→새값)를 확인 버튼으로 보낸다. 사용자가 버튼을 눌러야 반영. new_date에 날짜를 주면 변경, '삭제'(또는 빈 문자열)면 납품일을 지운다(빈칸). 절대 '변경/삭제했다'고 단정하지 말 것(확인 대기).",
+      "납품 시트 납품일(G열) 변경/삭제를 '제안'한다. 즉시 바꾸지 않고 대상 셀들을 찾아 프리뷰(기존→새값)를 확인 버튼으로 보낸다. 사용자가 버튼을 눌러야 반영. new_date에 날짜를 주면 변경, '삭제'(또는 빈 문자열)면 납품일을 지운다(빈칸). episode는 한 회차('5')뿐 아니라 범위·여러 회차('1-20','1,3,5','1-5,9')도 받으며, 여러 회차면 한 번에 같은 날짜로 일괄 변경(확인 버튼 1개). 절대 '변경/삭제했다'고 단정하지 말 것(확인 대기).",
       {
         work: z.string().describe("작품명(한/일/중 무엇이든)"),
-        episode: z.string().describe("회차 숫자"),
-        new_date: z.string().describe("새 납품일 yyyy-mm-dd. 납품일을 '지우기/삭제'면 '삭제' 또는 빈 문자열을 넣는다."),
+        episode: z.string().describe("회차. 단일('5'), 범위('1-20'), 목록('1,3,5'), 혼합('1-5,9') 모두 가능. 사용자가 '1~20화'라 하면 '1-20'으로 넘겨라."),
+        new_date: z.string().describe("새 납품일 yyyy-mm-dd(여러 회차면 전부 이 날짜로). 납품일을 '지우기/삭제'면 '삭제' 또는 빈 문자열."),
         lang: z.enum(["zh-ja", "ko-ja"]).optional().describe("중일=zh-ja(기본), 한일=ko-ja"),
       },
       async ({ work, episode, new_date, lang }) => {
@@ -213,24 +232,31 @@ const apmTools = createSdkMcpServer({
           const clearing = !new_date || /^(삭제|지움|지워|지우기|비우기|비움|없음|빈칸|clear|none|empty)$/i.test(String(new_date).trim());
           const newValue = clearing ? "" : new_date;
           const shownNew = clearing ? "(삭제·빈칸)" : new_date;
-          const r = await resolveDeliveryCell({ work, episode, lang: lang ?? "zh-ja" });
-          if (!r.found) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' ${episode}화를 납품 시트에서 못 찾음. 작품명/회차 확인 필요.` }) }] };
+          const eps = parseEpisodeSpec(episode);
+          if (!eps.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `회차 '${episode}'를 못 읽음. 예: 5 / 1-20 / 1,3,5` }) }] };
+          const r = await resolveDeliveryCells({ work, episodes: eps, lang: lang ?? "zh-ja" });
+          if (!r.found.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' ${compactRanges(eps)}화를 납품 시트에서 못 찾음. 작품명/회차 확인 필요.` }) }] };
           const changeId = `edit_${++editSeq}`;
-          pendingEdits.set(changeId, { sheetId: r.sheetId, cellA1: r.cellA1, oldValue: r.currentDate, newValue, clearing, workName: r.workName, episode: r.episode, tab: r.tab, lang: r.lang, createdAt: Date.now() });
+          pendingEdits.set(changeId, { sheetId: r.sheetId, tab: r.tab, lang: r.lang, workName: r.workName, newValue, clearing, shownNew, items: r.found.map((f) => ({ cellA1: f.cellA1, oldValue: f.currentDate, episode: f.episode })), createdAt: Date.now() });
+          const verb = clearing ? "삭제" : "변경";
+          const foundEps = r.found.map((f) => f.episode);
+          const lines = r.found.slice(0, 12).map((f) => `• ${f.episode}화: ${f.currentDate || "(빈칸)"} → ${shownNew}`).join("\n");
+          const more = r.found.length > 12 ? `\n…외 ${r.found.length - 12}건` : "";
+          const missLine = r.missing.length ? `\n⚠️ 못 찾음(제외): ${compactRanges(r.missing)}화` : "";
           if (ctx?.client && ctx?.channel) {
             await ctx.client.chat.postMessage({
               channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
-              text: `납품일 ${clearing ? "삭제" : "변경"} 확인: ${r.workName} ${r.episode}화 ${r.currentDate || "(빈칸)"} → ${shownNew}`,
+              text: `납품일 ${verb} 확인: ${r.workName} ${compactRanges(foundEps)}화 (${r.found.length}건) → ${shownNew}`,
               blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `⚠️ *납품일 ${clearing ? "삭제" : "변경"} 확인*\n• 작품: *${r.workName}* ${r.episode}화 (${r.lang})\n• 셀: \`${r.cellA1}\`\n• *${r.currentDate || "(빈칸)"}*  →  *${shownNew}*` } },
+                { type: "section", text: { type: "mrkdwn", text: `⚠️ *납품일 ${verb} 확인* — *${r.workName}* (${r.lang})\n${compactRanges(foundEps)}화 *${r.found.length}건*을 *${shownNew}* (으)로 일괄 ${verb}\n${lines}${more}${missLine}` } },
                 { type: "actions", elements: [
-                  { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 변경" }, value: changeId, action_id: "delivery_edit_confirm" },
+                  { type: "button", style: "primary", text: { type: "plain_text", text: `✅ ${r.found.length}건 ${verb}` }, value: changeId, action_id: "delivery_edit_confirm" },
                   { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: changeId, action_id: "delivery_edit_cancel" },
                 ] },
               ],
             });
           }
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, action: clearing ? "삭제" : "변경", workName: r.workName, episode: r.episode, from: r.currentDate, to: shownNew, note: "확인 버튼을 보냈음. 사용자가 버튼을 눌러야 반영됨. '버튼을 눌러 확인해 주세요'라고만 안내하고, 변경/삭제 완료라고 말하지 말 것." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, action: verb, workName: r.workName, episodes: foundEps, count: r.found.length, missing: r.missing, to: shownNew, note: "확인 버튼(1개)을 보냈음. 사용자가 버튼을 눌러야 반영됨. '버튼을 눌러 확인해 주세요'라고만 안내하고, 변경/삭제 완료라고 말하지 말 것. 못 찾은 회차가 있으면 그 회차 번호를 사용자에게 알려라." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -239,45 +265,55 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "propose_totus_delivery_edit",
-      "TOTUS 시스템(어드민/카카오픽코마)의 실제 납품예정일(deliveryDate)을 '변경 제안'한다. 내부 납품관리시트 G열(propose_delivery_edit)과는 다른, 진짜 TOTUS 납품예정일이며 변경 시 PIVO에도 자동 반영된다. 즉시 안 바꾸고 작품·회차로 jobProcess를 찾아 확인 버튼을 보낸다 — 사용자가 버튼을 눌러야 실제 변경. 절대 '변경했다'고 단정 말 것(확인 대기).",
+      "TOTUS 시스템(어드민/카카오픽코마)의 실제 납품예정일(deliveryDate)을 '변경 제안'한다. 내부 납품관리시트 G열(propose_delivery_edit)과는 다른, 진짜 TOTUS 납품예정일이며 변경 시 PIVO에도 자동 반영된다. 즉시 안 바꾸고 작품·회차로 jobProcess를 찾아 확인 버튼을 보낸다 — 사용자가 버튼을 눌러야 실제 변경. episode는 한 회차('5')뿐 아니라 범위·여러 회차('1-20','1,3,5')도 받으며 여러 회차면 같은 날짜로 일괄 변경(확인 버튼 1개). 절대 '변경했다'고 단정 말 것(확인 대기).",
       {
         work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
-        episode: z.string().describe("회차 숫자(작업단위번호)"),
-        new_date: z.string().describe("새 납품예정일 YYYY-MM-DD (KST 23:59로 자동 변환됨)"),
+        episode: z.string().describe("회차(작업단위번호). 단일('5'), 범위('1-20'), 목록('1,3,5') 가능. '1~20화'면 '1-20'으로."),
+        new_date: z.string().describe("새 납품예정일 YYYY-MM-DD (KST 23:59로 자동 변환, 여러 회차면 전부 이 날짜)"),
         reason: z.enum(["RETAKE", "CUSTOMER_REQUEST", "INTERNAL_REQUEST", "ETC"]).optional().describe("변경 사유(기본 CUSTOMER_REQUEST)"),
       },
       async ({ work, episode, new_date, reason }) => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
+          const eps = parseEpisodeSpec(episode);
+          if (!eps.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `회차 '${episode}'를 못 읽음. 예: 5 / 1-20 / 1,3,5` }) }] };
           const fp = await findProject(work);
           const proj = (fp?.data || [])[0];
           if (!proj?.uuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음. 작품명 표기 확인 필요.` }) }] };
           const jp = await jobProcesses(proj.uuid);
-          const items = (jp?.data || []).flatMap((o) => o.JOB목록 || []);
-          const ep = Number(episode);
-          const matched = items.filter((x) => Number(x.작업단위번호) === ep);
-          if (!matched.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `${proj.프로젝트 || work}에서 ${episode}화(작업단위번호) JobProcess를 못 찾음. 회차 확인 필요.` }) }] };
-          if (matched.length > 1) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: `${episode}화에 JobProcess가 ${matched.length}개(주문/언어 복수). 어느 건지 사용자에게 되물어라.`, candidates: matched.map((x) => ({ jobProcessUuid: x.jobProcessUuid, 태스크상태: x.태스크상태 })) }) }] };
-          const jpUuid = matched[0].jobProcessUuid;
-          const current = matched[0].납품예정일 ? String(matched[0].납품예정일).slice(0, 10) : null;   // ISO(UTC14:59=KST23:59)→KST 날짜
+          const all = (jp?.data || []).flatMap((o) => o.JOB목록 || []);
           const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
+          const found = [], missing = [], ambiguous = [];
+          for (const ep of eps) {
+            const m = all.filter((x) => Number(x.작업단위번호) === ep);
+            if (!m.length) missing.push(ep);
+            else if (m.length > 1) ambiguous.push(ep);
+            else found.push({ jobProcessUuid: m[0].jobProcessUuid, episode: ep, currentDate: m[0].납품예정일 ? String(m[0].납품예정일).slice(0, 10) : null });
+          }
+          if (!found.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `${projName}에서 변경 가능한 회차를 못 찾음(못 찾음 ${compactRanges(missing) || "-"}, 복수후보 ${compactRanges(ambiguous) || "-"}). 회차 확인 필요.`, missing, ambiguous }) }] };
           const changeId = `tdate_${++totusDateSeq}`;
-          pendingTotusDates.set(changeId, { jobProcessUuid: jpUuid, deliveryDate: new_date, reason: reason || "CUSTOMER_REQUEST", work: projName, episode, currentDate: current, createdAt: Date.now() });
+          pendingTotusDates.set(changeId, { items: found, deliveryDate: new_date, reason: reason || "CUSTOMER_REQUEST", work: projName, createdAt: Date.now() });
+          const foundEps = found.map((f) => f.episode);
+          const lines = found.slice(0, 12).map((f) => `• ${f.episode}화: ${f.currentDate || "미설정"} → ${new_date}`).join("\n");
+          const more = found.length > 12 ? `\n…외 ${found.length - 12}건` : "";
+          let warn = "";
+          if (missing.length) warn += `\n⚠️ 못 찾음(제외): ${compactRanges(missing)}화`;
+          if (ambiguous.length) warn += `\n⚠️ 후보 복수라 제외: ${compactRanges(ambiguous)}화 (개별 확인 필요)`;
           if (ctx?.client && ctx?.channel) {
             await ctx.client.chat.postMessage({
               channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
-              text: `TOTUS 납품예정일 변경 확인: ${projName} ${episode}화 → ${new_date}`,
+              text: `TOTUS 납품예정일 변경 확인: ${projName} ${compactRanges(foundEps)}화 (${found.length}건) → ${new_date}`,
               blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `⚠️ *TOTUS 납품예정일 변경 확인*\n• 작품: *${projName}* ${episode}화\n• 납품예정일: ${current || "미설정"} → *${new_date}*` } },
+                { type: "section", text: { type: "mrkdwn", text: `⚠️ *TOTUS 납품예정일 변경 확인* — *${projName}*\n${compactRanges(foundEps)}화 *${found.length}건*을 *${new_date}* (으)로 일괄 변경 (PIVO 자동 반영)\n${lines}${more}${warn}` } },
                 { type: "actions", elements: [
-                  { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 변경" }, value: changeId, action_id: "totus_date_confirm" },
+                  { type: "button", style: "primary", text: { type: "plain_text", text: `✅ ${found.length}건 변경` }, value: changeId, action_id: "totus_date_confirm" },
                   { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: changeId, action_id: "totus_date_cancel" },
                 ] },
               ],
             });
           }
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: projName, episode, from: current, to: new_date, note: "확인 버튼을 보냈음. 사용자가 버튼을 눌러야 실제 변경됨. '버튼을 눌러 확인해 주세요'라고만 안내하고, 변경 완료라고 말하지 말 것." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: projName, episodes: foundEps, count: found.length, missing, ambiguous, to: new_date, note: "확인 버튼(1개)을 보냈음. 사용자가 버튼을 눌러야 실제 변경됨. '버튼을 눌러 확인해 주세요'라고만 안내. 못 찾거나 후보 복수인 회차가 있으면 그 번호를 사용자에게 알려라." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -808,16 +844,27 @@ app.action("delivery_edit_confirm", async ({ ack, body, client }) => {
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 변경이에요. 다시 요청해줘.");
   pendingEdits.delete(changeId);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
+  const verb = p.clearing ? "삭제" : "반영";
   try {
-    const cur = await getCell(p.sheetId, p.cellA1);           // staleness 재확인
-    if (String(cur).trim() !== String(p.oldValue).trim()) {
-      return reply(`⚠️ 그새 값이 '${cur}'로 바뀌어 있어 안전하게 취소했어요. 다시 확인하고 요청해줘.`);
+    const cells = p.items.map((it) => it.cellA1);
+    const cur = await getCells(p.sheetId, cells);             // staleness 일괄 재확인
+    const apply = [], stale = [];
+    p.items.forEach((it, i) => {
+      if (String(cur[i] ?? "").trim() !== String(it.oldValue ?? "").trim()) stale.push({ ...it, now: cur[i] });
+      else apply.push(it);
+    });
+    if (apply.length) {
+      await setCells(p.sheetId, apply.map((it) => ({ a1: it.cellA1, value: p.newValue })));
+      for (const it of apply) appendFileSync("logs/edits.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, cell: it.cellA1, work: p.workName, episode: it.episode, from: it.oldValue, to: p.newValue, clearing: !!p.clearing }) + "\n");
     }
-    await setCell(p.sheetId, p.cellA1, p.newValue);
-    appendFileSync("logs/edits.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, cell: p.cellA1, work: p.workName, episode: p.episode, from: p.oldValue, to: p.newValue, clearing: !!p.clearing }) + "\n");
-    await reply(`✅ ${p.clearing ? "삭제" : "반영"} 완료 — ${p.workName} ${p.episode}화 납품일: ${p.oldValue || "(빈칸)"} → ${p.newValue || "(빈칸·삭제됨)"}`);
+    const okEps = apply.map((it) => it.episode);
+    let msg = apply.length
+      ? `✅ ${verb} 완료 — ${p.workName} ${compactRanges(okEps)}화 (${apply.length}건) 납품일 → ${p.newValue || "(빈칸·삭제됨)"}`
+      : `⚠️ 반영된 게 없어요.`;
+    if (stale.length) msg += `\n⚠️ 그새 값이 바뀌어 건너뜀: ${stale.map((s) => `${s.episode}화('${s.now}')`).join(", ")} — 다시 확인하고 요청해줘.`;
+    await reply(msg);
   } catch (e) {
-    await reply(`❌ 반영 실패: ${e?.message ?? e}\n(SA가 '${p.tab}' 시트의 *편집자*인지 확인 필요)`);
+    await reply(`❌ ${verb} 실패: ${e?.message ?? e}\n(SA가 '${p.tab}' 시트의 *편집자*인지 확인 필요)`);
   }
 });
 
@@ -839,11 +886,15 @@ app.action("totus_date_confirm", async ({ ack, body, client }) => {
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 변경이에요. 다시 요청해줘.");
   pendingTotusDates.delete(changeId);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
+  const eps = p.items.map((it) => it.episode);
   try {
-    const res = await setDeliveryDate([{ jobProcessUuid: p.jobProcessUuid, deliveryDate: p.deliveryDate, modificationReason: p.reason }], false);
-    appendFileSync("logs/totus-dates.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, jobProcessUuid: p.jobProcessUuid, work: p.work, episode: p.episode, to: p.deliveryDate, reason: p.reason, ok: res?.success, resp: res?.data }) + "\n");
-    if (res?.success) await reply(`✅ TOTUS 납품예정일 변경 완료 — ${p.work} ${p.episode}화 → ${p.deliveryDate} (PIVO 자동 반영)`);
-    else await reply(`❌ 변경 실패 — 실패 ${res?.data?.실패 ?? "?"}건 (failed: ${JSON.stringify(res?.data?.failedJobProcessUuids || [])}). 회차/uuid 확인 필요.`);
+    const res = await setDeliveryDate(p.items.map((it) => ({ jobProcessUuid: it.jobProcessUuid, deliveryDate: p.deliveryDate, modificationReason: p.reason })), false);
+    appendFileSync("logs/totus-dates.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, work: p.work, episodes: eps, jobProcessUuids: p.items.map((it) => it.jobProcessUuid), to: p.deliveryDate, reason: p.reason, ok: res?.success, resp: res?.data }) + "\n");
+    if (res?.success) {
+      const failed = res?.data?.failedJobProcessUuids || [];
+      if (failed.length) await reply(`⚠️ 일부만 변경됨 — ${p.work}: 성공 ${res?.data?.성공 ?? (p.items.length - failed.length)}건 / 실패 ${failed.length}건. 실패 건 회차 확인 필요.`);
+      else await reply(`✅ TOTUS 납품예정일 변경 완료 — ${p.work} ${compactRanges(eps)}화 (${p.items.length}건) → ${p.deliveryDate} (PIVO 자동 반영)`);
+    } else await reply(`❌ 변경 실패 — 실패 ${res?.data?.실패 ?? "?"}건 (failed: ${JSON.stringify(res?.data?.failedJobProcessUuids || [])}). 회차/uuid 확인 필요.`);
   } catch (e) {
     await reply(`❌ 변경 실패: ${e?.message ?? e}`);
   }

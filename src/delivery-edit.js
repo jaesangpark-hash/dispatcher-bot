@@ -36,3 +36,20 @@ export async function resolveDeliveryCell({ work, episode, lang = "zh-ja" }) {
     currentDate: row.r[6] ?? "", resolvedVia: via,
   };
 }
+
+// 여러 회차를 한 번의 시트 읽기로 일괄 해석(일괄 변경용). episodes=정수배열.
+export async function resolveDeliveryCells({ work, episodes, lang = "zh-ja" }) {
+  const tab = TABS[lang] || TABS["zh-ja"];
+  const rows = await readRange(SHEET_ID, `${tab}!A:G`);
+  let needles = [work], via = null;
+  const al = await resolveTitleAliases(work).catch(() => null);
+  if (al && al.aliases.length) { needles = [work, ...al.aliases]; via = al.koTitle || al.aliases[0]; }
+  const found = [], missing = [];
+  for (const ep of episodes) {
+    const row = findRow(rows, needles, ep);
+    if (!row) { missing.push(ep); continue; }
+    const rowNum = row.idx + 1;
+    found.push({ cellA1: `${tab}!G${rowNum}`, currentDate: row.r[6] ?? "", episode: parseInt(row.r[4]), workName: row.r[1] });
+  }
+  return { sheetId: SHEET_ID, tab, lang, found, missing, resolvedVia: found.length ? via : null, workName: found[0]?.workName };
+}

@@ -47,3 +47,26 @@ export async function getCell(sheetId, a1) {
   if (j.error) throw new Error(`읽기 실패: ${j.error.message}`);
   return j.values?.[0]?.[0] ?? "";
 }
+
+// 여러 셀 일괄 읽기(staleness 재확인). a1List 순서대로 값 배열 반환(빈 셀="").
+export async function getCells(sheetId, a1List) {
+  if (!a1List.length) return [];
+  const token = await getWriteToken();
+  const qs = a1List.map((a) => `ranges=${encodeURIComponent(a)}`).join("&");
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchGet?${qs}`;
+  const j = await (await fetch(url, { headers: { Authorization: `Bearer ${token}` } })).json();
+  if (j.error) throw new Error(`읽기 실패: ${j.error.message}`);
+  return (j.valueRanges || []).map((vr) => vr.values?.[0]?.[0] ?? "");
+}
+
+// 여러 셀 일괄 쓰기. updates = [{ a1, value }]. 1회 HTTP(values:batchUpdate).
+export async function setCells(sheetId, updates) {
+  if (!updates.length) return { totalUpdatedCells: 0 };
+  const token = await getWriteToken();
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`;
+  const body = { valueInputOption: "USER_ENTERED", data: updates.map((u) => ({ range: u.a1, values: [[u.value]] })) };
+  const r = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (j.error) throw new Error(`쓰기 실패: ${j.error.message}`);
+  return j;
+}
