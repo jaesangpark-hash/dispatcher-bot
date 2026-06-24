@@ -530,13 +530,14 @@ const apmTools = createSdkMcpServer({
           if (fb.missing.apm) warn.push(`APM(${fb.apmName || "?"}) Slack ID 미등록 — 멘션이 텍스트로 나갑니다`);
           if (fb.missing.translator) warn.push("번역가 코멘트 없음");
           if (fb.missing.lg) warn.push("LG 코멘트 없음");
+          if (fb.missing.qa) warn.push("정성품질검수자(2번째 체커) 없음");
           if (ctx?.client && ctx?.channel) {
             await ctx.client.chat.postMessage({
               channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
               text: `피드백 공유 확인: ${fb.koTitle} ${fb.episode}화 → <#${chan}>`,
               blocks: [
                 { type: "section", text: { type: "mrkdwn", text: `📣 *피드백 공유 확인* — ${fb.koTitle} ${fb.episode || fb.batchNote}화 (배치 ${fb.batchDate})\n• 받는 곳: <#${chan}>${warn.length ? `\n• ⚠️ ${warn.join(" / ")}` : ""}` } },
-                { type: "section", text: { type: "mrkdwn", text: "```\n" + fb.text + "\n```" } },
+                { type: "section", text: { type: "mrkdwn", text: fb.previewText } },
                 { type: "actions", elements: [
                   { type: "button", style: "primary", text: { type: "plain_text", text: "📣 발송" }, value: fbId, action_id: "feedback_confirm" },
                   { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: fbId, action_id: "feedback_cancel" },

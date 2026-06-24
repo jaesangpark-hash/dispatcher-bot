@@ -67,36 +67,27 @@ export async function buildFeedback({ work, episode }) {
   const qaId = qaRow ? trim(qaRow.r[C.workerId]) : "";
   const qaName = qaRow ? (QA_KO[qaId] || trim(qaRow.r[C.qaName]) || (qaId ? `ID:${qaId}` : "")) : "";
 
-  // ── 메시지 조립 (인용기호 없이 작성 그대로) ──
-  const apmMention = apmId ? `<@${apmId}>` : `@${w.apm || "?"}`;
-  const lines = [];
-  lines.push(`${apmMention} CC <@${OWNER_ID}>`);
-  lines.push(`<${w.koTitle}> ${epStr || batchNote || ""}화 고객 번역 검수 완료되었습니다.`);
-  lines.push("추가 제출은 불필요합니다.");
-  lines.push("");
-  lines.push(`[총평]${trim(sochong.r[C.memo])}`);
+  // ── 메시지 조립: 섹션별 [헤더] + 코드블록(코멘트 + 빈줄 + 등급) ──
+  // 회색 박스 = 코드블록(```). 헤더는 박스 밖 일반 텍스트. 멘션·제목은 박스 밖(렌더링).
   const rowsToMark = [sochong.sheetRow];
-  if (transRow) {
-    lines.push("");
-    lines.push(`${trim(transRow.r[C.grade])}[번역가] ${trim(transRow.r[C.translator])} ${trim(transRow.r[C.memo])}`);
-    rowsToMark.push(transRow.sheetRow);
-  }
-  if (lgRow) {
-    lines.push("");
-    lines.push(`${trim(lgRow.r[C.grade])}[LG] ${trim(lgRow.r[C.lg])} ${trim(lgRow.r[C.memo])}`);
-    rowsToMark.push(lgRow.sheetRow);
-  }
-  if (qaRow && qaName && qaRow !== lgRow) {     // 정성품질검수자 코멘트(2번째 체커). 발송 시 한글 이름으로.
-    lines.push("");
-    lines.push(`${trim(qaRow.r[C.grade])}[${qaName}님] ${trim(qaRow.r[C.memo])}`);
-    rowsToMark.push(qaRow.sheetRow);
-  }
-  lines.push("");
-  lines.push(trim(sochong.r[C.grade]));         // 맨 끝 = 총평 등급
+  const blk = (header, comment, grade) => `${header}\n\`\`\`\n${trim(comment)}\n\n${trim(grade)}\n\`\`\``;
+  const sections = [blk("[총평]", sochong.r[C.memo], sochong.r[C.grade])];
+  if (transRow) { sections.push(blk(`[번역가] ${trim(transRow.r[C.translator])}`, transRow.r[C.memo], transRow.r[C.grade])); rowsToMark.push(transRow.sheetRow); }
+  if (lgRow) { sections.push(blk(`[LG] ${trim(lgRow.r[C.lg])}`, lgRow.r[C.memo], lgRow.r[C.grade])); rowsToMark.push(lgRow.sheetRow); }
+  if (qaRow && qaName && qaRow !== lgRow) { sections.push(blk(`[${qaName}님]`, qaRow.r[C.memo], qaRow.r[C.grade])); rowsToMark.push(qaRow.sheetRow); }
+  // 제목의 <작품>은 &lt;&gt;로 이스케이프(슬랙이 <...>를 링크로 오해하지 않게)
+  const titleBlock = [
+    `&lt;${w.koTitle}&gt; ${epStr || batchNote || ""}화 고객 번역 검수 완료되었습니다.`,
+    "추가 제출은 불필요합니다.",
+    "",
+    sections.join("\n"),
+  ].join("\n");
+  const text = `${apmId ? `<@${apmId}>` : `@${w.apm || "?"}`} CC <@${OWNER_ID}>\n${titleBlock}`;          // 실제 발송용(멘션)
+  const previewText = `@${w.apm || "?"} CC @박재상\n${titleBlock}`;                                         // 미리보기용(멘션 핑 방지)
 
   return {
     found: true,
-    text: lines.join("\n"),
+    text, previewText,
     apmId, apmName: w.apm, koTitle: w.koTitle, pivoId: pivo,
     episode: epStr, batchNote, batchDate: trim(sochong.r[C.date]),
     rowsToMark,                                  // N열(피드백 공유) TRUE 표시 대상 시트 행
