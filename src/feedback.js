@@ -7,12 +7,15 @@ import { lookupWork } from "./works.js";
 const KP_SHEET = "1jd9lOvHwCXqsSYE9vQbSqcbxO9B9sryD5_dWHJhlm4U";
 const WORK_LOG = "作業記録(中日)_2026";
 const HEADER_ROW = 4;                       // 데이터는 A5부터. readRange("A4:N")의 [0]=헤더(row4), [i]=row(4+i)
-const C = { date: 0, workId: 1, workName: 2, division: 4, epNote: 5, grade: 6, memo: 7, translator: 9, lg: 10, shared: 13 };
+const C = { date: 0, workId: 1, workName: 2, division: 4, epNote: 5, grade: 6, memo: 7, translator: 9, lg: 10, qaName: 11, shared: 13, workerId: 14 };
 const DIV = { sochong: "翻訳ck(総評)", trans: "翻訳ck(翻訳者)", checker: "翻訳ck(チェッカー)" };
 
 // APM 이름 → Slack ID. 새 APM은 여기 추가.
 const APM_SLACK = { "서주원": "U07E0QPL8MV", "정태영": "U05CE8HFA6B" };
 const OWNER_ID = "U04463JR4HH";             // 박재상 (CC 고정)
+// 정성품질검수자(=배치의 2번째 翻訳ck(チェッカー)) 作業者ID(O열) → 한글 이름. 새 검수자는 여기 추가.
+// 시트 L열은 로마자라, 발송 메시지에서만 이 한글 표기를 쓴다(매핑 없으면 L열 값으로 폴백).
+const QA_KO = { "215635": "바바 아야코", "26223": "우메자키 에이코", "9322": "가츠라 이치로", "38203": "와타나베", "22716": "덴 유카", "20536": "모리시타 토모미", "31680": "타무라 에미" };
 
 const trim = (s) => String(s ?? "").trim();
 // "2026/6/22" / "2026-06-22" → 비교 가능한 정수(yyyymmdd). 못 읽으면 0.
@@ -27,7 +30,7 @@ export async function buildFeedback({ work, episode }) {
   if (!w.found) return w.ambiguous ? { found: false, ambiguous: true, candidates: w.candidates } : { found: false, query: work };
   const apmId = w.apm ? APM_SLACK[trim(w.apm)] : null;
 
-  const raw = await readRange(KP_SHEET, `${WORK_LOG}!A${HEADER_ROW}:N2000`);
+  const raw = await readRange(KP_SHEET, `${WORK_LOG}!A${HEADER_ROW}:O2000`);
   const rows = raw.slice(1).map((r, i) => ({ r, sheetRow: HEADER_ROW + 1 + i }));   // sheetRow = 5,6,7...
   const pivo = trim(w.pivoId);
   let mine = rows.filter((x) => trim(x.r[C.workId]) === pivo && pivo);
@@ -58,6 +61,11 @@ export async function buildFeedback({ work, episode }) {
   const transRow = latest(sameBatch(byDiv(DIV.trans)).filter((x) => trim(x.r[C.translator])));
   // 3) LG = 翻訳ck(チェッカー) 중 이름(K) 있는 행
   const lgRow = latest(sameBatch(byDiv(DIV.checker)).filter((x) => trim(x.r[C.lg])));
+  // 4) 정성품질검수자 = 배치의 2번째 翻訳ck(チェッカー)(시트 순서). 이름은 한글(QA_KO)>L열 순.
+  const checkersBatch = sameBatch(byDiv(DIV.checker));
+  const qaRow = checkersBatch[1] || null;
+  const qaId = qaRow ? trim(qaRow.r[C.workerId]) : "";
+  const qaName = qaRow ? (QA_KO[qaId] || trim(qaRow.r[C.qaName]) || (qaId ? `ID:${qaId}` : "")) : "";
 
   // ── 메시지 조립 (인용기호 없이 작성 그대로) ──
   const apmMention = apmId ? `<@${apmId}>` : `@${w.apm || "?"}`;
@@ -78,6 +86,11 @@ export async function buildFeedback({ work, episode }) {
     lines.push(`${trim(lgRow.r[C.grade])}[LG] ${trim(lgRow.r[C.lg])} ${trim(lgRow.r[C.memo])}`);
     rowsToMark.push(lgRow.sheetRow);
   }
+  if (qaRow && qaName && qaRow !== lgRow) {     // 정성품질검수자 코멘트(2번째 체커). 발송 시 한글 이름으로.
+    lines.push("");
+    lines.push(`${trim(qaRow.r[C.grade])}[${qaName}님] ${trim(qaRow.r[C.memo])}`);
+    rowsToMark.push(qaRow.sheetRow);
+  }
   lines.push("");
   lines.push(trim(sochong.r[C.grade]));         // 맨 끝 = 총평 등급
 
@@ -88,7 +101,8 @@ export async function buildFeedback({ work, episode }) {
     episode: epStr, batchNote, batchDate: trim(sochong.r[C.date]),
     rowsToMark,                                  // N열(피드백 공유) TRUE 표시 대상 시트 행
     markRange: (row) => `${WORK_LOG}!N${row}`,
-    missing: { translator: !transRow, lg: !lgRow, apm: !apmId },
+    qaName, qaId,
+    missing: { translator: !transRow, lg: !lgRow, qa: !(qaRow && qaName), apm: !apmId },
   };
 }
 
