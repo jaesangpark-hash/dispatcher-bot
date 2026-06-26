@@ -76,8 +76,8 @@ export async function buildRetake({ work, episode, fix, channel = null }) {
   // 헤더(멘션)는 자동 고정, 본문(body)만 편집 모달 대상.
   const trMR = trId ? `<@${trId}>` : `@${translator || "번역가"}`;
   const apmMR = apmId ? `<@${apmId}>` : `@${apmName || "APM"}`;
-  const headerReal = `${trMR}\nお世話になっております。cc ${apmMR}`;
-  const headerPreview = `@${translator || "번역가"}\nお世話になっております。cc @${apmName || "APM"}`;
+  const headerReal = `${trMR} cc ${apmMR}\nお世話になっております。`;
+  const headerPreview = `@${translator || "번역가"} cc @${apmName || "APM"}\nお世話になっております。`;
   const bodyLines = [
     "クライアントからの修正依頼をご共有します。",
     ` ・作品名：${jpTitle}`,
