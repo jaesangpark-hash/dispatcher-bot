@@ -9,6 +9,7 @@ import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
 import { setCell, getCell, setCells, getCells } from "./sheets-write.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
+import { buildRetake } from "./retake.js";
 import { appendFileSync } from "node:fs";
 import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, deliverySourceGroups } from "./totus.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
@@ -105,6 +106,7 @@ const DISPATCHER_PROMPT = [
   "- 납품일/일정 → get_delivery_date (중일 기본, 한일은 ko-ja)",
   "- 납품예정일 '변경' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영) / ②내부 납품관리시트 G열만 = propose_delivery_edit. 둘 다 게이트형(버튼 확인). 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고, 절대 '변경했다'고 단정하지 말 것(버튼 눌러야 반영).",
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
+  "- '리테이크 공유/번역가에게 보내줘' 요청(리테이크 BOT 메시지를 번역가에게 일본어로 전달): propose_retake(work, episode, fix) 한 번 호출. fix=수정 내용(가능하면 '오류원문 -> 수정문'). FIX 일본어 타이틀·번역가 채널·APM cc·식자검수 에디터는 도구가 자동으로 채운다. 게이트형(버튼 확인)이라 '보냈다'고 단정 말 것. 임의로 내용 지어내지 말 것.",
   "- '피드백 공유'/'검수 결과 공유' 요청('[작품] [회차] 피드백 공유해줘'): share_feedback(work, episode) 한 번 호출. 퀄리티(KP평가) 시트에서 총평·번역가·LG 코멘트와 등급을 뽑아 양식 메시지를 만들어 확인 버튼으로 보낸다(받는이=APM, CC=재상 님, 기본 채널). 등급·코멘트는 시트값을 그대로 쓰고 절대 임의로 바꾸거나 지어내지 말 것. 회차는 사용자가 말한 표기 그대로 episode에 넣어라(예 '1-3'). 발송은 재상 님이 버튼을 눌러야 되니 '보냈다'고 단정하지 말 것.",
   "★납품예정일 '조회' 구분(중요): ①'TOTUS/실제 시스템 납품예정일'(JobProcess deliveryDate) = totus_delivery_date(work, episode). ②'내부 납품시트' 납품일 = get_delivery_date. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — 그걸 '납품예정일'이라 단정 금지. '실제 TOTUS 납품예정일'을 물으면 totus_delivery_date로 정확히 답해라.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
@@ -147,6 +149,10 @@ let sendSeq = 0;
 const pendingFeedback = new Map();   // fbId → { channel, text, koTitle, episode, rowsToMark, createdAt }
 let feedbackSeq = 0;
 const FEEDBACK_CHANNEL = process.env.FEEDBACK_CHANNEL || "C09B8QHP7D4";   // 피드백 공유 기본 채널
+
+// ── 게이트형 리테이크 피드백: 대기 ─────────────────────────────────
+const pendingRetakes = new Map();   // rkId → { target, text, koTitle, episode, translator, createdAt }
+let retakeSeq = 0;
 
 // 큰 JSON 응답이 컨텍스트를 폭발시키지 않게 컷 (TOTUS 등)
 const capJson = (obj) => { const s = JSON.stringify(obj); return s.length > 8000 ? s.slice(0, 8000) + `\n…(전체 ${s.length}자 중 8000자만. 필터/대상 좁혀 재조회)` : s; };
@@ -551,6 +557,50 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("propose_retake",
+      "리테이크(수정 요청) 피드백을 번역가에게 보낼 '발송 제안'을 한다('이 리테이크 번역가에게 공유/보내줘'). 작품·회차·수정내용으로 일본어 메시지(고정 템플릿)를 만들어 확인 버튼과 함께 보낸다 — 재상 님이 버튼을 눌러야 실제 발송. 작품명은 FIX 일본어 타이틀, 받는이는 번역가(작업자 DB의 채널), cc는 작품 APM, 참고 에디터는 식자검수 URL을 자동으로 채운다. 수정내용(fix)은 리테이크 메시지 그대로 옮기되 '오류→수정'(예 買ってきてね -> 勝ってきてね) 형태가 있으면 그대로 넣어라. 절대 '보냈다'고 단정하지 말 것(확인 대기).",
+      {
+        work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
+        episode: z.string().describe("리테이크 화수(숫자)"),
+        fix: z.string().describe("수정 내용. 가능하면 '오류원문 -> 수정문' 형태(예 '買ってきてね -> 勝ってきてね'). 리테이크 메시지의 수정 내용을 옮긴다."),
+        channel: z.string().optional().describe("보낼 채널 ID(C…). 생략 시 번역가 채널(작업자 DB) 자동"),
+      },
+      async ({ work, episode, fix, channel }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const ctx = currentCtx;
+          const rk = await buildRetake({ work, episode, fix, channel });
+          if (!rk.found) {
+            if (rk.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: "작품 후보가 여러 개. 어느 작품인지 되물어라.", candidates: rk.candidates }) }] };
+            return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}'를 못 찾음.` }) }] };
+          }
+          if (!rk.target) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `번역가(${rk.translator || "?"})의 Slack 채널/ID를 작업자 DB에서 못 찾음. 발송 대상 없음.` }) }] };
+          const rkId = `rk_${++retakeSeq}`;
+          pendingRetakes.set(rkId, { target: rk.target, text: rk.text, koTitle: rk.koTitle, episode: rk.episode, translator: rk.translator, createdAt: Date.now() });
+          const warn = [];
+          if (rk.missing.trId) warn.push(`번역가(${rk.translator || "?"}) Slack ID 미등록 — 멘션이 텍스트로 나갑니다`);
+          if (rk.missing.apm) warn.push("APM Slack ID 미등록(cc 텍스트)");
+          if (rk.missing.editor) warn.push("식자검수 에디터 URL 못 찾음");
+          if (ctx?.client && ctx?.channel) {
+            await ctx.client.chat.postMessage({
+              channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
+              text: `리테이크 발송 확인: ${rk.jpTitle} 第${rk.episode}話 → ${rk.translator || "?"}`,
+              blocks: [
+                { type: "section", text: { type: "mrkdwn", text: `🔁 *리테이크 발송 확인* — *${rk.koTitle}* 第${rk.episode}話\n• 받는 곳: <#${rk.target}> (${rk.targetKind}, 번역가 *${rk.translator || "?"}*)\n• 참고 에디터: ${rk.editorKind || "없음"}${warn.length ? `\n• ⚠️ ${warn.join(" / ")}` : ""}` } },
+                { type: "section", text: { type: "mrkdwn", text: rk.previewText } },
+                { type: "actions", elements: [
+                  { type: "button", style: "primary", text: { type: "plain_text", text: "🔁 발송" }, value: rkId, action_id: "retake_confirm" },
+                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: rkId, action_id: "retake_cancel" },
+                ] },
+              ],
+            });
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: rk.koTitle, jpTitle: rk.jpTitle, episode: rk.episode, translator: rk.translator, to: rk.target, warnings: warn, note: "확인 버튼을 보냈음. 재상 님이 버튼을 눌러야 발송됨. 미리보기 그대로만 보여주고, 보냈다고 단정하지 말 것." }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("read_tab",
       "query_sheet 뷰에 없는 임의 탭을 탭 이름으로 직접 조회한다(read-only). 시트의 *실제 헤더*를 필드명으로 쓰므로 한글/일본어 헤더 그대로 필터·기간조회 가능. sheet 생략 시 알려진 시트들(delivery/ops/worker/retake/schedule/kp_eval)에서 탭명 자동검색. 헤더가 1행이 아니면 headerRow 지정(예 作業記録=4). 같은 데이터를 query_sheet 뷰로 조회할 수 있으면 그걸 우선 쓰고, 뷰에 없는 탭일 때 이걸 쓴다.",
       {
@@ -760,7 +810,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "WebSearch"],
@@ -1011,6 +1061,37 @@ app.action("feedback_confirm", async ({ ack, body, client }) => {
 app.action("feedback_cancel", async ({ ack, body, client }) => {
   await ack();
   pendingFeedback.delete(body.actions?.[0]?.value);
+  await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+// ── 리테이크 발송 확인/취소 (실제 발송은 LLM 밖, 여기서만) ──────────
+app.action("retake_confirm", async ({ ack, body, client }) => {
+  await ack();
+  const id = body.actions?.[0]?.value;
+  const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+  if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
+  const p = pendingRetakes.get(id);
+  if (!p) return reply("⌛ 만료됐거나 이미 처리된 발송이에요.");
+  pendingRetakes.delete(id);
+  if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
+  try {
+    // 공개 채널이면 자동 입장 시도(channels:join 스코프 필요, 비공개·스코프없음이면 실패해도 진행)
+    try { await client.conversations.join({ channel: p.target }); } catch {}
+    await client.chat.postMessage({ channel: p.target, text: p.text, ...SENDER });
+    appendFileSync("logs/retakes.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, target: p.target, work: p.koTitle, episode: p.episode, translator: p.translator }) + "\n");
+    await reply(`✅ 리테이크 발송 완료 → <#${p.target}> (${p.koTitle} 第${p.episode}話, ${p.translator || "?"})`);
+  } catch (e) {
+    const m = String(e?.data?.error || e?.message || e);
+    const hint = m.includes("not_in_channel") || m.includes("channel_not_found") || m.includes("missing_scope")
+      ? "\n(봇이 채널 멤버가 아니에요. 그 채널에서 `/invite @pmchatbot` 하거나, channels:join 스코프 추가 후 재설치하면 자동 입장됩니다.)" : "";
+    await reply(`❌ 발송 실패: ${m}${hint}`);
+  }
+});
+
+app.action("retake_cancel", async ({ ack, body, client }) => {
+  await ack();
+  pendingRetakes.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
 
