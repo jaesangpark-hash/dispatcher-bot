@@ -157,7 +157,7 @@ let retakeSeq = 0;
 function retakeBlocks(rkId, p) {
   const warnTxt = p.warn?.length ? `\n• ⚠️ ${p.warn.join(" / ")}` : "";
   return [
-    { type: "section", text: { type: "mrkdwn", text: `🔁 *리테이크 발송 확인* — *${p.koTitle}* 第${p.episode}話\n• 받는 곳: <#${p.target}> (${p.targetKind}, 번역가 *${p.translator || "?"}*)\n• 참고 에디터: ${p.editorKind || "없음"}${warnTxt}` } },
+    { type: "section", text: { type: "mrkdwn", text: `🔁 *리테이크 발송 확인* — *${p.koTitle}* ${p.epText}\n• 받는 곳: <#${p.target}> (${p.targetKind}, 번역가 *${p.translator || "?"}*)\n• 참고 에디터: ${p.editorKind || "없음"}${warnTxt}` } },
     { type: "section", text: { type: "mrkdwn", text: `${p.headerPreview}\n${p.body}` } },
     { type: "actions", elements: [
       { type: "button", style: "primary", text: { type: "plain_text", text: "🔁 발송" }, value: rkId, action_id: "retake_confirm" },
@@ -574,9 +574,9 @@ const apmTools = createSdkMcpServer({
       "리테이크(수정 요청) 피드백을 번역가에게 보낼 '발송 제안'을 한다('이 리테이크 번역가에게 공유/보내줘'). 작품·회차·수정내용으로 일본어 메시지(고정 템플릿)를 만들어 확인 버튼과 함께 보낸다 — 재상 님이 버튼을 눌러야 실제 발송. 작품명은 FIX 일본어 타이틀, 받는이는 번역가(작업자 DB의 채널), cc는 작품 APM, 참고 에디터는 식자검수 URL을 자동으로 채운다. 수정내용(fix)은 리테이크 메시지 그대로 옮기되 '오류→수정'(예 買ってきてね -> 勝ってきてね) 형태가 있으면 그대로 넣어라. 절대 '보냈다'고 단정하지 말 것(확인 대기).",
       {
         work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
-        episode: z.string().describe("리테이크 화수(숫자)"),
+        episode: z.string().describe("리테이크 화수. 단일('121'), 범위('121-123'), 목록('121,122') 가능. 여러 회차면 회차별 식자검수 링크가 들어간다."),
         fix: z.string().describe("수정 내용. 가능하면 '오류원문 -> 수정문' 형태(예 '買ってきてね -> 勝ってきてね'). 리테이크 메시지의 수정 내용을 옮긴다."),
-        channel: z.string().optional().describe("보낼 채널 ID(C…). 생략 시 번역가 채널(작업자 DB) 자동"),
+        channel: z.string().optional().describe("보낼 채널 ID(C…). 생략 시 번역가 채널(작업자 DB) 자동. 한일 등 MASTER 미매핑 작품은 번역가가 안 잡히니 channel을 지정하라."),
       },
       async ({ work, episode, fix, channel }) => {
         try {
@@ -587,19 +587,20 @@ const apmTools = createSdkMcpServer({
             if (rk.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: "작품 후보가 여러 개. 어느 작품인지 되물어라.", candidates: rk.candidates }) }] };
             return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}'를 못 찾음.` }) }] };
           }
-          if (!rk.target) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `번역가(${rk.translator || "?"})의 Slack 채널/ID를 작업자 DB에서 못 찾음. 발송 대상 없음.` }) }] };
+          if (!rk.target) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `번역가/채널을 못 찾음(${rk.mapped ? `번역가 ${rk.translator || "?"} 미등록` : "MASTER 미매핑 작품 — 번역가 자동조회 불가"}). channel 인자로 보낼 채널을 지정해 다시 시도하라.` }) }] };
           const warn = [];
+          if (rk.missing.mapped) warn.push("MASTER 미매핑 — 입력 작품명 그대로 사용(번역가/APM 자동조회 불가할 수 있음)");
           if (rk.missing.trId) warn.push(`번역가(${rk.translator || "?"}) Slack ID 미등록 — 멘션이 텍스트로 나갑니다`);
           if (rk.missing.apm) warn.push("APM Slack ID 미등록(cc 텍스트)");
           if (rk.missing.editor) warn.push("식자검수 에디터 URL 못 찾음");
           const rkId = `rk_${++retakeSeq}`;
-          const p = { target: rk.target, targetKind: rk.targetKind, headerReal: rk.headerReal, headerPreview: rk.headerPreview, body: rk.body, koTitle: rk.koTitle, episode: rk.episode, translator: rk.translator, editorKind: rk.editorKind, warn, createdAt: Date.now() };
+          const p = { target: rk.target, targetKind: rk.targetKind, headerReal: rk.headerReal, headerPreview: rk.headerPreview, body: rk.body, koTitle: rk.koTitle, epText: rk.epText, translator: rk.translator, editorKind: rk.editorKind, warn, createdAt: Date.now() };
           pendingRetakes.set(rkId, p);
           if (ctx?.client && ctx?.channel) {
-            const posted = await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `리테이크 발송 확인: ${rk.jpTitle} 第${rk.episode}話 → ${rk.translator || "?"}`, blocks: retakeBlocks(rkId, p) });
+            const posted = await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `리테이크 발송 확인: ${rk.jpTitle} ${rk.epText} → ${rk.translator || "?"}`, blocks: retakeBlocks(rkId, p) });
             p.previewChannel = posted.channel; p.previewTs = posted.ts;
           }
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: rk.koTitle, jpTitle: rk.jpTitle, episode: rk.episode, translator: rk.translator, to: rk.target, warnings: warn, note: "확인 버튼을 보냈음. 재상 님이 버튼을 눌러야 발송됨. 미리보기 그대로만 보여주고, 보냈다고 단정하지 말 것." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: rk.koTitle, jpTitle: rk.jpTitle, episodes: rk.episodes, editor: rk.editorKind, translator: rk.translator, to: rk.target, warnings: warn, note: "확인 버튼을 보냈음. 재상 님이 버튼을 눌러야 발송됨. 미리보기 그대로만 보여주고, 보냈다고 단정하지 말 것." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -1083,8 +1084,8 @@ app.action("retake_confirm", async ({ ack, body, client }) => {
     // 공개 채널이면 자동 입장 시도(channels:join 스코프 필요, 비공개·스코프없음이면 실패해도 진행)
     try { await client.conversations.join({ channel: p.target }); } catch {}
     await client.chat.postMessage({ channel: p.target, text: `${p.headerReal}\n${p.body}`, ...SENDER });
-    appendFileSync("logs/retakes.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, target: p.target, work: p.koTitle, episode: p.episode, translator: p.translator }) + "\n");
-    await reply(`✅ 리테이크 발송 완료 → <#${p.target}> (${p.koTitle} 第${p.episode}話, ${p.translator || "?"})`);
+    appendFileSync("logs/retakes.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, target: p.target, work: p.koTitle, episode: p.epText, translator: p.translator }) + "\n");
+    await reply(`✅ 리테이크 발송 완료 → <#${p.target}> (${p.koTitle} ${p.epText}, ${p.translator || "?"})`);
   } catch (e) {
     const m = String(e?.data?.error || e?.message || e);
     const hint = m.includes("not_in_channel") || m.includes("channel_not_found") || m.includes("missing_scope")
@@ -1131,7 +1132,7 @@ app.view("retake_edit_modal", async ({ ack, view, client, body }) => {
   const newBody = view.state.values?.body?.val?.value;
   if (typeof newBody === "string" && newBody.trim()) p.body = newBody;
   if (p.previewChannel && p.previewTs) {
-    await client.chat.update({ channel: p.previewChannel, ts: p.previewTs, text: `리테이크 발송 확인(수정됨): ${p.koTitle} 第${p.episode}話`, blocks: retakeBlocks(rkId, p) }).catch((e) => console.error("[retake_edit_modal] update 실패:", e?.data?.error || e?.message));
+    await client.chat.update({ channel: p.previewChannel, ts: p.previewTs, text: `리테이크 발송 확인(수정됨): ${p.koTitle} ${p.epText}`, blocks: retakeBlocks(rkId, p) }).catch((e) => console.error("[retake_edit_modal] update 실패:", e?.data?.error || e?.message));
   }
 });
 
