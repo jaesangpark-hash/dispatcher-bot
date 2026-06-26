@@ -101,7 +101,7 @@ export async function buildRetake({ work, episode, fix, channel = null }) {
     found: true,
     headerReal, headerPreview, body,
     target, targetKind: channel ? "지정채널" : trChannel ? "번역가 채널" : trId ? "번역가 DM" : null,
-    koTitle, jpTitle, episodes: eps, epText: epLabel(eps), translator, apmName, editorKind, mapped,
+    koTitle, jpTitle, episodes: eps, epText: epLabel(eps), translator, trId, apmName, apmId, editorKind, mapped,
     missing: { mapped: !mapped, translator: !translator, trId: !trId, target: !target, apm: !apmId, editor: !editorLines.length },
   };
 }

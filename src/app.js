@@ -156,8 +156,12 @@ let retakeSeq = 0;
 // 리테이크 미리보기 블록(발송/수정/취소). 도구와 수정모달 submit이 공유.
 function retakeBlocks(rkId, p) {
   const warnTxt = p.warn?.length ? `\n• ⚠️ ${p.warn.join(" / ")}` : "";
+  // 멘션 대상 ID는 코드(백틱)로 표기 → 미리보기에서 렌더/핑 안 됨(증거용). 발송 땐 실제 <@ID> 멘션.
+  const mentionInfo = p.trId
+    ? `\n• 멘션 대상: 번역가 \`${p.trId}\`${p.apmId ? ` · cc \`${p.apmId}\`` : ""} → *발송 시 실제 @멘션으로 전송*(미리보기는 핑 방지로 평문)`
+    : `\n• ⚠️ 번역가 Slack ID를 작업자 DB에서 못 찾음 — 발송해도 멘션이 안 됩니다(평문). 작업자 DB 확인 필요`;
   return [
-    { type: "section", text: { type: "mrkdwn", text: `🔁 *리테이크 발송 확인* — *${p.koTitle}* ${p.epText}\n• 받는 곳: <#${p.target}> (${p.targetKind}, 번역가 *${p.translator || "?"}*)\n• 참고 에디터: ${p.editorKind || "없음"}\n• 멘션: 발송 시 번역가·APM은 *실제 @멘션*으로 나가요(미리보기는 핑 방지로 평문)${warnTxt}` } },
+    { type: "section", text: { type: "mrkdwn", text: `🔁 *리테이크 발송 확인* — *${p.koTitle}* ${p.epText}\n• 받는 곳: <#${p.target}> (${p.targetKind}, 번역가 *${p.translator || "?"}*)\n• 참고 에디터: ${p.editorKind || "없음"}${mentionInfo}${warnTxt}` } },
     { type: "section", text: { type: "mrkdwn", text: `${p.headerPreview}\n${p.body}` } },
     { type: "actions", elements: [
       { type: "button", style: "primary", text: { type: "plain_text", text: "🔁 발송" }, value: rkId, action_id: "retake_confirm" },
@@ -590,11 +594,10 @@ const apmTools = createSdkMcpServer({
           if (!rk.target) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `번역가/채널을 못 찾음(${rk.mapped ? `번역가 ${rk.translator || "?"} 미등록` : "MASTER 미매핑 작품 — 번역가 자동조회 불가"}). channel 인자로 보낼 채널을 지정해 다시 시도하라.` }) }] };
           const warn = [];
           if (rk.missing.mapped) warn.push("MASTER 미매핑 — 입력 작품명 그대로 사용(번역가/APM 자동조회 불가할 수 있음)");
-          if (rk.missing.trId) warn.push(`번역가(${rk.translator || "?"}) Slack ID 미등록 — 멘션이 텍스트로 나갑니다`);
           if (rk.missing.apm) warn.push("APM Slack ID 미등록(cc 텍스트)");
           if (rk.missing.editor) warn.push("식자검수 에디터 URL 못 찾음");
           const rkId = `rk_${++retakeSeq}`;
-          const p = { target: rk.target, targetKind: rk.targetKind, headerReal: rk.headerReal, headerPreview: rk.headerPreview, body: rk.body, koTitle: rk.koTitle, epText: rk.epText, translator: rk.translator, editorKind: rk.editorKind, warn, createdAt: Date.now() };
+          const p = { target: rk.target, targetKind: rk.targetKind, headerReal: rk.headerReal, headerPreview: rk.headerPreview, body: rk.body, koTitle: rk.koTitle, epText: rk.epText, translator: rk.translator, trId: rk.trId, apmId: rk.apmId, editorKind: rk.editorKind, warn, createdAt: Date.now() };
           pendingRetakes.set(rkId, p);
           if (ctx?.client && ctx?.channel) {
             const posted = await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `리테이크 발송 확인: ${rk.jpTitle} ${rk.epText} → ${rk.translator || "?"}`, blocks: retakeBlocks(rkId, p) });
