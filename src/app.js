@@ -36,6 +36,8 @@ const {
 // 사용 허용 = 재상(소유자) + APM들. 소유자만 = 변경·발송·리마인더(쓰기/개인기능). 그 외(APM)는 조회·검수만.
 const OWNER_ID = DISPATCHER_USER_ID;
 const ALLOWED_USERS = new Set([OWNER_ID, ...APM_USER_IDS.split(",").map((s) => s.trim()).filter(Boolean)]);
+// 요청자 Slack ID → 이름. 턴 맥락에 [요청자: 이름]으로 주입해 '내/내가'를 봇이 정확히 알게 한다.
+const USER_NAMES = { [OWNER_ID]: "박재상", "U07E0QPL8MV": "서주원", "U05CE8HFA6B": "정태영" };
 let currentUser = null;   // 지금 처리 중인 턴의 요청자 Slack ID (재상 전용 가드용)
 // 재상 전용(변경·발송·리마인더) 가드: APM이 호출하면 거부 content 반환, 재상이면 null
 const ownerOnly = () => (currentUser && currentUser !== OWNER_ID)
@@ -96,6 +98,8 @@ const BRAIN_ON = Boolean(CLAUDE_CODE_OAUTH_TOKEN || ANTHROPIC_API_KEY);
 const DISPATCHER_PROMPT = [
   "너는 '툰식이'다. 박재상(재상 님)의 개인 비서 챗봇으로, 재팬팀 운영자동화를 담당하는 재상 님의 일과 일상을 곁에서 같이 챙긴다. 누가 이름을 물으면 '툰식이'라고 답한다.",
   "호칭: 사용자는 항상 '재상 님'으로 부른다('재상 씨'는 쓰지 않는다). 작업자·APM·PM 등 등장하는 사람 이름에는 항상 '님'을 붙인다 (예: '서주원 님', '정태영 님', '오화진 님').",
+  "★요청자: 메시지 앞 [요청자: 이름]이 지금 말 건 사람이다. '내/내가/제가/나/저'는 모두 그 요청자를 가리킨다. **절대 '성함이 어떻게 되세요?'처럼 사용자 이름을 묻지 마라 — 이미 안다.** '내가 담당/검수하는 작품'을 물으면 그 요청자가 담당자인 항목을 찾아라.",
+  "★★사용자가 붙인 리스트의 분류 = 정답(이걸 시트조회로 덮어쓰지 마라): 메시지·스레드에 'X N건'처럼 사람별로 묶인 리스트(예 '*박재상 3건*', '*정태영 4건*')가 있으면, 그건 *그 리스트 기준의 담당자*(예: 검수 담당자/납품 전 체크 담당)다. '내가 검수/담당하는 작품'을 물으면 그 리스트에서 **내 이름 섹션의 항목을 그대로** 골라 답하라. 절대 납품 시트·TOTUS에서 'APM=나' 같은 *다른 기준으로 다시 조회하지 마라* — 리스트의 담당자(검수)와 시트의 APM은 서로 다르므로 완전히 엉뚱한 결과가 나온다. 리스트에 답이 이미 있으면 조회 도구를 부르지 말고 그 분류를 신뢰한다. (링크가 필요하면 그 항목들의 작품/회차로 프로젝트 URL만 추가 조회.)",
   "말투: 따뜻하고 친근하게, 군더더기 없이. 표나 정형 양식은 꼭 필요할 때만 쓰고, 평소엔 사람처럼 자연스럽게 대화한다.",
   "사용자 권한: 재상 님 외에 APM 두 분도 너에게 말을 건다(같은 '툰식이'로 똑같이 친절하게 응대). 단 '변경·발송·리마인더'(납품예정일/시트 변경·삭제, 슬랙 메시지 발송, 리마인더 등록·조회·완료)는 재상 님 전용이다. APM 분이 그런 요청을 하면 해당 도구가 거부(denied)를 돌려주는데, 그때는 '그건 재상 님만 할 수 있어요. 대신 조회·검수·링크·원본파일은 도와드릴게요'처럼 부드럽게 안내한다. 조회·검수·링크·원본 파일은 모두에게 열려 있다.",
   "내부 구현은 답변에 드러내지 않는다 — 도구명·뷰명(예: translator_grade, query_sheet)이나 '어느 탭·필드에서 어떤 로직으로 가져왔는지'를 괄호로 달거나 설명하지 말 것. 그건 나와 봇만 아는 내부 사정이다. 결과만 자연스럽게 말하고, 사용자가 직접 '어디서 가져왔어?'라고 물을 때만 출처를 짧게 답한다.",
@@ -899,7 +903,7 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   }
   // 현재 시각 주입 — '월요일 10시' 같은 상대 시각 리마인더를 브레인이 정확히 계산하도록
   const nowStr = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "full", timeStyle: "short" });
-  llmText = `[현재 시각(KST): ${nowStr}]\n${llmText}`;
+  llmText = `[현재 시각(KST): ${nowStr}] [요청자: ${USER_NAMES[user] || "사용자"}]\n${llmText}`;
   console.log(`[handle] 수신 (ch=${channel}, inThread=${inThread}, 첨부=${attFiles.length}): ${String(text || "").slice(0, 80).replace(/\n/g, " ")}`);
 
   // currentCtx는 messageStream이 '이 턴을 실제로 처리할 때' 설정한다 (도착 순간 아님 → 도구 오배달 방지)
