@@ -39,6 +39,17 @@ const ALLOWED_USERS = new Set([OWNER_ID, ...APM_USER_IDS.split(",").map((s) => s
 // 요청자 Slack ID → 이름. 턴 맥락에 [요청자: 이름]으로 주입해 '내/내가'를 봇이 정확히 알게 한다.
 const USER_NAMES = { [OWNER_ID]: "박재상", "U07E0QPL8MV": "서주원", "U05CE8HFA6B": "정태영" };
 let currentUser = null;   // 지금 처리 중인 턴의 요청자 Slack ID (재상 전용 가드용)
+
+// 채널별 행동 지침(임시 대책). 성격이 고정된 채널에서 라우팅을 확정 — 그 채널 메시지 앞에
+// [이 채널 규칙]으로 주입돼 LLM이 최우선으로 따른다. .env CHANNEL_POLICY_JSON(JSON)으로 덮어쓰기 가능.
+// 형식: { "채널ID": "지침문장" }. 채널 ID는 사용자가 채워넣음.
+const CHANNEL_POLICY = (() => {
+  const base = {
+    // 예) "C리테이크채널": "이 채널의 요청은 리테이크 전달이다 → propose_retake만 쓴다. share_feedback 금지.",
+    // 예) "C납품체크채널": "납품 전 체크리스트 채널. 사람별 'X N건' 분류를 그대로 읽고 시트/APM 재조회 금지.",
+  };
+  try { return { ...base, ...JSON.parse(process.env.CHANNEL_POLICY_JSON || "{}") }; } catch { return base; }
+})();
 // 재상 전용(변경·발송·리마인더) 가드: APM이 호출하면 거부 content 반환, 재상이면 null
 const ownerOnly = () => (currentUser && currentUser !== OWNER_ID)
   ? { content: [{ type: "text", text: JSON.stringify({ denied: true, error: "이 기능(납품예정일·시트 변경/삭제, 슬랙 발송, 리마인더)은 재상 님만 쓸 수 있어요. 조회·검수·링크·원본파일은 도와드릴 수 있어요." }) }] }
@@ -903,7 +914,9 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   }
   // 현재 시각 주입 — '월요일 10시' 같은 상대 시각 리마인더를 브레인이 정확히 계산하도록
   const nowStr = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "full", timeStyle: "short" });
-  llmText = `[현재 시각(KST): ${nowStr}] [요청자: ${USER_NAMES[user] || "사용자"}]\n${llmText}`;
+  llmText = `[현재 시각(KST): ${nowStr}] [요청자: ${USER_NAMES[user] || "사용자"}] [채널: ${channel}]\n${llmText}`;
+  const chPol = CHANNEL_POLICY[channel];   // 채널별 행동 지침(임시) — 있으면 최우선 규칙으로 주입
+  if (chPol) llmText = `[이 채널 규칙(최우선): ${chPol}]\n${llmText}`;
   console.log(`[handle] 수신 (ch=${channel}, inThread=${inThread}, 첨부=${attFiles.length}): ${String(text || "").slice(0, 80).replace(/\n/g, " ")}`);
 
   // currentCtx는 messageStream이 '이 턴을 실제로 처리할 때' 설정한다 (도착 순간 아님 → 도구 오배달 방지)
