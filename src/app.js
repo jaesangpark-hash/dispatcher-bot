@@ -151,8 +151,21 @@ let feedbackSeq = 0;
 const FEEDBACK_CHANNEL = process.env.FEEDBACK_CHANNEL || "C09B8QHP7D4";   // 피드백 공유 기본 채널
 
 // ── 게이트형 리테이크 피드백: 대기 ─────────────────────────────────
-const pendingRetakes = new Map();   // rkId → { target, text, koTitle, episode, translator, createdAt }
+const pendingRetakes = new Map();   // rkId → { target, headerReal, headerPreview, body, koTitle, episode, translator, editorKind, warn, previewChannel, previewTs, createdAt }
 let retakeSeq = 0;
+// 리테이크 미리보기 블록(발송/수정/취소). 도구와 수정모달 submit이 공유.
+function retakeBlocks(rkId, p) {
+  const warnTxt = p.warn?.length ? `\n• ⚠️ ${p.warn.join(" / ")}` : "";
+  return [
+    { type: "section", text: { type: "mrkdwn", text: `🔁 *리테이크 발송 확인* — *${p.koTitle}* 第${p.episode}話\n• 받는 곳: <#${p.target}> (${p.targetKind}, 번역가 *${p.translator || "?"}*)\n• 참고 에디터: ${p.editorKind || "없음"}${warnTxt}` } },
+    { type: "section", text: { type: "mrkdwn", text: `${p.headerPreview}\n${p.body}` } },
+    { type: "actions", elements: [
+      { type: "button", style: "primary", text: { type: "plain_text", text: "🔁 발송" }, value: rkId, action_id: "retake_confirm" },
+      { type: "button", text: { type: "plain_text", text: "✏️ 수정" }, value: rkId, action_id: "retake_edit" },
+      { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: rkId, action_id: "retake_cancel" },
+    ] },
+  ];
+}
 
 // 큰 JSON 응답이 컨텍스트를 폭발시키지 않게 컷 (TOTUS 등)
 const capJson = (obj) => { const s = JSON.stringify(obj); return s.length > 8000 ? s.slice(0, 8000) + `\n…(전체 ${s.length}자 중 8000자만. 필터/대상 좁혀 재조회)` : s; };
@@ -575,25 +588,16 @@ const apmTools = createSdkMcpServer({
             return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}'를 못 찾음.` }) }] };
           }
           if (!rk.target) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `번역가(${rk.translator || "?"})의 Slack 채널/ID를 작업자 DB에서 못 찾음. 발송 대상 없음.` }) }] };
-          const rkId = `rk_${++retakeSeq}`;
-          pendingRetakes.set(rkId, { target: rk.target, text: rk.text, koTitle: rk.koTitle, episode: rk.episode, translator: rk.translator, createdAt: Date.now() });
           const warn = [];
           if (rk.missing.trId) warn.push(`번역가(${rk.translator || "?"}) Slack ID 미등록 — 멘션이 텍스트로 나갑니다`);
           if (rk.missing.apm) warn.push("APM Slack ID 미등록(cc 텍스트)");
           if (rk.missing.editor) warn.push("식자검수 에디터 URL 못 찾음");
+          const rkId = `rk_${++retakeSeq}`;
+          const p = { target: rk.target, targetKind: rk.targetKind, headerReal: rk.headerReal, headerPreview: rk.headerPreview, body: rk.body, koTitle: rk.koTitle, episode: rk.episode, translator: rk.translator, editorKind: rk.editorKind, warn, createdAt: Date.now() };
+          pendingRetakes.set(rkId, p);
           if (ctx?.client && ctx?.channel) {
-            await ctx.client.chat.postMessage({
-              channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
-              text: `리테이크 발송 확인: ${rk.jpTitle} 第${rk.episode}話 → ${rk.translator || "?"}`,
-              blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `🔁 *리테이크 발송 확인* — *${rk.koTitle}* 第${rk.episode}話\n• 받는 곳: <#${rk.target}> (${rk.targetKind}, 번역가 *${rk.translator || "?"}*)\n• 참고 에디터: ${rk.editorKind || "없음"}${warn.length ? `\n• ⚠️ ${warn.join(" / ")}` : ""}` } },
-                { type: "section", text: { type: "mrkdwn", text: rk.previewText } },
-                { type: "actions", elements: [
-                  { type: "button", style: "primary", text: { type: "plain_text", text: "🔁 발송" }, value: rkId, action_id: "retake_confirm" },
-                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: rkId, action_id: "retake_cancel" },
-                ] },
-              ],
-            });
+            const posted = await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `리테이크 발송 확인: ${rk.jpTitle} 第${rk.episode}話 → ${rk.translator || "?"}`, blocks: retakeBlocks(rkId, p) });
+            p.previewChannel = posted.channel; p.previewTs = posted.ts;
           }
           return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: rk.koTitle, jpTitle: rk.jpTitle, episode: rk.episode, translator: rk.translator, to: rk.target, warnings: warn, note: "확인 버튼을 보냈음. 재상 님이 버튼을 눌러야 발송됨. 미리보기 그대로만 보여주고, 보냈다고 단정하지 말 것." }) }] };
         } catch (e) {
@@ -1078,7 +1082,7 @@ app.action("retake_confirm", async ({ ack, body, client }) => {
   try {
     // 공개 채널이면 자동 입장 시도(channels:join 스코프 필요, 비공개·스코프없음이면 실패해도 진행)
     try { await client.conversations.join({ channel: p.target }); } catch {}
-    await client.chat.postMessage({ channel: p.target, text: p.text, ...SENDER });
+    await client.chat.postMessage({ channel: p.target, text: `${p.headerReal}\n${p.body}`, ...SENDER });
     appendFileSync("logs/retakes.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, target: p.target, work: p.koTitle, episode: p.episode, translator: p.translator }) + "\n");
     await reply(`✅ 리테이크 발송 완료 → <#${p.target}> (${p.koTitle} 第${p.episode}話, ${p.translator || "?"})`);
   } catch (e) {
@@ -1093,6 +1097,42 @@ app.action("retake_cancel", async ({ ack, body, client }) => {
   await ack();
   pendingRetakes.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+// 리테이크 초안 수정 — 모달 열기(본문만 편집, 멘션 헤더는 고정)
+app.action("retake_edit", async ({ ack, body, client }) => {
+  await ack();
+  if (body.user?.id !== DISPATCHER_USER_ID) return;
+  const rkId = body.actions?.[0]?.value;
+  const p = pendingRetakes.get(rkId);
+  if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정할 수 없어요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: "modal", callback_id: "retake_edit_modal", private_metadata: rkId,
+      title: { type: "plain_text", text: "리테이크 초안 수정" },
+      submit: { type: "plain_text", text: "적용" }, close: { type: "plain_text", text: "닫기" },
+      blocks: [
+        { type: "context", elements: [{ type: "mrkdwn", text: `받는이/cc 멘션 줄은 자동 고정이에요. 아래 본문만 고치면 미리보기에 반영됩니다.` }] },
+        { type: "input", block_id: "body", label: { type: "plain_text", text: "본문" },
+          element: { type: "plain_text_input", action_id: "val", multiline: true, initial_value: p.body } },
+      ],
+    },
+  }).catch((e) => console.error("[retake_edit] views.open 실패:", e?.data?.error || e?.message));
+});
+
+// 모달 제출 → 본문 갱신 + 미리보기 메시지 인플레이스 업데이트
+app.view("retake_edit_modal", async ({ ack, view, client, body }) => {
+  await ack();
+  const rkId = view.private_metadata;
+  const p = pendingRetakes.get(rkId);
+  if (!p) return;
+  if (body.user?.id !== DISPATCHER_USER_ID) return;
+  const newBody = view.state.values?.body?.val?.value;
+  if (typeof newBody === "string" && newBody.trim()) p.body = newBody;
+  if (p.previewChannel && p.previewTs) {
+    await client.chat.update({ channel: p.previewChannel, ts: p.previewTs, text: `리테이크 발송 확인(수정됨): ${p.koTitle} 第${p.episode}話`, blocks: retakeBlocks(rkId, p) }).catch((e) => console.error("[retake_edit_modal] update 실패:", e?.data?.error || e?.message));
+  }
 });
 
 // App Home — 홈 탭 열릴 때 즉시 화면을 발행해 로딩 스피너 방지 (텍스트는 자유롭게 수정)

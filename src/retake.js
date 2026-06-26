@@ -45,30 +45,27 @@ export async function buildRetake({ work, episode, fix, channel = null }) {
     else if (dl) { editor = `https://main.totus.pro/ko/editor?uuid=${dl.uuid}`; editorKind = "납품검수"; }
   }
 
-  const jpTitle = w.fixTitle || w.jaTitle || w.koTitle;
-  const body = (trM, apmM) => {
-    const L = [];
-    L.push(trM);
-    L.push(`お世話になっております。cc ${apmM}`);
-    L.push("クライアントからの修正依頼をご共有します。");
-    L.push(` ・作品名：${jpTitle}`);
-    L.push(` ・話数：第${episode}話`);
-    L.push(` ・修正内容：${trim(fix)}`);
-    L.push("");
-    if (editor) L.push(`参考エディター：${editor}`);
-    L.push("");
-    L.push("今回の修正はこちらで対応しますが、今後はご注意いただけますと幸いです。");
-    L.push("引き続きよろしくお願いします。");
-    return L.join("\n");
-  };
+  const jpTitle = w.jaTitle || w.fixTitle || w.koTitle;   // （仮） 일본어가제 우선
+  // 헤더(멘션)는 자동 고정, 본문(body)만 편집 모달 대상.
   const trMR = trId ? `<@${trId}>` : `@${translator || "번역가"}`;
   const apmMR = apmId ? `<@${apmId}>` : `@${apmName || "APM"}`;
+  const headerReal = `${trMR}\nお世話になっております。cc ${apmMR}`;
+  const headerPreview = `@${translator || "번역가"}\nお世話になっております。cc @${apmName || "APM"}`;
+  const bodyLines = [
+    "クライアントからの修正依頼をご共有します。",
+    ` ・作品名：${jpTitle}`,
+    ` ・話数：第${episode}話`,
+    ` ・修正内容：${trim(fix)}`,
+    "",
+  ];
+  if (editor) bodyLines.push(`参考エディター：${editor}`, "");
+  bodyLines.push("今回の修正はこちらで対応しますが、今後はご注意いただけますと幸いです。", "引き続きよろしくお願いします。");
+  const body = bodyLines.join("\n");
 
   const target = channel || trChannel || trId;   // 번역가 채널 우선, 없으면 번역가 DM
   return {
     found: true,
-    text: body(trMR, apmMR),
-    previewText: body(`@${translator || "번역가"}`, `@${apmName || "APM"}`),
+    headerReal, headerPreview, body,
     target, targetKind: channel ? "지정채널" : trChannel ? "번역가 채널" : trId ? "번역가 DM" : null,
     koTitle: w.koTitle, jpTitle, episode, translator, apmName, editorKind,
     missing: { translator: !translator, trId: !trId, target: !target, apm: !apmId, editor: !editor },
