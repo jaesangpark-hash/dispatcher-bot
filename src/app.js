@@ -106,7 +106,7 @@ const DISPATCHER_PROMPT = [
   "- 납품일/일정 → get_delivery_date (중일 기본, 한일은 ko-ja)",
   "- 납품예정일 '변경' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영) / ②내부 납품관리시트 G열만 = propose_delivery_edit. 둘 다 게이트형(버튼 확인). 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고, 절대 '변경했다'고 단정하지 말 것(버튼 눌러야 반영).",
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
-  "- '리테이크 공유/번역가에게 보내줘' 요청(리테이크 BOT 메시지를 번역가에게 일본어로 전달): propose_retake(work, episode, fix) 한 번 호출. fix=수정 내용(가능하면 '오류원문 -> 수정문'). FIX 일본어 타이틀·번역가 채널·APM cc·식자검수 에디터는 도구가 자동으로 채운다. 게이트형(버튼 확인)이라 '보냈다'고 단정 말 것. 임의로 내용 지어내지 말 것.",
+  "- '리테이크 공유/번역가에게 보내줘' 요청(리테이크 BOT 메시지를 번역가에게 일본어로 전달): propose_retake(work, episode, fix) 한 번 호출. fix=수정 내용(가능하면 '오류원문 -> 수정문'). ★fix는 반드시 *일본어로만* 작성 — 한국어 사유·설명이 있으면 일본어로 번역해 넣고(예 '「楽」が旧字体になっていたため新字体に修正'), 한국어를 그대로 섞지 말 것. 메시지 전체가 번역가가 읽는 일본어 메시지다. FIX 일본어 타이틀·번역가 채널·APM cc·식자검수 에디터는 도구가 자동으로 채운다. 게이트형(버튼 확인)이라 '보냈다'고 단정 말 것. 임의로 내용 지어내지 말 것.",
   "- '피드백 공유'/'검수 결과 공유' 요청('[작품] [회차] 피드백 공유해줘'): share_feedback(work, episode) 한 번 호출. 퀄리티(KP평가) 시트에서 총평·번역가·LG 코멘트와 등급을 뽑아 양식 메시지를 만들어 확인 버튼으로 보낸다(받는이=APM, CC=재상 님, 기본 채널). 등급·코멘트는 시트값을 그대로 쓰고 절대 임의로 바꾸거나 지어내지 말 것. 회차는 사용자가 말한 표기 그대로 episode에 넣어라(예 '1-3'). 발송은 재상 님이 버튼을 눌러야 되니 '보냈다'고 단정하지 말 것.",
   "★납품예정일 '조회' 구분(중요): ①'TOTUS/실제 시스템 납품예정일'(JobProcess deliveryDate) = totus_delivery_date(work, episode). ②'내부 납품시트' 납품일 = get_delivery_date. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — 그걸 '납품예정일'이라 단정 금지. '실제 TOTUS 납품예정일'을 물으면 totus_delivery_date로 정확히 답해라.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
@@ -163,7 +163,10 @@ const STALL_NOTICE_MS = 150 * 1000;   // 이 시간 내 응답 없으면 '처리
 const FEEDBACK_CHANNEL = process.env.FEEDBACK_CHANNEL || "C09B8QHP7D4";   // 피드백 공유 기본 채널
 // 리테이크 미리보기 블록(발송/수정/취소). 도구와 수정모달 submit이 공유.
 function retakeBlocks(rkId, p) {
-  const warnTxt = p.warn?.length ? `\n• ⚠️ ${p.warn.join(" / ")}` : "";
+  // 리테이크 메시지는 일본어만 — 본문에 한글이 있으면 경고(✏️수정으로 고치게). 모달 수정 후에도 재평가.
+  const koInBody = /[가-힣]/.test(p.body || "") ? "본문에 한국어가 섞여 있어요 — 일본어만 권장(✏️수정)" : "";
+  const allWarn = [...(p.warn || []), koInBody].filter(Boolean);
+  const warnTxt = allWarn.length ? `\n• ⚠️ ${allWarn.join(" / ")}` : "";
   // 멘션 대상 ID는 코드(백틱)로 표기 → 미리보기에서 렌더/핑 안 됨(증거용). 발송 땐 실제 <@ID> 멘션.
   const mentionInfo = p.trId
     ? `\n• 멘션 대상: 번역가 \`${p.trId}\`${p.apmId ? ` · cc \`${p.apmId}\`` : ""} → *발송 시 실제 @멘션으로 전송*(미리보기는 핑 방지로 평문)`
@@ -587,7 +590,7 @@ const apmTools = createSdkMcpServer({
       {
         work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
         episode: z.string().describe("리테이크 화수. 단일('121'), 범위('121-123'), 목록('121,122') 가능. 여러 회차면 회차별 식자검수 링크가 들어간다."),
-        fix: z.string().describe("수정 내용. 가능하면 '오류원문 -> 수정문' 형태(예 '買ってきてね -> 勝ってきてね'). 리테이크 메시지의 수정 내용을 옮긴다."),
+        fix: z.string().describe("수정 내용. 반드시 일본어로만 작성(한국어 사유·설명은 일본어로 번역, 예 '「楽」が旧字体になっていたため新字体に修正'). 가능하면 '오류원문 -> 수정문' 형태(예 '買ってきてね -> 勝ってきてね')."),
         channel: z.string().optional().describe("보낼 채널 ID(C…). 생략 시 번역가 채널(작업자 DB) 자동. 한일 등 MASTER 미매핑 작품은 번역가가 안 잡히니 channel을 지정하라."),
       },
       async ({ work, episode, fix, channel }) => {
