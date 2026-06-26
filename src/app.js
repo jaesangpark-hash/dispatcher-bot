@@ -157,7 +157,7 @@ let retakeSeq = 0;
 function retakeBlocks(rkId, p) {
   const warnTxt = p.warn?.length ? `\n• ⚠️ ${p.warn.join(" / ")}` : "";
   return [
-    { type: "section", text: { type: "mrkdwn", text: `🔁 *리테이크 발송 확인* — *${p.koTitle}* ${p.epText}\n• 받는 곳: <#${p.target}> (${p.targetKind}, 번역가 *${p.translator || "?"}*)\n• 참고 에디터: ${p.editorKind || "없음"}${warnTxt}` } },
+    { type: "section", text: { type: "mrkdwn", text: `🔁 *리테이크 발송 확인* — *${p.koTitle}* ${p.epText}\n• 받는 곳: <#${p.target}> (${p.targetKind}, 번역가 *${p.translator || "?"}*)\n• 참고 에디터: ${p.editorKind || "없음"}\n• 멘션: 발송 시 번역가·APM은 *실제 @멘션*으로 나가요(미리보기는 핑 방지로 평문)${warnTxt}` } },
     { type: "section", text: { type: "mrkdwn", text: `${p.headerPreview}\n${p.body}` } },
     { type: "actions", elements: [
       { type: "button", style: "primary", text: { type: "plain_text", text: "🔁 발송" }, value: rkId, action_id: "retake_confirm" },
