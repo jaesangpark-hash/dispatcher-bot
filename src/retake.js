@@ -30,41 +30,45 @@ function epLabel(eps) {
   const consecutive = eps.every((e, i) => i === 0 || e === eps[i - 1] + 1);
   return consecutive ? `第${eps[0]}〜${eps[eps.length - 1]}話` : eps.map((e) => `第${e}話`).join("・");
 }
+// TOTUS 프로젝트명에서 일본어 제목 추출(한일용). 예 "[PRJ-..] [PV-..] [카카오픽코마] 기연독식 奇縁独占（仮）" → "奇縁独占（仮）"
+// 대괄호 태그 제거 후, 순수 한글 토큰은 버리고 일본어(가나/한자) 포함 토큰만 남긴다. 없으면 정리된 전체.
+function jpTitleFromProject(name) {
+  if (!name) return null;
+  const stripped = String(name).replace(/\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
+  const jp = stripped.split(" ").filter((tok) => /[ぁ-んァ-ヶ一-龯]/.test(tok) && !/^[가-힣]+$/.test(tok));
+  return (jp.length ? jp.join(" ") : stripped) || null;
+}
 
 // 작품·회차(들)·수정내용으로 리테이크 메시지 조립
 export async function buildRetake({ work, episode, fix, channel = null }) {
   const w = await lookupWork(work);
   if (w.ambiguous) return { found: false, ambiguous: true, candidates: w.candidates };
 
-  // MASTER 매핑 여부 — 미매핑(한일 등)이면 입력 작품명 그대로 폴백
+  // MASTER 매핑 여부 — 미매핑(한일 등)이면 TOTUS로 보강
   const mapped = !!w.found;
   const koTitle = mapped ? w.koTitle : trim(work);
   const pivoId = mapped ? w.pivoId : null;
-  const jpTitle = mapped ? (w.jaTitle || w.fixTitle || w.koTitle) : trim(work);   // （仮） 가제 우선, 미매핑이면 입력값
   const apmRaw = mapped ? w.apm : "";
 
-  // 번역가 + APM (작업자 정보 탭)
+  // 중일: 작업자 정보 탭에서 번역가·APM. 한일은 여기 없음(아래 TOTUS로 보강).
   const info = await readRange(KP_SHEET, `${INFO_TAB}!A2:R300`);
   const irow = info.find((r) => norm(r[0]) === norm(koTitle) || (pivoId && trim(r[17]) === trim(pivoId)));
-  const translator = irow ? trim(irow[7]) : null;
+  let translator = irow ? trim(irow[7]) : null;
   const apmName = trim(irow?.[3] || apmRaw || "").split(/[,\s/]+/).filter(Boolean).find((n) => APM_SLACK[n]) || null;
   const apmId = apmName ? APM_SLACK[apmName] : null;
 
-  // 번역가 Slack ID·채널 (작업자 DB)
-  const wdb = (await readRange(WORKER_SHEET, "작업자 DB!A:F")).slice(1);
-  const wr = translator ? wdb.find((r) => norm(r[0]) === norm(translator)) : null;
-  const trId = wr ? trim(wr[2]) : null;
-  const trChannel = wr ? trim(wr[3]) : null;
-
-  // 회차별 식자검수 에디터 URL (없으면 납품검수 폴백)
+  // TOTUS: 본문 작품명으로 프로젝트 조회 → 회차별 식자검수 에디터 + 일본어제목 + 번역 작업자 email
   const eps = parseEps(episode);
   const editors = [];   // { ep, url, kind }
+  let transEmail = null, projName = null;
   const fp = await findProject(work);
   const proj = (fp?.data || [])[0];
   if (proj?.uuid) {
+    projName = trim(proj.프로젝트);
     for (const ep of eps) {
       const jr = await projectJobs(proj.uuid, ep);
       const tasks = (jr?.data?.[0]?.오퍼레이션 || []).flatMap((o) => o.태스크 || []);
+      if (!transEmail) { const tr = tasks.filter((t) => trim(t.오퍼레이션유형명) === "번역").pop(); transEmail = tr?.작업자?.이메일 ? trim(tr.작업자.이메일) : null; }
       const lastOf = (nm) => { const c = tasks.filter((t) => trim(t.오퍼레이션유형명) === nm); return c[c.length - 1]; };
       const sik = lastOf("식자검수"), dl = lastOf("납품검수");
       if (sik) editors.push({ ep, url: `https://main.totus.pro/ko/editor?uuid=${sik.uuid}`, kind: "식자검수" });
@@ -73,11 +77,22 @@ export async function buildRetake({ work, episode, fix, channel = null }) {
   }
   const editorLines = editors.filter((e) => e.url);
 
-  // 헤더(멘션)는 자동 고정, 본문(body)만 편집 모달 대상.
+  // 작품명: 중일=master 일본어가제(（仮）), 한일=TOTUS 프로젝트명의 일본어 제목(없으면 입력값)
+  const jpTitle = mapped ? (w.jaTitle || w.fixTitle || w.koTitle) : (jpTitleFromProject(projName) || trim(work));
+
+  // 번역가 Slack: 중일=작업자정보 이름→DB 이름매칭 / 한일=TOTUS 번역 email→DB email매칭(이름도 DB에서 보강)
+  const wdb = (await readRange(WORKER_SHEET, "작업자 DB!A:F")).slice(1);
+  let wr = translator ? wdb.find((r) => norm(r[0]) === norm(translator)) : null;
+  if (!wr && transEmail) { wr = wdb.find((r) => norm(r[1]) === norm(transEmail)); if (wr && !translator) translator = trim(wr[0]); }
+  const trId = wr ? trim(wr[2]) : null;
+  const trChannel = wr ? trim(wr[3]) : null;
+
+  // 헤더(멘션) 자동 고정, 본문만 편집 모달 대상. cc(APM)는 해석될 때만(한일은 보통 생략).
   const trMR = trId ? `<@${trId}>` : `@${translator || "번역가"}`;
-  const apmMR = apmId ? `<@${apmId}>` : `@${apmName || "APM"}`;
-  const headerReal = `${trMR} cc ${apmMR}\nお世話になっております。`;
-  const headerPreview = `@${translator || "번역가"} cc @${apmName || "APM"}\nお世話になっております。`;
+  const ccReal = (apmId || apmName) ? ` cc ${apmId ? `<@${apmId}>` : `@${apmName}`}` : "";
+  const ccPrev = (apmId || apmName) ? ` cc @${apmName || "APM"}` : "";
+  const headerReal = `${trMR}${ccReal}\nお世話になっております。`;
+  const headerPreview = `@${translator || "번역가"}${ccPrev}\nお世話になっております。`;
   const bodyLines = [
     "クライアントからの修正依頼をご共有します。",
     ` ・作品名：${jpTitle}`,

@@ -604,8 +604,8 @@ const apmTools = createSdkMcpServer({
           }
           if (!rk.target) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `번역가/채널을 못 찾음(${rk.mapped ? `번역가 ${rk.translator || "?"} 미등록` : "MASTER 미매핑 작품 — 번역가 자동조회 불가"}). channel 인자로 보낼 채널을 지정해 다시 시도하라.` }) }] };
           const warn = [];
-          if (rk.missing.mapped) warn.push("MASTER 미매핑 — 입력 작품명 그대로 사용(번역가/APM 자동조회 불가할 수 있음)");
-          if (rk.missing.apm) warn.push("APM Slack ID 미등록(cc 텍스트)");
+          if (rk.missing.mapped) warn.push("한일/미매핑 — 제목·번역가를 TOTUS에서 보강함(작업자 DB에 없는 번역가면 멘션 누락 가능)");
+          if (rk.missing.apm) warn.push("APM 미해석 — cc 생략(한일 등). 필요시 APM_SLACK 맵에 추가");
           if (rk.missing.editor) warn.push("식자검수 에디터 URL 못 찾음");
           const rkId = `rk_${++retakeSeq}`;
           const p = { target: rk.target, targetKind: rk.targetKind, headerReal: rk.headerReal, headerPreview: rk.headerPreview, body: rk.body, koTitle: rk.koTitle, epText: rk.epText, translator: rk.translator, trId: rk.trId, apmId: rk.apmId, editorKind: rk.editorKind, warn, createdAt: Date.now() };
