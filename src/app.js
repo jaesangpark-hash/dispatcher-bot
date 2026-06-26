@@ -10,7 +10,7 @@ import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
 import { setCell, getCell, setCells, getCells } from "./sheets-write.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, deliverySourceGroups } from "./totus.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, QA_INSTRUCTIONS } from "./review.js";
@@ -132,27 +132,35 @@ const DISPATCHER_PROMPT = [
 // ── 중복 처리 방지 (슬랙 재전송 대비) ───────────────────────────────
 const processed = new Set();
 
-// ── 게이트형 쓰기: 대기 변경 + 현재 메시지 컨텍스트(버튼 발송용) ───────
-const pendingEdits = new Map();   // changeId → { sheetId, cellA1, oldValue, newValue, workName, episode, tab, lang, createdAt }
-const pendingTotusDates = new Map();   // changeId → { jobProcessUuid, deliveryDate, reason, work, episode, createdAt } (TOTUS 납품예정일 게이트)
-let totusDateSeq = 0;
-let currentCtx = null;            // { client, channel, ts } — handle()가 메시지마다 갱신(단일 사용자·직렬 가정)
-let editSeq = 0;
-const EDIT_TTL_MS = 10 * 60 * 1000;
+// ── 게이트형 대기상태: 디스크 영속(재시작·장시간에도 버튼 유지) ──────────
+// 메모리 Map은 봇 재시작 시 사라져 버튼이 죽음 → set/delete마다 data/pending-*.json에 저장,
+// 시작 시 자동 복구. createdAt도 보존돼 TTL이 원래 생성시각 기준으로 유지된다.
+const PENDING_DIR = "data";
+class PersistMap extends Map {
+  constructor(name) {
+    super();
+    this.file = `${PENDING_DIR}/pending-${name}.json`;
+    try { for (const [k, v] of Object.entries(JSON.parse(readFileSync(this.file, "utf8")))) Map.prototype.set.call(this, k, v); } catch {}
+  }
+  save() { try { mkdirSync(PENDING_DIR, { recursive: true }); writeFileSync(this.file, JSON.stringify(Object.fromEntries(this))); } catch {} }
+  set(k, v) { Map.prototype.set.call(this, k, v); this.save(); return this; }
+  delete(k) { const r = Map.prototype.delete.call(this, k); this.save(); return r; }
+  maxSeq() { let m = 0; for (const k of this.keys()) { const n = parseInt(String(k).split("_").pop()); if (Number.isFinite(n) && n > m) m = n; } return m; }
+}
+const pendingEdits = new PersistMap("edits");        // changeId → { sheetId, tab, items[], newValue, clearing, ... }
+const pendingTotusDates = new PersistMap("totus");   // changeId → { items[], deliveryDate, reason, work, ... }
+const pendingSends = new PersistMap("sends");        // sendId → { target, text, createdAt }
+const pendingFeedback = new PersistMap("feedback");  // fbId → { channel, text, koTitle, episode, rowsToMark, ... }
+const pendingRetakes = new PersistMap("retakes");    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
+let editSeq = pendingEdits.maxSeq();
+let totusDateSeq = pendingTotusDates.maxSeq();
+let sendSeq = pendingSends.maxSeq();
+let feedbackSeq = pendingFeedback.maxSeq();
+let retakeSeq = pendingRetakes.maxSeq();
+let currentCtx = null;            // { client, channel, ts } — handle()가 메시지마다 갱신(직렬 가정). 영속 대상 아님(client 비직렬)
+const EDIT_TTL_MS = 24 * 60 * 60 * 1000;   // 버튼 유효 24h (영속화로 재시작에도 유지)
 const STALL_NOTICE_MS = 150 * 1000;   // 이 시간 내 응답 없으면 '처리 중'을 지연 안내로 갱신
-
-// ── 게이트형 발송: 대기 발송 ───────────────────────────────────────
-const pendingSends = new Map();   // sendId → { target, text, createdAt }
-let sendSeq = 0;
-
-// ── 게이트형 피드백 공유: 대기 ─────────────────────────────────────
-const pendingFeedback = new Map();   // fbId → { channel, text, koTitle, episode, rowsToMark, createdAt }
-let feedbackSeq = 0;
 const FEEDBACK_CHANNEL = process.env.FEEDBACK_CHANNEL || "C09B8QHP7D4";   // 피드백 공유 기본 채널
-
-// ── 게이트형 리테이크 피드백: 대기 ─────────────────────────────────
-const pendingRetakes = new Map();   // rkId → { target, headerReal, headerPreview, body, koTitle, episode, translator, editorKind, warn, previewChannel, previewTs, createdAt }
-let retakeSeq = 0;
 // 리테이크 미리보기 블록(발송/수정/취소). 도구와 수정모달 submit이 공유.
 function retakeBlocks(rkId, p) {
   const warnTxt = p.warn?.length ? `\n• ⚠️ ${p.warn.join(" / ")}` : "";
@@ -602,6 +610,7 @@ const apmTools = createSdkMcpServer({
           if (ctx?.client && ctx?.channel) {
             const posted = await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `리테이크 발송 확인: ${rk.jpTitle} ${rk.epText} → ${rk.translator || "?"}`, blocks: retakeBlocks(rkId, p) });
             p.previewChannel = posted.channel; p.previewTs = posted.ts;
+            pendingRetakes.save();   // previewTs 등 인플레이스 변경 영속화
           }
           return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: rk.koTitle, jpTitle: rk.jpTitle, episodes: rk.episodes, editor: rk.editorKind, translator: rk.translator, to: rk.target, warnings: warn, note: "확인 버튼을 보냈음. 재상 님이 버튼을 눌러야 발송됨. 미리보기 그대로만 보여주고, 보냈다고 단정하지 말 것." }) }] };
         } catch (e) {
@@ -1133,7 +1142,7 @@ app.view("retake_edit_modal", async ({ ack, view, client, body }) => {
   if (!p) return;
   if (body.user?.id !== DISPATCHER_USER_ID) return;
   const newBody = view.state.values?.body?.val?.value;
-  if (typeof newBody === "string" && newBody.trim()) p.body = newBody;
+  if (typeof newBody === "string" && newBody.trim()) { p.body = newBody; pendingRetakes.save(); }
   if (p.previewChannel && p.previewTs) {
     await client.chat.update({ channel: p.previewChannel, ts: p.previewTs, text: `리테이크 발송 확인(수정됨): ${p.koTitle} ${p.epText}`, blocks: retakeBlocks(rkId, p) }).catch((e) => console.error("[retake_edit_modal] update 실패:", e?.data?.error || e?.message));
   }
