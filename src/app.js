@@ -221,7 +221,9 @@ function buildTransStartText(p, preview = false) {
     `• 초도 납품일 : ${p.firstDelivery}`,
     `• 초도 회차 ${p.firstEpisode}`,
     ``,
+    "```",            // 수정 사항을 회색 박스(코드블록)로
     note,
+    "```",
     ``,
     `• 고객 번역 검수 시작일 : ${p.reviewStart}`,
   ].join("\n");
