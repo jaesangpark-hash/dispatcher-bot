@@ -9,7 +9,7 @@ const FILE = path.join(DIR, "reminders.json");
 
 function load() {
   try { return JSON.parse(fs.readFileSync(FILE, "utf8")); }
-  catch { return { items: [], lastNagYmd: null }; }
+  catch { return { items: [], lastNagSlot: null }; }
 }
 function save(d) {
   fs.mkdirSync(DIR, { recursive: true });
@@ -51,16 +51,21 @@ export function completeReminder(match) {
   return { removed, done: removed.length, remaining: d.items.length };
 }
 
-// 데일리 재촉 대상(시각 미지정 = dueAt 없는 것만): 안 끝난 게 있고 + 오늘 아직 재촉 안 했고 + 지정 시각 지났으면 → 목록 반환 + 오늘 재촉됨 표시.
-export function dueNag(nagHour) {
+// 재촉 대상(시각 미지정 = dueAt 없는 것만)을 설정된 시각 슬롯마다 하루 1회씩 재촉.
+// nagHours: 시각 배열(예 [9,14,18]). 지금 시각 이하의 가장 늦은 슬롯을 잡아, 그 슬롯을 오늘 아직 안 보냈으면 발송.
+// lastNagSlot = "YYYY-MM-DD:HH" — 같은 슬롯 재발사·재시작 스팸 방지.
+export function dueNag(nagHours) {
   const d = load();
   const nags = d.items.filter((x) => !x.dueAt);
   if (!nags.length) return null;
   const now = new Date();
   const ymd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  if (d.lastNagYmd === ymd) return null;       // 오늘 이미 재촉함
-  if (now.getHours() < nagHour) return null;   // 아직 재촉 시각 전
-  d.lastNagYmd = ymd; save(d);
+  const hours = (Array.isArray(nagHours) ? nagHours : [nagHours]).map(Number).filter((h) => !isNaN(h)).sort((a, b) => a - b);
+  const slot = hours.filter((h) => now.getHours() >= h).pop();   // 지금 이하 중 가장 늦은 슬롯
+  if (slot == null) return null;                 // 첫 슬롯 시각 전
+  const key = `${ymd}:${slot}`;
+  if (d.lastNagSlot === key) return null;        // 이 슬롯 이미 발송함
+  d.lastNagSlot = key; save(d);
   return nags;
 }
 

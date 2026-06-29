@@ -30,7 +30,7 @@ const {
   DISPATCHER_MODEL = "claude-sonnet-4-6",
   BOT_DISPLAY_NAME,   // 설정 시 chat.postMessage username 으로 표시명 강제 (chat:write.customize 스코프 필요)
   BOT_ICON_EMOJI,     // 선택: 표시 아이콘 (예: ":robot_face:")
-  BOT_NAG_HOUR = "9", // 재촉 리마인더 데일리 발송 시각(시, 로컬). 기본 오전 9시
+  BOT_NAG_HOURS = "9,14,18", // 재촉 리마인더 발송 시각들(콤마, 시·로컬). 기본 09·14·18시 하루 3회
   APM_USER_IDS = "", // 조회·검수만 허용할 APM Slack ID(콤마 구분). 변경·발송·리마인더는 재상(DISPATCHER_USER_ID)만.
 } = process.env;
 
@@ -148,7 +148,7 @@ const DISPATCHER_PROMPT = [
   "- query_sheet 뷰에 없는 탭을 물으면 → read_tab(탭 이름). 시트 실제 헤더가 곧 필드명이라 사용자가 말한 헤더로 바로 거른다. 표 헤더가 중간 행이면 headerRow 지정. 알려진 6개 시트의 어떤 탭이든 조회 가능.",
   "- '고객사 스케줄 시트'(중일, =내부 납품 시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. 'N/일 납품 회차 카운트'=mode:delivery_on+date, '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. ID 묻지 말 것(이 도구가 그 시트임).",
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
-  "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝낼 때까지 매일 아침 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. '~했어'·'N번 완료'·'취소' → complete_reminder(번호 또는 내용 일부, 둘 다에 적용).",
+  "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝내거나 '그만'할 때까지 하루 여러 번 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. 완료('~했어'·'N번 완료'·'해결됐어')거나 중단('그만'·'멈춰'·'이건 그만 리마인드해') 신호 → complete_reminder(번호 또는 내용 일부). 재촉 중인 일을 대화로 처리하다가 '그만/됐어' 신호가 오면 그 항목을 complete_reminder로 빼라.",
   "그 밖에 도구가 없는 일이면, '도구가 없다'를 장황히 설명하지 말고 — 아는 선에서 바로 도움이 되는 답을 주고, 정확한 데이터가 필요하면 어디(어느 시트·채널)를 보면 되는지 한 줄로만 짚어준다.",
   "★계산·집계·무거운 작업은 compute로(암산·수동 카운트 금지, 타임아웃 방지): 합계·환율·정산·통계·CSV/시트 집계(개수·비율·분류·TOP N)는 머리로 세지 말고 compute로 코드 실행. 첨부 CSV/엑셀은 compute 안 attachments[i].text로 직접 접근(원문 재기입 금지). 시트 대량 집계는 read_tab으로 행을 가져와 compute에 넘겨 계산(수백 행 직접 세지 말 것). 번역 검수(review_episode)는 한 번에 한 작품·회차씩만(여러 개면 '하나씩 순차로' 하고 한 건씩) — 몰아치면 타임아웃.",
   "★도구 라우팅(엄수·양방향 폴백 금지): ①운영·내부 데이터(작품·납품·일정·작업자·정산·고객사·스케줄 등)는 반드시 내부 도구(get_*·query_sheet·totus_*·read_tab·query_schedule 등)로만 조회한다. 못 찾으면 '못 찾았다'고 답하고 작품명 표기 확인을 요청한다 — 절대 웹으로 넘어가지 마라. ②WebSearch(웹 검색)는 사용자가 '웹에서/검색해줘'라고 명시했거나, 환율·일반상식·뉴스처럼 내부에 있을 리 없는 외부·실시간 정보일 때만 쓴다. 웹에서 못 찾으면 '웹에서 못 찾았다'고 답하고 내부 도구로 폴백하지 마라. ③즉 각 요청은 지정된 한쪽 출처에서만 처리하고, 미스는 '못 찾음'으로 끝낸다(반대편으로 안 넘어감). WebFetch(임의 URL 회수)는 쓰지 말고, 같은 검색을 2회 넘게 재시도하지 마라.",
@@ -739,9 +739,9 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("add_reminder",
-      "재상 님이 '나중에 챙길 일'을 기억해달라고 할 때 저장한다(재촉 리마인더). 시간 지정 불필요 — 끝낼 때까지 매일 아침 자동으로 재촉 DM이 간다. '이거 기억해둬'·'나중에 ~해야 해'·'~하는 거 잊지마' 류에 사용.",
+      "재상 님이 '나중에 챙길 일'을 기억해달라고 할 때 저장한다(재촉 리마인더). 시간 지정 불필요 — 끝내거나 '그만'할 때까지 하루 여러 번(기본 09·14·18시) 자동으로 재촉 DM이 간다. '이거 기억해둬'·'나중에 ~해야 해'·'~하는 거 잊지마' 류에 사용.",
       { text: z.string().describe("기억할 내용") },
-      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = addReminder(a.text); return { content: [{ type: "text", text: JSON.stringify({ saved: true, id: r.id, total: r.total, note: "매일 아침 재촉 예정. 완료되면 알려주면 지움." }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = addReminder(a.text); return { content: [{ type: "text", text: JSON.stringify({ saved: true, id: r.id, total: r.total, note: "하루 여러 번 재촉 예정. 끝나거나 '그만'하면 지움." }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: false } }),
     tool("schedule_reminder",
       "특정 시각에 1회 리마인드. '월요일 오전 10시에 ~ 리마인드'처럼 시각이 주어질 때 사용. when은 ISO8601(예 2026-06-22T10:00:00+09:00) — 메시지 앞 [현재 시각(KST)] 기준으로 계산해서 넣어라. 시각 없이 '그냥 기억해둬'면 이게 아니라 add_reminder를 쓴다.",
@@ -753,7 +753,7 @@ const apmTools = createSdkMcpServer({
       async () => { try { const _d = ownerOnly(); if (_d) return _d; return { content: [{ type: "text", text: JSON.stringify({ items: listReminders() }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: true } }),
     tool("complete_reminder",
-      "재촉 리마인더를 완료 처리(삭제)한다. '~했어'·'N번 완료'·'~끝냈어' 류. 번호(예 '2') 또는 내용 일부(부분 일치)로 지정.",
+      "재촉 리마인더를 완료/중단 처리(삭제 = 리마인드 히스토리에서 제외)한다. '~했어'·'N번 완료'·'~끝냈어'·'해결됐어' 같은 완료 신호, 그리고 '그만'·'멈춰'·'이건 그만 리마인드해' 같은 중단 신호 모두에 사용. 번호(예 '2') 또는 내용 일부(부분 일치)로 지정.",
       { match: z.string().describe("완료할 리마인더의 번호 또는 내용 일부") },
       async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = completeReminder(a.match); return { content: [{ type: "text", text: JSON.stringify({ done: r.done, removed: r.removed.map((x) => x.text), remaining: r.remaining }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: false } }),
@@ -1242,10 +1242,11 @@ async function dmReminder(text) {
 }
 async function checkNag() {
   try {
-    const items = dueNag(parseInt(BOT_NAG_HOUR, 10) || 9);
+    const hours = BOT_NAG_HOURS.split(",").map((s) => parseInt(s.trim(), 10)).filter((h) => !isNaN(h));
+    const items = dueNag(hours.length ? hours : [9]);
     if (!items) return;
     const lines = items.map((x) => `${x.id}. ${x.text}`).join("\n");
-    await dmReminder(`📌 아직 안 끝난 일, 잊지 마세요! (매일 아침 챙겨드려요)\n${lines}\n\n끝낸 건 "N번 완료" 또는 "○○ 했어"라고 알려주세요.`);
+    await dmReminder(`📌 아직 안 끝난 일, 잊지 마세요! (하루 ${hours.length || 1}번 챙겨드려요)\n${lines}\n\n끝났거나 그만 챙겨도 되면 "N번 완료"·"○○ 했어"·"그만 리마인드해"라고 알려주세요.`);
     console.log(`[nag] 재촉 발송 ${items.length}건`);
   } catch (e) { console.error("[nag] 실패:", e?.message ?? e); }
 }
@@ -1262,6 +1263,6 @@ async function tick() { await checkScheduled(); await checkNag(); }
   await app.start();
   if (BRAIN_ON) startSession();   // 엔진을 미리 띄워 워밍(콜드스타트 제거)
   tick();                         // 부팅 직후 1회
-  setInterval(tick, 60 * 1000);   // 1분마다 (예약은 ~1분 내 발송, 데일리는 dueNag가 하루 1회로 제한)
-  console.log(`🤖 디스패처 가동 — 브레인 ${BRAIN_ON ? `ON (${DISPATCHER_MODEL}, 세션 워밍됨)` : "OFF (에코 모드)"} · 재촉 ${BOT_NAG_HOUR}시 · 예약 1분틱`);
+  setInterval(tick, 60 * 1000);   // 1분마다 (예약은 ~1분 내 발송, 재촉은 dueNag가 시각 슬롯별 하루 1회로 제한)
+  console.log(`🤖 디스패처 가동 — 브레인 ${BRAIN_ON ? `ON (${DISPATCHER_MODEL}, 세션 워밍됨)` : "OFF (에코 모드)"} · 재촉 ${BOT_NAG_HOURS}시 · 예약 1분틱`);
 })();
