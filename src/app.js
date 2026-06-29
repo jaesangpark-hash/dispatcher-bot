@@ -17,7 +17,7 @@ import { search as notionSearch, readPage as notionReadPage } from "./notion.js"
 import { extractEpisode, QA_INSTRUCTIONS } from "./review.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries } from "./inquiries.js";
-import { missingOriginals, deliveryOnDate, workSchedule } from "./schedule.js";
+import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch } from "./schedule.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
 
@@ -134,7 +134,7 @@ const DISPATCHER_PROMPT = [
   "★★ 절대 규칙(최우선): 작품명·고유명사는 도구가 돌려준 셀 값(원문 문자열)을 **글자 하나도 바꾸지 않고 그대로 복사해** 출력한다. 음역·번역·한자↔한글 변환·가나 변환·표기 정리 일체 금지 (예: '最弱'→'최약' 금지, '覇王'→'패왕' 금지). 어느 언어(중/한/일) 제목을 골라올지 판단이 틀릴 수는 있어도, 일단 가져온 제목 문자열은 무조건 셀 값 그대로 출력한다. 한국어·일본어 제목이 둘 다 있으면 섞지 말고 각각 원문대로.",
   "- 납품일/일정 → get_delivery_date (특정 작품 납품일, 중일 기본·한일 ko-ja). '그날/기간 납품 예정 리스트'(예 '7/17 납품 리스트')는 delivery_on_date(date 또는 from~to). → 날짜별 납품은 query_sheet로 시트 통째 읽지 말고 delivery_on_date로(서버측이라 빠름).",
   "- 리테이크 집계·현황은 retake_query로(시트 통째 읽기 금지·빠름): '기간 리테이크 개수/많이 나온 작품 TOP'=mode:agg(from,to,top) 즉시. '○○ 리테이크 현황/오탈자 개수' 및 유형(번역/식자/애매) 분류=mode:list로 그 기간 행을 받아 *comment를 읽고* 분류(tag는 참고만, 결과 많으면 기간/작품 좁혀 재요청), 카운트는 compute.",
-  "- 납품예정일 '변경' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영) / ②내부 납품관리시트 G열만 = propose_delivery_edit. 둘 다 게이트형(버튼 확인). 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고, 절대 '변경했다'고 단정하지 말 것(버튼 눌러야 반영).",
+  "- 납품예정일 '변경/삭제(비우기)' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영, 변경 전용) / ②내부 납품관리시트 G열 = propose_delivery_edit(변경+삭제 둘 다). 둘 다 게이트형(버튼 확인). ★'납품일 지워/삭제/비워줘'(특히 재수급·문의로 고객사 확인 필요해 일정을 비워둘 때) → 내부 시트면 propose_delivery_edit에 new_date='삭제'(또는 빈 문자열)로 호출하면 G열을 비운다. 확인 끝나 다시 잡을 땐 같은 도구에 날짜를 준다. 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고(삭제는 보통 내부 시트), 절대 '변경/삭제했다'고 단정하지 말 것(버튼 눌러야 반영).",
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
   "★'피드백' 라우팅(자주 헷갈림): propose_retake=클라이언트 수정요청(리테이크)을 번역가에게 일본어로 전달 / share_feedback=검수 퀄리티 등급(총평·번역가·LG 등급+코멘트) 공유. 맥락에 리테이크 BOT 메시지(작품·리테이크화수·수정내용·프로젝트URL)가 있거나 '번역가에게/리테이크/수정 전달'이면 → propose_retake. 명시적 '검수 등급/퀄리티/총평 공유'만 → share_feedback. 애매하면 리테이크 BOT 메시지 유무로 판단(있으면 propose_retake). 한일은 KP평가 없어 share_feedback 불가→propose_retake.",
   "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님).",
@@ -149,7 +149,7 @@ const DISPATCHER_PROMPT = [
   "- 번역 검수/QA 요청(예: '게임속기연 90 검수', '○○ ○○화 검수해줘') → review_episode(work, episode). 한일이면 lang 생략(ko-ja 기본), 중일이면 zh-ja. 스레드에서 작품명·회차가 보이면 그걸 읽어 호출한다. 도구가 돌려준 [검수 기준]과 pairs로 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성한다(작품/회차/단계 + task URL + 페이지-텍박 + 수정전→후 + 사유). 문제 없으면 '問題なし'. 이 검수표는 그대로 작업자에게 복붙되는 것이니 임의 해설·강조 없이 템플릿만 깔끔히. error가 오면 그 사유를 그대로 전한다.",
   "★ 검수 결과 전달 규칙: 검수표는 **그냥 네 답변 텍스트로 출력만** 해라 — 시스템이 사용자가 부른 바로 그 자리(스레드/DM)에 자동으로 전달한다. send_message 도구로 직접 보내거나, DM/채널로 따로 발송하거나, 작업자 DB(slack_id/채널)를 조회해 보내려 하지 마라. 'DM으로 보냈다'·'DB에 ID가 없어 못 보냈다' 같은 발송 관련 말도 하지 마라(전달은 시스템 몫). 진행 신호(🔎 추출 완료)도 시스템이 자동으로 띄우니 네가 따로 만들지 마라.",
   "- query_sheet 뷰에 없는 탭을 물으면 → read_tab(탭 이름). 시트 실제 헤더가 곧 필드명이라 사용자가 말한 헤더로 바로 거른다. 표 헤더가 중간 행이면 headerRow 지정. 알려진 6개 시트의 어떤 탭이든 조회 가능.",
-  "- '고객사 스케줄 시트'(중일, =내부 납품 시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. 'N/일 납품 회차 카운트'=mode:delivery_on+date, '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. ID 묻지 말 것(이 도구가 그 시트임).",
+  "- '고객사 스케줄 시트'(중일, =내부 납품 시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. '○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일=mode:launch(work나 pivo + episode, PIVO로 정확매칭), 'N/일 납품 회차 카운트'=mode:delivery_on+date, '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. ID 묻지 말 것(이 도구가 그 시트임). 런칭일 못 찾으면 PIVO ID나 일본어 제목 확인을 요청(한국어만으론 시트에 없을 수 있음).",
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
   "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝내거나 '그만'할 때까지 하루 여러 번 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. 완료('~했어'·'N번 완료'·'해결됐어')거나 중단('그만'·'멈춰'·'이건 그만 리마인드해') 신호 → complete_reminder(번호 또는 내용 일부). 재촉 중인 일을 대화로 처리하다가 '그만/됐어' 신호가 오면 그 항목을 complete_reminder로 빼라.",
   "그 밖에 도구가 없는 일이면, '도구가 없다'를 장황히 설명하지 말고 — 아는 선에서 바로 도움이 되는 답을 주고, 정확한 데이터가 필요하면 어디(어느 시트·채널)를 보면 되는지 한 줄로만 짚어준다.",
@@ -716,15 +716,16 @@ const apmTools = createSdkMcpServer({
       async (a) => { try { return { content: [{ type: "text", text: capJson(await notionReadPage(a.pageId)) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: true } }),
     tool("query_schedule",
-      "중일 '고객사 스케줄 시트'(내부 납품 시트와 다름) 조회. 블록 구조라 일반 query_sheet/read_tab으로는 안 되고 이 도구로만. mode: 'delivery_on'(특정 날짜에 납품 예정인 회차 집계, date 필수 예 '6/19') · 'missing'(런칭 임박인데 原本 미수급 회차, monthsAhead 기본1) · 'work'(작품별 주차 스케줄, work 필수). 작품명·고객사 일정·원본 수급·런칭/납품 회차 질문은 여기로.",
-      { mode: z.enum(["delivery_on", "missing", "work"]).describe("조회 종류"), date: z.string().optional().describe("delivery_on용 날짜 M/D (예 6/19)"), work: z.string().optional().describe("work용 작품명(한/일/중)"), monthsAhead: z.number().optional().describe("missing용 런칭 임박 개월(기본 1)") },
-      async ({ mode, date, work, monthsAhead }) => {
+      "중일 '고객사 스케줄 시트'(내부 납품 시트와 다름) 조회. 블록 구조라 일반 query_sheet/read_tab으로는 안 되고 이 도구로만. mode: 'launch'(★특정 회차의 런칭일=주차별 リリース日 + 그 주차 납품예정일. work나 pivo + episode. PIVO ID로 정확매칭하니 가장 신뢰도 높음) · 'delivery_on'(특정 날짜에 납품 예정인 회차 집계, date 필수 예 '6/19') · 'missing'(런칭 임박인데 原本 미수급 회차, monthsAhead 기본1) · 'work'(작품별 주차 스케줄 전체, work 필수). 작품명·고객사 일정·원본 수급·런칭/납품 회차 질문은 여기로. ★'○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일 → mode:launch.",
+      { mode: z.enum(["launch", "delivery_on", "missing", "work"]).describe("조회 종류"), date: z.string().optional().describe("delivery_on용 날짜 M/D (예 6/19)"), work: z.string().optional().describe("work/launch용 작품명(한/일/중 무엇이든)"), pivo: z.string().optional().describe("launch용 PIVO ID(있으면 가장 정확). 작품명 대신/병행 사용"), episode: z.string().optional().describe("launch용 회차 번호(예 '289'). 생략 시 주차 전체 반환"), monthsAhead: z.number().optional().describe("missing용 런칭 임박 개월(기본 1)") },
+      async ({ mode, date, work, pivo, episode, monthsAhead }) => {
         try {
           let r;
-          if (mode === "delivery_on") r = await deliveryOnDate(date);
+          if (mode === "launch") r = await episodeLaunch({ work, pivo, episode });
+          else if (mode === "delivery_on") r = await deliveryOnDate(date);
           else if (mode === "missing") r = await missingOriginals({ monthsAhead: monthsAhead ?? 1 });
           else if (mode === "work") r = await workSchedule(work);
-          else r = { error: "mode는 delivery_on|missing|work 중 하나" };
+          else r = { error: "mode는 launch|delivery_on|missing|work 중 하나" };
           return { content: [{ type: "text", text: capJson(r) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },

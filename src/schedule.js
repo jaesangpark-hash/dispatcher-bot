@@ -5,11 +5,21 @@
 // 한 작품 = 'リリース日' 행으로 시작하는 블록. 같은 블록의 話数/納品予定日/納品話数 행이 주차별로 정렬됨.
 // 미수급 판정 로직은 n8n '[Toon Japan]중일 원본 미수급 리마인드' 워크플로우 포팅.
 import { readRange } from "./sheets.js";
+import { resolveTitleAliases } from "./works.js";
 
 const SCHEDULE_ID = "12y4jtsPJbJg7HdO5AfzoJK85suLenmk_bpWw4mRH2RQ";
 const TAB = "スケジュールシート";
+const TITLE_TAB = "タイトルリスト";   // PIVO 인덱스: B作品ID(PIVO) E初回リリース日 F正式 G仮 H原題
 const COL = { title: 2, deliv: 7, received: 8, label: 9 };   // C, H, I, J
 const WEEK_START = 10;                                        // K열~ 주차별 데이터
+
+// 제목 매칭용 강한 정규화(괄호·물결·구두점 제거). 타이틀리스트↔스케줄 블록 다리에 사용(매칭률 49/49 검증).
+const normT = (s) => String(s || "").replace(/[\s~～〜〰（）()【】「」『』、,。.・\-—–:：!！?？]/g, "").toLowerCase();
+
+// 통짜 읽기·파싱이 무거워 짧은 TTL 캐시(런칭일은 자주 안 바뀜). 반복 조회를 즉답으로.
+const TTL_MS = 3 * 60 * 1000;
+const _cache = { blocks: { at: 0, v: null }, titles: { at: 0, v: null } };
+const fresh = (e) => e.v && Date.now() - e.at < TTL_MS;
 
 // "5/4(月)" / "4/30(목)" / "2023/04/30" → {month, day}. 없으면 null
 function parseMD(raw) {
@@ -36,8 +46,9 @@ function receivedMax(raw) {
   return nums ? Math.max(...nums.map(Number)) : 0;
 }
 
-// 시트를 블록(작품) 배열로 파싱
+// 시트를 블록(작품) 배열로 파싱 (TTL 캐시)
 async function getBlocks() {
+  if (fresh(_cache.blocks)) return _cache.blocks.v;
   const rows = (await readRange(SCHEDULE_ID, `${TAB}!A1:BZ500`)) || [];
   const header = rows[0] || [];
   const weekCols = [];
@@ -75,7 +86,74 @@ async function getBlocks() {
       weeks,
     });
   }
+  _cache.blocks = { at: Date.now(), v: blocks };
   return blocks;
+}
+
+// 타이틀리스트(PIVO 인덱스) 로드 (TTL 캐시). pivo → {pivo, launch(初回), seika(F正式), ka(G仮), wonje(H原題), titles[]}
+async function titleListIndex() {
+  if (fresh(_cache.titles)) return _cache.titles.v;
+  const rows = (await readRange(SCHEDULE_ID, `${TITLE_TAB}!A2:H400`)) || [];
+  const byPivo = new Map();
+  const list = [];
+  for (const r of rows) {
+    const pivo = String(r[1] ?? "").trim();
+    if (!pivo) continue;
+    const e = { pivo, launch: String(r[4] ?? "").trim(), seika: String(r[5] ?? "").trim(), ka: String(r[6] ?? "").trim(), wonje: String(r[7] ?? "").trim() };
+    e.titles = [e.seika, e.ka, e.wonje].filter(Boolean);
+    byPivo.set(pivo, e);
+    list.push(e);
+  }
+  const v = { byPivo, list };
+  _cache.titles = { at: Date.now(), v };
+  return v;
+}
+
+// 입력(PIVO ID 또는 한/일/중 제목) → PIVO ID. 1)숫자=PIVO 2)출판사 마스터 별칭→pivoId 3)타이틀리스트 F/G/H 직접매칭
+async function resolvePivo(workOrPivo) {
+  const q = String(workOrPivo ?? "").trim();
+  if (!q) return null;
+  if (/^\d+$/.test(q)) return q;
+  const al = await resolveTitleAliases(q).catch(() => null);
+  if (al?.pivoId) return String(al.pivoId).trim();
+  const { list } = await titleListIndex();
+  const nq = normT(q);
+  const hit = list.find((e) => e.titles.some((t) => { const nt = normT(t); return nt && (nt.includes(nq) || nq.includes(nt)); }));
+  return hit?.pivo || null;
+}
+
+// PIVO의 정식/가/원제 제목으로 스케줄 블록을 정확매칭
+function matchBlockByTitles(blocks, titles) {
+  const nts = titles.map(normT).filter(Boolean);
+  if (!nts.length) return null;
+  return blocks.find((b) => { const nb = normT(b.title); return nb && nts.some((t) => nb.includes(t) || t.includes(nb)); }) || null;
+}
+
+// ★특정 회차의 런칭일(주차별 リリース日) 조회. PIVO(또는 제목)→타이틀리스트→블록→회차가 속한 주차.
+// 반환: 그 회차의 launch(주차 リリース日) + deliveryDate(그 주차 納品予定日, 납품일 재설정에 유용) + 주차정보. episode 미지정이면 블록 주차 전체.
+export async function episodeLaunch({ work, pivo, episode } = {}) {
+  const key = pivo != null && String(pivo).trim() ? String(pivo).trim() : work;
+  const resolvedPivo = await resolvePivo(key);
+  if (!resolvedPivo) return { found: false, msg: `'${key}'로 PIVO ID를 못 찾음(출판사 마스터·타이틀리스트 모두 미스). 작품명 표기나 PIVO ID 확인 필요.` };
+  const { byPivo } = await titleListIndex();
+  const tl = byPivo.get(resolvedPivo);
+  if (!tl) return { found: false, pivo: resolvedPivo, msg: `PIVO ${resolvedPivo}가 고객사 타이틀리스트에 없음.` };
+  const blocks = await getBlocks();
+  const b = matchBlockByTitles(blocks, tl.titles);
+  if (!b) return { found: false, pivo: resolvedPivo, title: tl.seika || tl.ka, initialLaunch: tl.launch, msg: `타이틀리스트엔 있으나(제목 ${tl.seika || tl.ka}) 스케줄 시트 블록을 못 찾음 — 스케줄 미등록이거나 완결.` };
+
+  const base = { found: true, pivo: resolvedPivo, title: b.title, seika: tl.seika, ka: tl.ka, initialLaunch: tl.launch };
+  const ep = episode != null && String(episode).trim() !== "" ? parseInt(episode, 10) : null;
+  if (ep == null || isNaN(ep)) {
+    // 회차 미지정 → 주차별 런칭/납품 전체
+    return { ...base, weeks: b.weeks.map((w) => ({ week: w.week, launch: w.launch, episodes: w.episodes, deliveryDate: w.deliveryDate, deliveryEps: w.deliveryEps })) };
+  }
+  // 회차가 속한 주차 찾기: 話数(episodes) 범위에 ep 포함
+  const wk = b.weeks.find((w) => parseEpisodes(w.episodes).includes(ep));
+  if (!wk) {
+    return { ...base, episode: ep, foundEpisode: false, msg: `${ep}화가 어느 주차에도 없음(스케줄 범위 밖이거나 미기재). 주차별 회차: ` + b.weeks.filter((w) => w.episodes).map((w) => `${w.episodes}(런칭 ${w.launch})`).join(", "), weeks: b.weeks.map((w) => ({ week: w.week, launch: w.launch, episodes: w.episodes, deliveryDate: w.deliveryDate })) };
+  }
+  return { ...base, episode: ep, foundEpisode: true, launch: wk.launch, deliveryDate: wk.deliveryDate, week: wk.week, episodesInWeek: wk.episodes, deliveryEpsInWeek: wk.deliveryEps };
 }
 
 // 원본 미수급 (런칭 N개월 이내인데 原本 미수급) — n8n 포팅. 기준일 today(KST), threshold=+monthsAhead
