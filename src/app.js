@@ -4,6 +4,7 @@ const { App } = pkg;
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { lookupDelivery } from "./delivery.js";
+import { gasReady, gasQuery } from "./gas.js";
 import { lookupWork } from "./works.js";
 import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
@@ -128,7 +129,8 @@ const DISPATCHER_PROMPT = [
   "강조 기호(**굵게)를 남용하지 않는다 — 정말 핵심 한두 군데만. 평소엔 일반 텍스트로. 표·불릿·헤더도 꼭 필요할 때만.",
   "업무 명령이든 가벼운 잡담이든 가리지 않고 받아준다. '그건 내 역할이 아니다' 같은 선긋기나 자기 한계 변명을 길게 늘어놓지 않는다.",
   "★★ 절대 규칙(최우선): 작품명·고유명사는 도구가 돌려준 셀 값(원문 문자열)을 **글자 하나도 바꾸지 않고 그대로 복사해** 출력한다. 음역·번역·한자↔한글 변환·가나 변환·표기 정리 일체 금지 (예: '最弱'→'최약' 금지, '覇王'→'패왕' 금지). 어느 언어(중/한/일) 제목을 골라올지 판단이 틀릴 수는 있어도, 일단 가져온 제목 문자열은 무조건 셀 값 그대로 출력한다. 한국어·일본어 제목이 둘 다 있으면 섞지 말고 각각 원문대로.",
-  "- 납품일/일정 → get_delivery_date (중일 기본, 한일은 ko-ja)",
+  "- 납품일/일정 → get_delivery_date (특정 작품 납품일, 중일 기본·한일 ko-ja). '그날/기간 납품 예정 리스트'(예 '7/17 납품 리스트')는 delivery_on_date(date 또는 from~to). → 날짜별 납품은 query_sheet로 시트 통째 읽지 말고 delivery_on_date로(서버측이라 빠름).",
+  "- 리테이크 집계·현황은 retake_query로(시트 통째 읽기 금지·빠름): '기간 리테이크 개수/많이 나온 작품 TOP'=mode:agg(from,to,top) 즉시. '○○ 리테이크 현황/오탈자 개수' 및 유형(번역/식자/애매) 분류=mode:list로 그 기간 행을 받아 *comment를 읽고* 분류(tag는 참고만, 결과 많으면 기간/작품 좁혀 재요청), 카운트는 compute.",
   "- 납품예정일 '변경' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영) / ②내부 납품관리시트 G열만 = propose_delivery_edit. 둘 다 게이트형(버튼 확인). 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고, 절대 '변경했다'고 단정하지 말 것(버튼 눌러야 반영).",
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
   "★'피드백' 라우팅(자주 헷갈림): propose_retake=클라이언트 수정요청(리테이크)을 번역가에게 일본어로 전달 / share_feedback=검수 퀄리티 등급(총평·번역가·LG 등급+코멘트) 공유. 맥락에 리테이크 BOT 메시지(작품·리테이크화수·수정내용·프로젝트URL)가 있거나 '번역가에게/리테이크/수정 전달'이면 → propose_retake. 명시적 '검수 등급/퀄리티/총평 공유'만 → share_feedback. 애매하면 리테이크 BOT 메시지 유무로 판단(있으면 propose_retake). 한일은 KP평가 없어 share_feedback 불가→propose_retake.",
@@ -233,6 +235,34 @@ const apmTools = createSdkMcpServer({
         try {
           const r = await lookupDelivery({ work, episode: episode ?? "latest", lang: lang ?? "zh-ja" });
           return { content: [{ type: "text", text: JSON.stringify(r) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: true } }
+    ),
+    tool("retake_query",
+      "리테이크 시트(중일·한일 RAW)를 서버측에서 빠르게 조회·집계한다. mode=agg: 기간 내 *작품별 리테이크 건수 TOP N*(코멘트 안 읽고 카운트 → 즉시). 'X월 리테이크 개수/많이 나온 작품 TOP' 류. mode=list: 기간/작품/APM으로 좁힌 리테이크 행(인입일·작품·회차·수정내용(코멘트)·tag·APM·마감일). '○○ 리테이크 현황/오탈자 개수' 류. ★유형(번역/식자/애매) 분류는 이 도구가 안 한다 — mode=list로 받은 행의 *comment(코멘트)를 읽어* 네가 분류하고 compute로 카운트하라(tag는 참고만, 단독 판단 금지). 결과가 많으면(truncated) 기간/작품을 좁혀 재요청.",
+      { mode: z.enum(["list", "agg"]), from: z.string().optional().describe("시작일 yyyy-mm-dd(인입일 기준)"), to: z.string().optional().describe("종료일 yyyy-mm-dd"), work: z.string().optional().describe("작품명(부분일치)"), apm: z.string().optional().describe("APM 이름"), lang: z.enum(["zh", "ko", "both"]).optional().describe("기본 both"), top: z.string().optional().describe("agg일 때 상위 N(예 5)") },
+      async ({ mode, from, to, work, apm, lang, top }) => {
+        try {
+          if (!gasReady()) return { content: [{ type: "text", text: JSON.stringify({ error: "리테이크 빠른조회 미설정(.env GAS_QUERY_URL/SECRET). query_sheet 리테이크 뷰로 대체 가능." }) }] };
+          const j = await gasQuery({ sheet: "retake", q: mode, from, to, work, apm, lang: lang || "both", top });
+          return { content: [{ type: "text", text: JSON.stringify(j) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: true } }
+    ),
+    tool("delivery_on_date",
+      "납품 시트에서 특정 날짜(또는 기간)에 납품 예정인 작품·회차 리스트를 서버측에서 빠르게 가져온다. '7/17 납품 리스트', 'N월 N일 납품 회차' 류. date(단일) 또는 from~to(기간) 중 하나. (특정 작품의 납품일은 get_delivery_date를 써라.)",
+      { date: z.string().optional().describe("단일 날짜 yyyy-mm-dd"), from: z.string().optional().describe("기간 시작 yyyy-mm-dd"), to: z.string().optional().describe("기간 끝 yyyy-mm-dd"), lang: z.enum(["zh", "ko", "both"]).optional().describe("기본 both") },
+      async ({ date, from, to, lang }) => {
+        try {
+          if (!gasReady()) return { content: [{ type: "text", text: JSON.stringify({ error: "빠른조회 미설정(.env GAS_QUERY_URL/SECRET). query_sheet delivery 뷰+dateField로 대체 가능." }) }] };
+          const j = await gasQuery({ sheet: "delivery", q: "byDate", date, from, to, lang: lang || "both" });
+          return { content: [{ type: "text", text: JSON.stringify(j) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -858,7 +888,7 @@ function startSession() {
       // (claude.ai 조직 커넥터의 깨진 헤더 'Bearer 복사한_토큰'이 봇 세션에 실려
       //  매 응답을 깨뜨리던 문제 차단 — 툰식이는 외부 커넥터가 필요 없음)
       strictMcpConfig: true,
-      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
+      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode",
         "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
