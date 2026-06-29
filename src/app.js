@@ -138,7 +138,7 @@ const DISPATCHER_PROMPT = [
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
   "★'피드백' 라우팅(자주 헷갈림): propose_retake=클라이언트 수정요청(리테이크)을 번역가에게 일본어로 전달 / share_feedback=검수 퀄리티 등급(총평·번역가·LG 등급+코멘트) 공유. 맥락에 리테이크 BOT 메시지(작품·리테이크화수·수정내용·프로젝트URL)가 있거나 '번역가에게/리테이크/수정 전달'이면 → propose_retake. 명시적 '검수 등급/퀄리티/총평 공유'만 → share_feedback. 애매하면 리테이크 BOT 메시지 유무로 판단(있으면 propose_retake). 한일은 KP평가 없어 share_feedback 불가→propose_retake.",
   "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님).",
-  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. 후보 여러 건이면 사용자에게 되묻기. ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
+  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★납품예정일 '조회' 구분(중요): ①'TOTUS/실제 시스템 납품예정일'(JobProcess deliveryDate) = totus_delivery_date(work, episode). ②'내부 납품시트' 납품일 = get_delivery_date. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — 그걸 '납품예정일'이라 단정 금지. '실제 TOTUS 납품예정일'을 물으면 totus_delivery_date로 정확히 답해라.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수).",
@@ -246,8 +246,15 @@ async function findSetjipRequest(client, query) {
   const q = String(query ?? "").trim();
   const pivoNum = (q.match(/(\d{4,})/) || [])[1];          // PIVO처럼 보이는 4자리+ 숫자
   const isPivoOnly = /^(pv-?)?\d{4,}$/i.test(q);
-  const h = await client.conversations.history({ channel: SETJIP_CHANNEL, limit: 200 });
-  const reqs = (h.messages || []).filter((m) => String(m.text || "").includes("설정집 작성 요청"));
+  // 채널 트래픽이 많아 200건 너머에 있을 수 있음 → 최대 5페이지(≈1000건) 페이지네이션
+  const reqs = [];
+  let cursor;
+  for (let pg = 0; pg < 5; pg++) {
+    const h = await client.conversations.history({ channel: SETJIP_CHANNEL, limit: 200, ...(cursor ? { cursor } : {}) });
+    for (const m of (h.messages || [])) if (String(m.text || "").includes("설정집 작성 요청")) reqs.push(m);
+    cursor = h.response_metadata?.next_cursor;
+    if (!cursor) break;
+  }
   const nq = norm(q);
   const hits = reqs.filter((m) => {
     const t = String(m.text || "");
@@ -801,7 +808,8 @@ const apmTools = createSdkMcpServer({
     tool("propose_translation_start",
       "설정집 검수가 끝난 작품의 '번역 개시 요청' 메시지를 고정 템플릿으로 만들어, 그 작품의 '설정집 작성 요청' 스레드(채널 검색으로 자동 탐색)에 답글로 발송하도록 '제안'한다(미리보기+✏️수정+버튼). DM에서 호출해도 됨. work(작품명 한/일/중 또는 PIVO)로 설정집 작성 요청 채널을 검색→그 메시지에서 담당 APM 멘션과 PIVO를 추출하고, PIVO로 TOTUS 견적을 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 (보통 이 대화에서 함께 정한) 합의된 제목을 ko_title로 준다(생략 시 견적의 한국어 제목). 검수 시작일은 자동(요청일+11일, 주말 포함). 후보가 여러 건이면 되묻는다. 절대 '보냈다'고 단정하지 말 것(버튼 눌러야 발송).",
       {
-        work: z.string().describe("작품명(한/일/중) 또는 PIVO ID — 설정집 작성 요청 채널을 검색할 키"),
+        work: z.string().optional().describe("작품명(한/일/중) 또는 PIVO ID — 설정집 작성 요청 채널을 검색할 키. thread를 주면 생략 가능"),
+        thread: z.string().optional().describe("설정집 작성 요청 메시지의 슬랙 링크(검색이 안 잡힐 때 폴백). 주면 검색 대신 그 스레드에 바로 발송"),
         ko_title: z.string().optional().describe("한국어 타이틀(이 대화에서 정한 합의 제목). 생략 시 견적의 한국어 제목 사용"),
         revision_note: z.string().optional().describe("수정 사항 문구. 생략 시 '위에서 언급해드린 수정 사항 외에는 변동 없습니다.' (✏️수정 모달로도 입력 가능)"),
         first_delivery_date: z.string().optional().describe("초도 납품일 수동 지정(생략 시 견적에서 자동, 예 '8/24(월)')"),
@@ -809,15 +817,27 @@ const apmTools = createSdkMcpServer({
         apm_user_id: z.string().optional().describe("담당 APM Slack ID 수동 지정(생략 시 설정집 메시지에서 자동)"),
         review_start_date: z.string().optional().describe("검수 시작일 M/D 수동 지정(생략 시 자동, 요청일+11일)"),
       },
-      async ({ work, ko_title, revision_note, first_delivery_date, first_episode, apm_user_id, review_start_date }) => {
+      async ({ work, thread, ko_title, revision_note, first_delivery_date, first_episode, apm_user_id, review_start_date }) => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
           if (!ctx?.client || !ctx?.channel) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락을 못 잡음. 다시 불러줘." }) }] };
-          const hits = await findSetjipRequest(ctx.client, work);
-          if (!hits.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}'의 설정집 작성 요청을 <#${SETJIP_CHANNEL}>에서 못 찾음. 작품명/PIVO 표기를 확인하거나, 그 메시지 링크를 알려줘.` }) }] };
-          if (hits.length > 1) return { content: [{ type: "text", text: JSON.stringify({ found: true, multiple: true, msg: "설정집 작성 요청이 여러 건 잡혔어. 어느 건지 확인 필요.", candidates: hits.slice(0, 5).map((h) => ({ ts: h.ts, pivoId: h.pivoId, preview: String(h.text).replace(/\n/g, " ").slice(0, 80) })) }) }] };
-          const hit = hits[0];
+          let hit;
+          if (thread && thread.trim()) {                       // 링크 폴백: 검색 건너뛰고 그 메시지 직접 사용
+            const pl = parseSlackLink(thread);
+            if (!pl?.ts) return { content: [{ type: "text", text: JSON.stringify({ error: `스레드 링크를 못 읽음: ${thread} (메시지 '링크 복사' 값 필요)` }) }] };
+            const chan = pl.channel || SETJIP_CHANNEL;
+            const rr = await ctx.client.conversations.replies({ channel: chan, ts: pl.ts, limit: 1 }).catch(() => null);
+            const m = rr?.messages?.[0];
+            if (!m) return { content: [{ type: "text", text: JSON.stringify({ error: "그 링크의 메시지를 못 읽었어(봇이 그 채널 멤버인지 확인 필요)." }) }] };
+            hit = { ts: pl.ts, channel: chan, text: m.text || "", apmId: (String(m.text).match(/<@([UW][A-Z0-9]+)>/) || [])[1] || null, pivoId: (String(m.text).match(/PV-?(\d+)/) || [])[1] || null };
+          } else {
+            if (!work || !work.trim()) return { content: [{ type: "text", text: JSON.stringify({ error: "work(작품명/PIVO) 또는 thread(설정집 메시지 링크) 중 하나는 필요해." }) }] };
+            const hits = await findSetjipRequest(ctx.client, work);
+            if (!hits.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}'의 설정집 작성 요청을 <#${SETJIP_CHANNEL}>에서 못 찾음. 작품명/PIVO 표기를 확인하거나, 그 설정집 작성 요청 메시지의 '링크 복사' 값을 thread로 주면 거기 바로 달아줌.` }) }] };
+            if (hits.length > 1) return { content: [{ type: "text", text: JSON.stringify({ found: true, multiple: true, msg: "설정집 작성 요청이 여러 건 잡혔어. 어느 건지 확인 필요.", candidates: hits.slice(0, 5).map((h) => ({ ts: h.ts, pivoId: h.pivoId, preview: String(h.text).replace(/\n/g, " ").slice(0, 80) })) }) }] };
+            hit = hits[0];
+          }
           const pivo = hit.pivoId;
           let firstDelivery = first_delivery_date?.trim() || "", firstEpisode = first_episode?.trim() || "", koFromQuote = "";
           if (pivo) {
@@ -832,7 +852,7 @@ const apmTools = createSdkMcpServer({
             } catch (e) { /* 견적 실패해도 진행(수동값/모달로 보완) */ }
           }
           const p = {
-            channel: SETJIP_CHANNEL, threadTs: hit.ts, pivo,
+            channel: hit.channel || SETJIP_CHANNEL, threadTs: hit.ts, pivo,
             apmId: apm_user_id?.trim() || hit.apmId || null,
             koTitle: ko_title?.trim() || koFromQuote || "(미정 — 수정에서 입력)",
             firstDelivery: firstDelivery || "(미확인 — 수정에서 입력)",
@@ -1125,7 +1145,8 @@ const app = new App({
 // DM (message.im) — 본인 DM만, 봇/수정 이벤트 제외
 app.message(async ({ message, say, client }) => {
   if (message.channel_type !== "im") return;           // DM만 (채널 노이즈 차단)
-  if (message.subtype || message.bot_id) return;       // 편집/봇 메시지 무시
+  // 파일 첨부 메시지는 subtype="file_share"라 통과시켜야 함(설정집 업로드 등). 편집·삭제·봇 메시지만 무시.
+  if ((message.subtype && message.subtype !== "file_share") || message.bot_id) return;
   await handle({
     text: message.text, channel: message.channel, ts: message.ts,
     threadTs: message.thread_ts || message.ts, inThread: Boolean(message.thread_ts),
