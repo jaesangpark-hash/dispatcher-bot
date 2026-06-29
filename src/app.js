@@ -240,6 +240,20 @@ function transStartBlocks(id, p) {
     ] },
   ];
 }
+// 파일명에서 검색 키 후보 추출(일본어/중국어 제목 런). 노이즈 토큰 제거, 긴 것 우선.
+function filenameKeys(name) {
+  const base = String(name ?? "").replace(/\.[a-z0-9]+$/i, "");
+  const runs = base.match(/[぀-ヿ㐀-鿿豈-﫿々ーｰ]+/g) || [];
+  const NOISE = new Set(["修正要望", "仮", "設定集", "作成", "依頼", "要望", "修正"]);
+  return [...new Set(runs.filter((r) => r.length >= 2 && !NOISE.has(r)))].sort((a, b) => b.length - a.length);
+}
+// 설정집 메시지 텍스트에서 초도 정보 파싱(중일 인라인 포맷: •초도 납품일 / •초도 N화)
+function parseSetjipInline(text) {
+  const t = String(text ?? "");
+  const fd = (t.match(/초도\s*납품일\s*[:：]?\s*([^\n•·]+)/) || [])[1]?.trim() || "";
+  const fe = (t.match(/초도\s*회차\s*[:：]?\s*(\d+)/) || t.match(/초도\s*(\d+)\s*화/) || [])[1] || "";
+  return { firstDelivery: fd, firstEpisode: fe };
+}
 // 설정집 작성 요청 채널에서 작품/PIVO로 메시지 찾기 → {ts, apmId, pivoId, text}
 async function findSetjipRequest(client, query) {
   const norm = (s) => String(s ?? "").replace(/[\s~～〜〰（）()【】「」『』・,.\-—–:：_]/g, "").toLowerCase();
@@ -832,9 +846,13 @@ const apmTools = createSdkMcpServer({
             if (!m) return { content: [{ type: "text", text: JSON.stringify({ error: "그 링크의 메시지를 못 읽었어(봇이 그 채널 멤버인지 확인 필요)." }) }] };
             hit = { ts: pl.ts, channel: chan, text: m.text || "", apmId: (String(m.text).match(/<@([UW][A-Z0-9]+)>/) || [])[1] || null, pivoId: (String(m.text).match(/PV-?(\d+)/) || [])[1] || null };
           } else {
-            if (!work || !work.trim()) return { content: [{ type: "text", text: JSON.stringify({ error: "work(작품명/PIVO) 또는 thread(설정집 메시지 링크) 중 하나는 필요해." }) }] };
-            const hits = await findSetjipRequest(ctx.client, work);
-            if (!hits.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}'의 설정집 작성 요청을 <#${SETJIP_CHANNEL}>에서 못 찾음. 작품명/PIVO 표기를 확인하거나, 그 설정집 작성 요청 메시지의 '링크 복사' 값을 thread로 주면 거기 바로 달아줌.` }) }] };
+            // 검색 키: LLM work + 업로드 파일명에서 뽑은 일/중 제목 런(한국어로 잘못 검색하는 것 보완 — 채널엔 일/중만 있음)
+            const fileKeys = (currentFileRefs || []).flatMap((f) => filenameKeys(f.name));
+            const keys = [...new Set([work, ...fileKeys].map((k) => String(k || "").trim()).filter(Boolean))];
+            if (!keys.length) return { content: [{ type: "text", text: JSON.stringify({ error: "work(작품명/PIVO) 또는 thread(설정집 메시지 링크), 아니면 설정집 파일 첨부 중 하나는 필요해." }) }] };
+            let hits = [];
+            for (const k of keys) { hits = await findSetjipRequest(ctx.client, k); if (hits.length) break; }
+            if (!hits.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, triedKeys: keys, msg: `설정집 작성 요청을 <#${SETJIP_CHANNEL}>에서 못 찾음(시도 키: ${keys.join(", ")}). 채널엔 일본어 가제/중국어 원제로 등록되니 한국어로는 안 잡혀. 그 메시지 '링크 복사' 값을 thread로 주면 거기 바로 달아줌.` }) }] };
             if (hits.length > 1) return { content: [{ type: "text", text: JSON.stringify({ found: true, multiple: true, msg: "설정집 작성 요청이 여러 건 잡혔어. 어느 건지 확인 필요.", candidates: hits.slice(0, 5).map((h) => ({ ts: h.ts, pivoId: h.pivoId, preview: String(h.text).replace(/\n/g, " ").slice(0, 80) })) }) }] };
             hit = hits[0];
           }
@@ -850,6 +868,12 @@ const apmTools = createSdkMcpServer({
                 koFromQuote = d["pivoOriginalTitle"] || "";
               }
             } catch (e) { /* 견적 실패해도 진행(수동값/모달로 보완) */ }
+          }
+          // 인라인 포맷([중일 설정집 작성 요청], PIVO 링크 없음) 폴백 — 메시지에서 초도 정보 직접 파싱
+          if (!firstDelivery || !firstEpisode) {
+            const inl = parseSetjipInline(hit.text);
+            if (!firstDelivery) firstDelivery = inl.firstDelivery;
+            if (!firstEpisode) firstEpisode = inl.firstEpisode;
           }
           const p = {
             channel: hit.channel || SETJIP_CHANNEL, threadTs: hit.ts, pivo,
