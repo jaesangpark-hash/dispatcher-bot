@@ -138,6 +138,7 @@ const DISPATCHER_PROMPT = [
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
   "★'피드백' 라우팅(자주 헷갈림): propose_retake=클라이언트 수정요청(리테이크)을 번역가에게 일본어로 전달 / share_feedback=검수 퀄리티 등급(총평·번역가·LG 등급+코멘트) 공유. 맥락에 리테이크 BOT 메시지(작품·리테이크화수·수정내용·프로젝트URL)가 있거나 '번역가에게/리테이크/수정 전달'이면 → propose_retake. 명시적 '검수 등급/퀄리티/총평 공유'만 → share_feedback. 애매하면 리테이크 BOT 메시지 유무로 판단(있으면 propose_retake). 한일은 KP평가 없어 share_feedback 불가→propose_retake.",
   "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님).",
+  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. 후보 여러 건이면 사용자에게 되묻고, 설정집 파일은 재상 님이 직접 첨부—봇이 첨부 안 함. '보냈다' 단정 금지.",
   "★납품예정일 '조회' 구분(중요): ①'TOTUS/실제 시스템 납품예정일'(JobProcess deliveryDate) = totus_delivery_date(work, episode). ②'내부 납품시트' 납품일 = get_delivery_date. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — 그걸 '납품예정일'이라 단정 금지. '실제 TOTUS 납품예정일'을 물으면 totus_delivery_date로 정확히 답해라.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수).",
@@ -182,13 +183,79 @@ const pendingTotusDates = new PersistMap("totus");   // changeId → { items[], 
 const pendingSends = new PersistMap("sends");        // sendId → { target, text, createdAt }
 const pendingFeedback = new PersistMap("feedback");  // fbId → { channel, text, koTitle, episode, rowsToMark, ... }
 const pendingRetakes = new PersistMap("retakes");    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
+const pendingTransStart = new PersistMap("transstart"); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
 let editSeq = pendingEdits.maxSeq();
 let totusDateSeq = pendingTotusDates.maxSeq();
 let sendSeq = pendingSends.maxSeq();
 let feedbackSeq = pendingFeedback.maxSeq();
 let retakeSeq = pendingRetakes.maxSeq();
+let transStartSeq = pendingTransStart.maxSeq();
 let currentCtx = null;            // { client, channel, ts } — handle()가 메시지마다 갱신(직렬 가정). 영속 대상 아님(client 비직렬)
 const EDIT_TTL_MS = 24 * 60 * 60 * 1000;   // 버튼 유효 24h (영속화로 재시작에도 유지)
+
+const SETJIP_CHANNEL = process.env.SETJIP_CHANNEL || "C09AUQN8GEB";   // 설정집 작성 요청 채널(#재팬_작업요청)
+const KO_WD = ["일", "월", "화", "수", "목", "금", "토"];
+
+// 고객 번역 검수 시작일 = 요청일(오늘 KST) + days(주말 포함 달력일, 기본 11). "M/D" 반환.
+function reviewStartMD(days = 11) {
+  const kst = new Date(Date.now() + 9 * 3600 * 1000);
+  kst.setUTCDate(kst.getUTCDate() + days);
+  return `${kst.getUTCMonth() + 1}/${kst.getUTCDate()}`;
+}
+// "2026.09.09" / "2026-09-09" → "9/9(수)". 해석 불가면 원문 그대로.
+function fmtKDate(s) {
+  const m = String(s ?? "").match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  if (!m) return String(s ?? "").trim();
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (isNaN(d)) return `${+m[2]}/${+m[3]}`;
+  return `${+m[2]}/${+m[3]}(${KO_WD[d.getUTCDay()]})`;
+}
+// 번역 개시 요청 메시지 본문(고정 포맷). preview=true면 APM 멘션을 핑 안 가게 코드로 표기.
+function buildTransStartText(p, preview = false) {
+  const head = p.apmId ? (preview ? `\`@${p.apmId}\` ` : `<@${p.apmId}> `) : "";
+  const note = (p.revisionNote && p.revisionNote.trim()) ? p.revisionNote.trim() : "위에서 언급해드린 수정 사항 외에는 변동 없습니다.";
+  return [
+    `${head}번역 개시 부탁 드립니다.`,
+    ``,
+    `• 한국어 타이틀 : ${p.koTitle}`,
+    `• 초도 납품일 : ${p.firstDelivery}`,
+    `• 초도 회차 ${p.firstEpisode}`,
+    ``,
+    note,
+    ``,
+    `• 고객 번역 검수 시작일 : ${p.reviewStart}`,
+  ].join("\n");
+}
+// 번역 개시 요청 미리보기 블록(✅발송/✏️수정/취소)
+function transStartBlocks(id, p) {
+  const apmLine = p.apmId ? `\`${p.apmId}\` → *발송 시 실제 @멘션*` : "⚠️ APM 멘션 못 찾음(수정에서 지정 가능)";
+  return [
+    { type: "section", text: { type: "mrkdwn", text: `✉️ *번역 개시 요청 — <#${p.channel}> 설정집 스레드에 답글로 발송*\n• 담당 APM: ${apmLine}\n아래 내용 그대로 보낼게요. 확인해 주세요.` } },
+    { type: "section", text: { type: "mrkdwn", text: buildTransStartText(p, true) } },
+    { type: "actions", elements: [
+      { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 발송" }, value: id, action_id: "transstart_confirm" },
+      { type: "button", text: { type: "plain_text", text: "✏️ 수정" }, value: id, action_id: "transstart_edit" },
+      { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: id, action_id: "transstart_cancel" },
+    ] },
+  ];
+}
+// 설정집 작성 요청 채널에서 작품/PIVO로 메시지 찾기 → {ts, apmId, pivoId, text}
+async function findSetjipRequest(client, query) {
+  const norm = (s) => String(s ?? "").replace(/[\s~～〜〰（）()【】「」『』・,.\-—–:：]/g, "").toLowerCase();
+  const q = String(query ?? "").trim();
+  const pivoNum = (q.match(/(\d{4,})/) || [])[1];          // PIVO처럼 보이는 4자리+ 숫자
+  const isPivoOnly = /^(pv-?)?\d{4,}$/i.test(q);
+  const h = await client.conversations.history({ channel: SETJIP_CHANNEL, limit: 200 });
+  const reqs = (h.messages || []).filter((m) => String(m.text || "").includes("설정집 작성 요청"));
+  const nq = norm(q);
+  const hits = reqs.filter((m) => {
+    const t = String(m.text || "");
+    if (pivoNum && new RegExp(`PV-?${pivoNum}\\b`).test(t)) return true;
+    if (isPivoOnly) return false;
+    return nq && norm(t).includes(nq);
+  });
+  return hits.map((m) => ({ ts: m.ts, text: m.text, apmId: (String(m.text).match(/<@([UW][A-Z0-9]+)>/) || [])[1] || null, pivoId: (String(m.text).match(/PV-?(\d+)/) || [])[1] || null }));
+}
 const STALL_NOTICE_MS = 150 * 1000;   // 이 시간 내 응답 없으면 '처리 중'을 지연 안내로 갱신
 const FEEDBACK_CHANNEL = process.env.FEEDBACK_CHANNEL || "C09B8QHP7D4";   // 피드백 공유 기본 채널
 // 리테이크 미리보기 블록(발송/수정/취소). 도구와 수정모달 submit이 공유.
@@ -730,6 +797,57 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("propose_translation_start",
+      "설정집 검수가 끝난 작품의 '번역 개시 요청' 메시지를 고정 템플릿으로 만들어, 그 작품의 '설정집 작성 요청' 스레드(채널 검색으로 자동 탐색)에 답글로 발송하도록 '제안'한다(미리보기+✏️수정+버튼). DM에서 호출해도 됨. work(작품명 한/일/중 또는 PIVO)로 설정집 작성 요청 채널을 검색→그 메시지에서 담당 APM 멘션과 PIVO를 추출하고, PIVO로 TOTUS 견적을 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 (보통 이 대화에서 함께 정한) 합의된 제목을 ko_title로 준다(생략 시 견적의 한국어 제목). 검수 시작일은 자동(요청일+11일, 주말 포함). 후보가 여러 건이면 되묻는다. 절대 '보냈다'고 단정하지 말 것(버튼 눌러야 발송).",
+      {
+        work: z.string().describe("작품명(한/일/중) 또는 PIVO ID — 설정집 작성 요청 채널을 검색할 키"),
+        ko_title: z.string().optional().describe("한국어 타이틀(이 대화에서 정한 합의 제목). 생략 시 견적의 한국어 제목 사용"),
+        revision_note: z.string().optional().describe("수정 사항 문구. 생략 시 '위에서 언급해드린 수정 사항 외에는 변동 없습니다.' (✏️수정 모달로도 입력 가능)"),
+        first_delivery_date: z.string().optional().describe("초도 납품일 수동 지정(생략 시 견적에서 자동, 예 '8/24(월)')"),
+        first_episode: z.string().optional().describe("초도 회차 수동 지정(생략 시 견적에서 자동, 예 '20')"),
+        apm_user_id: z.string().optional().describe("담당 APM Slack ID 수동 지정(생략 시 설정집 메시지에서 자동)"),
+        review_start_date: z.string().optional().describe("검수 시작일 M/D 수동 지정(생략 시 자동, 요청일+11일)"),
+      },
+      async ({ work, ko_title, revision_note, first_delivery_date, first_episode, apm_user_id, review_start_date }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const ctx = currentCtx;
+          if (!ctx?.client || !ctx?.channel) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락을 못 잡음. 다시 불러줘." }) }] };
+          const hits = await findSetjipRequest(ctx.client, work);
+          if (!hits.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}'의 설정집 작성 요청을 <#${SETJIP_CHANNEL}>에서 못 찾음. 작품명/PIVO 표기를 확인하거나, 그 메시지 링크를 알려줘.` }) }] };
+          if (hits.length > 1) return { content: [{ type: "text", text: JSON.stringify({ found: true, multiple: true, msg: "설정집 작성 요청이 여러 건 잡혔어. 어느 건지 확인 필요.", candidates: hits.slice(0, 5).map((h) => ({ ts: h.ts, pivoId: h.pivoId, preview: String(h.text).replace(/\n/g, " ").slice(0, 80) })) }) }] };
+          const hit = hits[0];
+          const pivo = hit.pivoId;
+          let firstDelivery = first_delivery_date?.trim() || "", firstEpisode = first_episode?.trim() || "", koFromQuote = "";
+          if (pivo) {
+            try {
+              const q = await quotationByPivo(pivo);
+              const d = Array.isArray(q?.data) ? q.data[0] : null;
+              if (d) {
+                if (!firstDelivery) firstDelivery = fmtKDate(d["초도작업_납품목표일"]);
+                if (!firstEpisode) firstEpisode = String(d["초도작업_총작업량표시"] || d["초도작업_총작업량"] || "").replace(/화$/, "").trim();
+                koFromQuote = d["pivoOriginalTitle"] || "";
+              }
+            } catch (e) { /* 견적 실패해도 진행(수동값/모달로 보완) */ }
+          }
+          const p = {
+            channel: SETJIP_CHANNEL, threadTs: hit.ts, pivo,
+            apmId: apm_user_id?.trim() || hit.apmId || null,
+            koTitle: ko_title?.trim() || koFromQuote || "(미정 — 수정에서 입력)",
+            firstDelivery: firstDelivery || "(미확인 — 수정에서 입력)",
+            firstEpisode: firstEpisode || "(미확인)",
+            revisionNote: revision_note?.trim() || "",
+            reviewStart: review_start_date?.trim() || reviewStartMD(11),
+            createdAt: Date.now(),
+          };
+          const tsId = `ts_${++transStartSeq}`;
+          pendingTransStart.set(tsId, p);
+          const posted = await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: "번역 개시 요청 확인", blocks: transStartBlocks(tsId, p) });
+          if (posted?.ts) { p.previewChannel = ctx.channel; p.previewTs = posted.ts; pendingTransStart.save(); }
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, pivo, apmFound: !!p.apmId, firstDelivery: p.firstDelivery, firstEpisode: p.firstEpisode, reviewStart: p.reviewStart, koTitle: p.koTitle, note: "설정집 스레드를 찾아 미리보기+버튼을 보냈음(견적에서 초도 납품일·회차 자동). ✅를 눌러야 그 스레드에 실제 발송됨. 발송했다고 말하지 말 것. 한국어 타이틀·수정사항은 ✏️수정으로 채울 수 있음. 설정집 파일은 사용자가 직접 첨부함." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("compute",
       "복잡한 계산은 암산하지 말고 이 도구로 JS 코드를 실행해 정확히 계산한다. 다행 합계·환율 변환·정산·통계·CSV 집계 등 숫자 계산은 반드시 이걸로. 첨부된 CSV/엑셀/텍스트 원문은 코드 안에서 `attachments`(배열 [{name,text}])로 바로 접근(전체 데이터, 다시 옮겨적지 말 것). 결과는 마지막 식이거나 `result` 변수에 담는다. 파일·네트워크 접근 없음(순수 계산), 5초 제한.",
       { code: z.string().describe("실행할 JS. attachments[i].text로 첨부 원문 접근. 예: const rows=attachments[0].text.trim().split('\\n').map(r=>r.split(',')); result = rows.slice(1).reduce((s,r)=>s+Number(r[2]||0),0);") },
@@ -895,7 +1013,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "WebSearch"],
@@ -1119,6 +1237,79 @@ app.action("send_cancel", async ({ ack, body, client }) => {
   await ack();
   pendingSends.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+// ── 번역 개시 요청 확인/취소/수정 (스레드 답글 발송은 LLM 밖, 여기서만) ──
+app.action("transstart_confirm", async ({ ack, body, client }) => {
+  await ack();
+  const id = body.actions?.[0]?.value;
+  const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+  if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
+  const p = pendingTransStart.get(id);
+  if (!p) return reply("⌛ 만료됐거나 이미 처리된 발송이에요.");
+  pendingTransStart.delete(id);
+  if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
+  const text = buildTransStartText(p, false);   // 실제 발송 — APM 진짜 멘션
+  try {
+    try { await client.conversations.join({ channel: p.channel }); } catch {}
+    await client.chat.postMessage({ channel: p.channel, thread_ts: p.threadTs, text, ...SENDER });
+    appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "transstart", channel: p.channel, threadTs: p.threadTs, pivo: p.pivo, text }) + "\n");
+    await reply(`✅ 번역 개시 요청을 <#${p.channel}> 설정집 스레드에 발송했어요. (설정집 파일은 직접 첨부해 주세요)`);
+  } catch (e) {
+    const m = String(e?.data?.error || e?.message || e);
+    await reply(`❌ 발송 실패: ${m}${m.includes("not_in_channel") ? "\n(봇이 그 채널 멤버가 아니에요. /invite 후 다시 시도)" : ""}`);
+  }
+});
+
+app.action("transstart_cancel", async ({ ack, body, client }) => {
+  await ack();
+  pendingTransStart.delete(body.actions?.[0]?.value);
+  await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+// 번역 개시 요청 수정 — 모달 열기(타이틀·수정사항·초도정보·검수시작일·APM)
+app.action("transstart_edit", async ({ ack, body, client }) => {
+  await ack();
+  if (body.user?.id !== DISPATCHER_USER_ID) return;
+  const id = body.actions?.[0]?.value;
+  const p = pendingTransStart.get(id);
+  if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정할 수 없어요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
+  const inp = (block, label, init, opt = false, ml = false) => ({ type: "input", block_id: block, optional: opt, label: { type: "plain_text", text: label }, element: { type: "plain_text_input", action_id: "val", multiline: ml, initial_value: init || "" } });
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: "modal", callback_id: "transstart_edit_modal", private_metadata: id,
+      title: { type: "plain_text", text: "번역 개시 요청 수정" },
+      submit: { type: "plain_text", text: "적용" }, close: { type: "plain_text", text: "닫기" },
+      blocks: [
+        inp("ko", "한국어 타이틀", p.koTitle),
+        inp("fd", "초도 납품일", p.firstDelivery),
+        inp("fe", "초도 회차", p.firstEpisode),
+        inp("rs", "고객 번역 검수 시작일", p.reviewStart),
+        inp("rn", "수정 사항(비우면 '변동 없음' 문구)", p.revisionNote, true, true),
+        inp("apm", "담당 APM Slack ID(선택)", p.apmId, true),
+      ],
+    },
+  }).catch((e) => console.error("[transstart_edit] views.open 실패:", e?.data?.error || e?.message));
+});
+
+app.view("transstart_edit_modal", async ({ ack, view, client, body }) => {
+  await ack();
+  const id = view.private_metadata;
+  const p = pendingTransStart.get(id);
+  if (!p || body.user?.id !== DISPATCHER_USER_ID) return;
+  const v = (b) => view.state.values?.[b]?.val?.value?.trim() ?? "";
+  p.koTitle = v("ko") || p.koTitle;
+  p.firstDelivery = v("fd") || p.firstDelivery;
+  p.firstEpisode = v("fe") || p.firstEpisode;
+  p.reviewStart = v("rs") || p.reviewStart;
+  p.revisionNote = v("rn");                       // 비우면 기본 문구로
+  p.apmId = v("apm") || null;
+  pendingTransStart.save();
+  if (p.previewChannel && p.previewTs) {
+    await client.chat.update({ channel: p.previewChannel, ts: p.previewTs, text: "번역 개시 요청 확인(수정됨)", blocks: transStartBlocks(id, p) }).catch((e) => console.error("[transstart_edit_modal] update 실패:", e?.data?.error || e?.message));
+  }
 });
 
 // ── 피드백 공유 확인/취소 (실제 발송 + 시트 표시는 LLM 밖, 여기서만) ──
