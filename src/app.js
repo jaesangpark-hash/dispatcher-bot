@@ -138,7 +138,7 @@ const DISPATCHER_PROMPT = [
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
   "★'피드백' 라우팅(자주 헷갈림): propose_retake=클라이언트 수정요청(리테이크)을 번역가에게 일본어로 전달 / share_feedback=검수 퀄리티 등급(총평·번역가·LG 등급+코멘트) 공유. 맥락에 리테이크 BOT 메시지(작품·리테이크화수·수정내용·프로젝트URL)가 있거나 '번역가에게/리테이크/수정 전달'이면 → propose_retake. 명시적 '검수 등급/퀄리티/총평 공유'만 → share_feedback. 애매하면 리테이크 BOT 메시지 유무로 판단(있으면 propose_retake). 한일은 KP평가 없어 share_feedback 불가→propose_retake.",
   "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님).",
-  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. 후보 여러 건이면 사용자에게 되묻고, 설정집 파일은 재상 님이 직접 첨부—봇이 첨부 안 함. '보냈다' 단정 금지.",
+  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. 후보 여러 건이면 사용자에게 되묻기. ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★납품예정일 '조회' 구분(중요): ①'TOTUS/실제 시스템 납품예정일'(JobProcess deliveryDate) = totus_delivery_date(work, episode). ②'내부 납품시트' 납품일 = get_delivery_date. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — 그걸 '납품예정일'이라 단정 금지. '실제 TOTUS 납품예정일'을 물으면 totus_delivery_date로 정확히 답해라.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수).",
@@ -229,8 +229,9 @@ function buildTransStartText(p, preview = false) {
 // 번역 개시 요청 미리보기 블록(✅발송/✏️수정/취소)
 function transStartBlocks(id, p) {
   const apmLine = p.apmId ? `\`${p.apmId}\` → *발송 시 실제 @멘션*` : "⚠️ APM 멘션 못 찾음(수정에서 지정 가능)";
+  const fileLine = p.files?.length ? `\n• 첨부 ${p.files.length}개 같이 발송: ${p.files.map((f) => f.name).join(", ")}` : `\n• 첨부 없음(파일 같이 보내려면 이 요청 메시지에 파일을 올려 다시 요청)`;
   return [
-    { type: "section", text: { type: "mrkdwn", text: `✉️ *번역 개시 요청 — <#${p.channel}> 설정집 스레드에 답글로 발송*\n• 담당 APM: ${apmLine}\n아래 내용 그대로 보낼게요. 확인해 주세요.` } },
+    { type: "section", text: { type: "mrkdwn", text: `✉️ *번역 개시 요청 — <#${p.channel}> 설정집 스레드에 답글로 발송*\n• 담당 APM: ${apmLine}${fileLine}\n아래 내용 그대로 보낼게요. 확인해 주세요.` } },
     { type: "section", text: { type: "mrkdwn", text: buildTransStartText(p, true) } },
     { type: "actions", elements: [
       { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 발송" }, value: id, action_id: "transstart_confirm" },
@@ -241,7 +242,7 @@ function transStartBlocks(id, p) {
 }
 // 설정집 작성 요청 채널에서 작품/PIVO로 메시지 찾기 → {ts, apmId, pivoId, text}
 async function findSetjipRequest(client, query) {
-  const norm = (s) => String(s ?? "").replace(/[\s~～〜〰（）()【】「」『』・,.\-—–:：]/g, "").toLowerCase();
+  const norm = (s) => String(s ?? "").replace(/[\s~～〜〰（）()【】「」『』・,.\-—–:：_]/g, "").toLowerCase();
   const q = String(query ?? "").trim();
   const pivoNum = (q.match(/(\d{4,})/) || [])[1];          // PIVO처럼 보이는 4자리+ 숫자
   const isPivoOnly = /^(pv-?)?\d{4,}$/i.test(q);
@@ -838,6 +839,7 @@ const apmTools = createSdkMcpServer({
             firstEpisode: firstEpisode || "(미확인)",
             revisionNote: revision_note?.trim() || "",
             reviewStart: review_start_date?.trim() || reviewStartMD(11),
+            files: (currentFileRefs || []).filter((f) => f?.url).map((f) => ({ url: f.url, name: f.name || "file", mimetype: f.mimetype || "" })),
             createdAt: Date.now(),
           };
           const tsId = `ts_${++transStartSeq}`;
@@ -892,6 +894,7 @@ let wake = null;          // 새 턴 도착 시 generator 깨우기
 let turnResolve = null;   // 현재 턴의 result 처리 완료 신호(다음 턴 진행 허용)
 let currentTurn = null;   // 지금 브레인이 처리 중인 턴
 let currentAttachments = [];   // 이 턴에 첨부된 텍스트/CSV/엑셀 원문 [{name,text}] — compute 도구용
+let currentFileRefs = [];      // 이 턴에 업로드된 파일 refs [{url,name,mimetype,filetype}] — 번역개시 첨부 재발송용
 
 // ── 모델: 봇 기능(조회·일정·리마인더·발송) 수행에 최적인 단일 Sonnet(DISPATCHER_MODEL)으로 통일.
 //    턴별 전환(Haiku 티어링) 제거 — 모델 고정이 프롬프트 캐시를 유지해 지연↓ + 품질 일관.
@@ -914,6 +917,7 @@ async function* messageStream() {
       currentTurn = turn;
       currentCtx = turn.ctx;   // 도구(발송·진행알림)가 '이 턴'의 자리로 답하도록 고정
       currentAttachments = turn.attachTexts || [];   // compute 도구가 이 턴 첨부 원문을 쓰도록
+      currentFileRefs = turn.fileRefs || [];          // 번역개시 등에서 이 턴 업로드 파일을 재첨부하도록
       currentUser = turn.user || null;                // 재상 전용 가드용 요청자
       // 하드 타임아웃: 행/과부하로 영영 안 끝나는 턴이 큐를 막지 않게 — 알림 후 프로세스 종료(run.bat가 ~5초 후 재기동)
       const killer = setTimeout(async () => {
@@ -1101,7 +1105,7 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
 
   // 턴을 큐에 넣고 한 번에 하나씩 처리 — 완료 시 deliver()가 '처리 중'을 지우고 새 메시지로 답한다
   const entry = { client, channel, threadTs: thread, ts: thread, placeholderTs: ph?.ts, startedAt: Date.now(), done: false };
-  queue.push({ content, ctx: entry, attachTexts: att.texts, user });
+  queue.push({ content, ctx: entry, attachTexts: att.texts, fileRefs: msgFiles, user });   // fileRefs=이 메시지에 올린 파일(번역개시 첨부 발송용)
   if (wake) { const w = wake; wake = null; w(); }
 
   // 멈춤 감시: 제한시간 내 응답 없으면 '처리 중'을 지연 안내로 갱신(영영 멈춘 듯 보이지 않게)
@@ -1253,9 +1257,25 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
   const text = buildTransStartText(p, false);   // 실제 발송 — APM 진짜 멘션
   try {
     try { await client.conversations.join({ channel: p.channel }); } catch {}
-    await client.chat.postMessage({ channel: p.channel, thread_ts: p.threadTs, text, ...SENDER });
-    appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "transstart", channel: p.channel, threadTs: p.threadTs, pivo: p.pivo, text }) + "\n");
-    await reply(`✅ 번역 개시 요청을 <#${p.channel}> 설정집 스레드에 발송했어요. (설정집 파일은 직접 첨부해 주세요)`);
+    let attached = 0;
+    if (p.files?.length) {
+      // 올린 파일(설정집·이미지)을 봇 토큰으로 받아 그 스레드에 같이 업로드(initial_comment=메시지). files:read/write 필요.
+      const uploads = [];
+      for (const f of p.files) {
+        try {
+          const res = await fetch(f.url, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
+          if (!res.ok) continue;
+          uploads.push({ file: Buffer.from(await res.arrayBuffer()), filename: f.name });
+        } catch { /* 개별 파일 실패는 건너뜀 */ }
+      }
+      if (uploads.length) {
+        await client.files.uploadV2({ channel_id: p.channel, thread_ts: p.threadTs, initial_comment: text, file_uploads: uploads });
+        attached = uploads.length;
+      }
+    }
+    if (!attached) await client.chat.postMessage({ channel: p.channel, thread_ts: p.threadTs, text, ...SENDER });
+    appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "transstart", channel: p.channel, threadTs: p.threadTs, pivo: p.pivo, files: attached, text }) + "\n");
+    await reply(`✅ 번역 개시 요청을 <#${p.channel}> 설정집 스레드에 발송했어요.${attached ? ` (첨부 ${attached}개 포함)` : " (첨부 파일은 직접 올려 주세요)"}`);
   } catch (e) {
     const m = String(e?.data?.error || e?.message || e);
     await reply(`❌ 발송 실패: ${m}${m.includes("not_in_channel") ? "\n(봇이 그 채널 멤버가 아니에요. /invite 후 다시 시도)" : ""}`);
