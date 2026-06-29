@@ -15,7 +15,8 @@ import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, deliverySourceGroups } from "./totus.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, QA_INSTRUCTIONS } from "./review.js";
-import { addReminder, addScheduled, listReminders, completeReminder, dueNag, dueScheduled } from "./reminders.js";
+import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
+import { overdueInquiries } from "./inquiries.js";
 import { missingOriginals, deliveryOnDate, workSchedule } from "./schedule.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
@@ -32,6 +33,8 @@ const {
   BOT_ICON_EMOJI,     // 선택: 표시 아이콘 (예: ":robot_face:")
   BOT_NAG_HOURS = "9,14,18", // 재촉 리마인더 발송 시각들(콤마, 시·로컬). 기본 09·14·18시 하루 3회
   APM_USER_IDS = "", // 조회·검수만 허용할 APM Slack ID(콤마 구분). 변경·발송·리마인더는 재상(DISPATCHER_USER_ID)만.
+  REMINDER_CHANNEL = "C0B73GL3WAJ", // 리마인더(재촉·예약·미해결 문의/재수급) 발송 채널. 봇이 이 채널 멤버여야 함.
+  INQUIRY_OVERDUE_DAYS = "2", // 문의/재수급 인입일로부터 이 일수 이상 완료 미체크면 미해결로 재촉
 } = process.env;
 
 // 사용 허용 = 재상(소유자) + APM들. 소유자만 = 변경·발송·리마인더(쓰기/개인기능). 그 외(APM)는 조회·검수만.
@@ -1234,26 +1237,51 @@ app.event("app_home_opened", async ({ event, client }) => {
   }
 });
 
-// ── 리마인더 발송 (데일리 재촉 + 시각지정 1회) ──────────────────────
-let _nagDm = null;
-async function dmReminder(text) {
-  if (!_nagDm) { const r = await app.client.conversations.open({ users: DISPATCHER_USER_ID }); _nagDm = r.channel.id; }
-  await app.client.chat.postMessage({ channel: _nagDm, text, ...SENDER });
+// ── 리마인더 발송 (데일리 재촉 + 시각지정 1회 + 미해결 문의/재수급) ───────
+// 전부 REMINDER_CHANNEL로 발송. 봇이 멤버 아니면 join 시도(스코프 없으면 실패 → 채널에 봇 초대 필요).
+let _channelJoined = false;
+async function postReminder(text) {
+  if (!_channelJoined) { try { await app.client.conversations.join({ channel: REMINDER_CHANNEL }); } catch {} _channelJoined = true; }
+  await app.client.chat.postMessage({ channel: REMINDER_CHANNEL, text, ...SENDER });
 }
+
+// 미해결 문의/재수급 → 한 섹션 텍스트(없으면 null)
+function fmtInquiries(rows) {
+  if (!rows.length) return null;
+  const CAP = 15;
+  const shown = rows.slice(0, CAP).map((q) => {
+    const head = `• [${q.source}${q.type ? `·${q.type}` : ""}] ${q.work}`;
+    const tail = [q.detail, `${q.daysOver}일째`, q.requester ? `요청:${q.requester}` : "", q.link ? `<${q.link}|🔗>` : ""].filter(Boolean).join(" · ");
+    return tail ? `${head} — ${tail}` : head;
+  });
+  const more = rows.length > CAP ? `\n…외 ${rows.length - CAP}건` : "";
+  return `📨 *미해결 문의/재수급* (인입 ${INQUIRY_OVERDUE_DAYS}일+ 완료 미체크 ${rows.length}건)\n${shown.join("\n")}${more}\n→ 처리 후 시트에서 완료 체크하면 자동으로 빠져요.`;
+}
+
 async function checkNag() {
   try {
     const hours = BOT_NAG_HOURS.split(",").map((s) => parseInt(s.trim(), 10)).filter((h) => !isNaN(h));
-    const items = dueNag(hours.length ? hours : [9]);
-    if (!items) return;
-    const lines = items.map((x) => `${x.id}. ${x.text}`).join("\n");
-    await dmReminder(`📌 아직 안 끝난 일, 잊지 마세요! (하루 ${hours.length || 1}번 챙겨드려요)\n${lines}\n\n끝났거나 그만 챙겨도 되면 "N번 완료"·"○○ 했어"·"그만 리마인드해"라고 알려주세요.`);
-    console.log(`[nag] 재촉 발송 ${items.length}건`);
+    if (!dueNagSlot(hours.length ? hours : [9])) return;   // 새 시각 슬롯 아니면 패스(슬롯당 1회)
+    const reminders = listNagItems();
+    let inquiries = [];
+    try { inquiries = await overdueInquiries(parseInt(INQUIRY_OVERDUE_DAYS, 10) || 2); }
+    catch (e) { console.error("[nag] 문의/재수급 스캔 실패:", e?.message ?? e); }
+    const parts = [];
+    if (reminders.length) {
+      const lines = reminders.map((x) => `${x.id}. ${x.text}`).join("\n");
+      parts.push(`📌 *아직 안 끝난 일* (하루 ${hours.length || 1}번 챙겨드려요)\n${lines}\n끝났거나 그만 챙겨도 되면 "N번 완료"·"그만 리마인드해"라고 알려주세요.`);
+    }
+    const iq = fmtInquiries(inquiries);
+    if (iq) parts.push(iq);
+    if (!parts.length) return;
+    await postReminder(parts.join("\n\n"));
+    console.log(`[nag] 발송 — 재촉 ${reminders.length} · 문의/재수급 ${inquiries.length}`);
   } catch (e) { console.error("[nag] 실패:", e?.message ?? e); }
 }
 async function checkScheduled() {
   try {
     const fired = dueScheduled();
-    for (const x of fired) await dmReminder(`⏰ 리마인드: ${x.text}`);
+    for (const x of fired) await postReminder(`⏰ 리마인드: ${x.text}`);
     if (fired.length) console.log(`[reminder] 예약 발송 ${fired.length}건`);
   } catch (e) { console.error("[reminder] 예약 실패:", e?.message ?? e); }
 }
@@ -1263,6 +1291,6 @@ async function tick() { await checkScheduled(); await checkNag(); }
   await app.start();
   if (BRAIN_ON) startSession();   // 엔진을 미리 띄워 워밍(콜드스타트 제거)
   tick();                         // 부팅 직후 1회
-  setInterval(tick, 60 * 1000);   // 1분마다 (예약은 ~1분 내 발송, 재촉은 dueNag가 시각 슬롯별 하루 1회로 제한)
+  setInterval(tick, 60 * 1000);   // 1분마다 (예약은 ~1분 내 발송, 재촉·문의는 dueNagSlot이 시각 슬롯별 하루 1회로 제한)
   console.log(`🤖 디스패처 가동 — 브레인 ${BRAIN_ON ? `ON (${DISPATCHER_MODEL}, 세션 워밍됨)` : "OFF (에코 모드)"} · 재촉 ${BOT_NAG_HOURS}시 · 예약 1분틱`);
 })();

@@ -51,22 +51,25 @@ export function completeReminder(match) {
   return { removed, done: removed.length, remaining: d.items.length };
 }
 
-// 재촉 대상(시각 미지정 = dueAt 없는 것만)을 설정된 시각 슬롯마다 하루 1회씩 재촉.
-// nagHours: 시각 배열(예 [9,14,18]). 지금 시각 이하의 가장 늦은 슬롯을 잡아, 그 슬롯을 오늘 아직 안 보냈으면 발송.
-// lastNagSlot = "YYYY-MM-DD:HH" — 같은 슬롯 재발사·재시작 스팸 방지.
-export function dueNag(nagHours) {
+// 재촉 시각 슬롯이 새로 도래했는지 판단 + 마킹(하루 시각별 1회). 보낼 내용 유무와 무관 —
+// 개인 재촉 + 문의/재수급 미해결을 한 슬롯에서 같이 보내기 위해 슬롯 게이트만 담당.
+// nagHours: 시각 배열(예 [9,14,18]). 새 슬롯이면 키 반환(+마킹), 아니면 null. lastNagSlot="YYYY-MM-DD:HH".
+export function dueNagSlot(nagHours) {
   const d = load();
-  const nags = d.items.filter((x) => !x.dueAt);
-  if (!nags.length) return null;
   const now = new Date();
   const ymd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const hours = (Array.isArray(nagHours) ? nagHours : [nagHours]).map(Number).filter((h) => !isNaN(h)).sort((a, b) => a - b);
   const slot = hours.filter((h) => now.getHours() >= h).pop();   // 지금 이하 중 가장 늦은 슬롯
   if (slot == null) return null;                 // 첫 슬롯 시각 전
   const key = `${ymd}:${slot}`;
-  if (d.lastNagSlot === key) return null;        // 이 슬롯 이미 발송함
+  if (d.lastNagSlot === key) return null;        // 이 슬롯 이미 처리함
   d.lastNagSlot = key; save(d);
-  return nags;
+  return key;
+}
+
+// 재촉 대상(시각 미지정 = dueAt 없는 것만)
+export function listNagItems() {
+  return load().items.filter((x) => !x.dueAt);
 }
 
 // 시각 도래한 1회 리마인더(dueAt <= now)를 꺼내 반환 + 저장소에서 제거(1회성).
