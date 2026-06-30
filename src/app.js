@@ -1395,7 +1395,14 @@ app.action("wongo_confirm", async ({ ack, body, client }) => {
   try {
     const r = await wongoPost(false);                  // 실제 전송 + N열 체크 + n8n
     appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "wongo_update", result: r }) + "\n");
-    await reply(`✅ 원고수급 미발송 전송 완료 — APM ${r.managers ?? "?"}명 / ${r.rows ?? "?"}건 전송·체크 (n8n 반영). `);
+    const failed = r.failedManagers || 0;
+    if ((r.managers ?? 0) === 0 && failed === 0) {
+      await reply(`⚠️ 보낼 미발송 건이 없었어요(이미 다 체크됨/담당자 미매칭).`);
+    } else if (failed > 0) {
+      await reply(`⚠️ 일부만 전송 — 성공 APM ${r.managers}명/${r.rows}건 체크, *실패 ${failed}명*(슬랙 웹훅 응답코드 ${JSON.stringify(r.codes || {})}). 실패분은 N열 그대로 두었으니 원인 확인 후 재시도하면 됨.`);
+    } else {
+      await reply(`✅ 원고수급 미발송 전송 완료 — APM ${r.managers}명 / ${r.rows}건 전송·체크 (n8n 반영).`);
+    }
   } catch (e) {
     await reply(`❌ 전송 실패: ${e?.message ?? e}\n(GAS 웹앱 재배포·시크릿 확인 필요)`);
   }
