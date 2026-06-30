@@ -17,6 +17,7 @@ import { search as notionSearch, readPage as notionReadPage } from "./notion.js"
 import { extractEpisode, QA_INSTRUCTIONS } from "./review.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries } from "./inquiries.js";
+import { dueCompletions, fmtCompletions } from "./completions.js";
 import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch } from "./schedule.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
@@ -1734,6 +1735,9 @@ async function checkNag() {
     let inquiries = [];
     try { inquiries = await overdueInquiries(parseInt(INQUIRY_OVERDUE_DAYS, 10) || 2); }
     catch (e) { console.error("[nag] 문의/재수급 스캔 실패:", e?.message ?? e); }
+    let completions = [];
+    try { completions = await dueCompletions(7); }   // 하루 1회 스캔(모듈 내부 게이트) + 7일 캐치업(봇 꺼짐 대비)
+    catch (e) { console.error("[nag] 완결 스캔 실패:", e?.message ?? e); }
     const parts = [];
     if (reminders.length) {
       const lines = reminders.map((x) => `${x.id}. ${x.text}`).join("\n");
@@ -1741,9 +1745,11 @@ async function checkNag() {
     }
     const iq = fmtInquiries(inquiries);
     if (iq) parts.push(iq);
+    const cp = fmtCompletions(completions);
+    if (cp) parts.push(cp);
     if (!parts.length) return;
     await postReminder(parts.join("\n\n"));
-    console.log(`[nag] 발송 — 재촉 ${reminders.length} · 문의/재수급 ${inquiries.length}`);
+    console.log(`[nag] 발송 — 재촉 ${reminders.length} · 문의/재수급 ${inquiries.length} · 완결 ${completions.length}`);
   } catch (e) { console.error("[nag] 실패:", e?.message ?? e); }
 }
 async function checkScheduled() {
