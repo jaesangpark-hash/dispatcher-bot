@@ -830,18 +830,7 @@ const apmTools = createSdkMcpServer({
           const warn = [];
           if (!apmId) warn.push(`APM '${apm}' Slack ID 못 찾음 — 멘션 없이 나감(이름 확인)`);
           if (!e.sheetOk) warn.push("내부시트 미접근(견적값만) — 오리지널/원작링크/드라이브 누락 가능, 기대치/국가는 견적특이사항 기준");
-          const preview = buildSetjipText(e, { translator, typesetter, apmId, client_pm: "" }, true);
-          const posted = await ctx.client.chat.postMessage({
-            channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `설정집 작성 요청 확인 — ${e.work_title}`,
-            blocks: [
-              { type: "section", text: { type: "mrkdwn", text: `📝 *설정집 작성 요청 — <#${p.channel}>에 게시*${warn.length ? `\n• ⚠️ ${warn.join(" / ")}` : ""}\n아래 그대로 보낼게요. 확인해 주세요.` } },
-              { type: "section", text: { type: "mrkdwn", text: preview } },
-              { type: "actions", elements: [
-                { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 게시" }, value: id, action_id: "setjip_confirm" },
-                { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: id, action_id: "setjip_cancel" },
-              ] },
-            ],
-          });
+          const posted = await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `설정집 작성 요청 확인 — ${e.work_title}`, blocks: setjipBlocks(id, p) });
           if (posted?.ts) { p.previewChannel = ctx.channel; p.previewTs = posted.ts; pendingSetjip.save(); }
           return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: e.work_title, pivo: e.pivo, apm: apmId, warnings: warn, note: "미리보기+버튼 보냈음. ✅를 눌러야 작업요청 채널에 게시됨. 게시했다고 말하지 말 것. 검수 버튼/트리거는 이번 범위 밖(추후)." }) }] };
         } catch (e2) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e2?.message ?? e2) }) }] }; }
@@ -1678,6 +1667,53 @@ app.action("setjip_cancel", async ({ ack, body, client }) => {
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
 
+// 설정집 작성 요청 수정 — 모달(필드 직접 편집)
+app.action("setjip_edit", async ({ ack, body, client }) => {
+  await ack();
+  if (body.user?.id !== DISPATCHER_USER_ID) return;
+  const id = body.actions?.[0]?.value;
+  const p = pendingSetjip.get(id);
+  if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정 불가. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
+  const e = p.e || {};
+  const inp = (b, label, init, ml = false) => ({ type: "input", block_id: b, optional: true, label: { type: "plain_text", text: label }, element: { type: "plain_text_input", action_id: "v", multiline: ml, initial_value: init || "" } });
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: "modal", callback_id: "setjip_edit_modal", private_metadata: id,
+      title: { type: "plain_text", text: "설정집 요청 수정" }, submit: { type: "plain_text", text: "적용" }, close: { type: "plain_text", text: "닫기" },
+      blocks: [
+        inp("apm", "담당 APM(이름 또는 U…ID)", p.apmId ? (USER_NAMES[p.apmId] || p.apmId) : ""),
+        inp("translator", "번역 작업자", p.translator || "프리랜서 배정"),
+        inp("typesetter", "식자 작업자", p.typesetter || "강연재 우선 배정\n배정 안될 경우 프리랜서 배정", true),
+        inp("expectation", "기대치", e.expectation),
+        inp("episodes", "초도 화수", e.episodes),
+        inp("submit_date", "설정집 제출 희망일", e.submit_date),
+        inp("delivery_date", "초도 납품일", e.delivery_date),
+        inp("country", "국가설정", e.country),
+        inp("work_title", "작품명", e.work_title),
+        inp("original_title", "원제", e.original_title),
+        inp("notes", "특이사항", e.notes, true),
+      ],
+    },
+  }).catch((er) => console.error("[setjip_edit] views.open 실패:", er?.data?.error || er?.message));
+});
+
+app.view("setjip_edit_modal", async ({ ack, view, client, body }) => {
+  await ack();
+  const id = view.private_metadata;
+  const p = pendingSetjip.get(id);
+  if (!p || body.user?.id !== DISPATCHER_USER_ID) return;
+  const v = (b) => view.state.values?.[b]?.v?.value?.trim() ?? "";
+  const apmRaw = v("apm");
+  if (apmRaw) p.apmId = /^[UW][A-Z0-9]+$/.test(apmRaw) ? apmRaw : (Object.entries(USER_NAMES).find(([, nm]) => nm === apmRaw)?.[0] || p.apmId);
+  p.translator = v("translator"); p.typesetter = v("typesetter");
+  p.e = { ...p.e, expectation: v("expectation"), episodes: v("episodes"), submit_date: v("submit_date"), delivery_date: v("delivery_date"), country: v("country") || p.e.country, work_title: v("work_title") || p.e.work_title, original_title: v("original_title"), notes: v("notes") };
+  pendingSetjip.save();
+  if (p.previewChannel && p.previewTs) {
+    await client.chat.update({ channel: p.previewChannel, ts: p.previewTs, text: "설정집 작성 요청 확인(수정됨)", blocks: setjipBlocks(id, p) }).catch((er) => console.error("[setjip_edit_modal] update 실패:", er?.data?.error || er?.message));
+  }
+});
+
 // TOTUS 프로젝트 해석 — ①출판사 시트(lookupWork) 먼저 → ②못 찾으면 TOTUS(findProject) 폴백. 각 단계 완전→부분→후보.
 // 이름의 [PRJ-…] 접두 제거. 반환: {projectUuid, projectName, pivoId, status?, source} / {ambiguous, candidates} / {notFound, msg, candidates?}
 async function resolveTotusProject({ work, pivo }) {
@@ -1771,6 +1807,23 @@ function buildSetjipText(e, { translator, typesetter, apmId, client_pm }, previe
     e.projectUuid ? `🔗 <https://main.totus.pro/ko/setup?projectUuid=${e.projectUuid}&targetLanguageCode=LGC0003|설정집>` : null,
     (e.quotationId && e.quotationProductId) ? `🔗 <https://admin.totus.pro/ko/quotation/detail/?id=${e.quotationId}&quotationProductId=${e.quotationProductId}|견적>` : null,
   ].filter((x) => x !== null).join("\n");
+}
+
+// 설정집 작성 요청 미리보기 블록(✅게시/✏️수정/취소). p.e + translator/typesetter/apmId로 렌더.
+function setjipBlocks(id, p) {
+  const warn = [];
+  if (!p.apmId) warn.push("APM 멘션 없음(수정에서 지정 가능)");
+  if (p.e && !p.e.sheetOk) warn.push("내부시트 미접근(견적값만)");
+  const preview = buildSetjipText(p.e, { translator: p.translator, typesetter: p.typesetter, apmId: p.apmId, client_pm: "" }, true);
+  return [
+    { type: "section", text: { type: "mrkdwn", text: `📝 *설정집 작성 요청 — <#${p.channel}>에 게시*${warn.length ? `\n• ⚠️ ${warn.join(" / ")}` : ""}\n아래 그대로 보낼게요. 틀린 데 있으면 ✏️수정.` } },
+    { type: "section", text: { type: "mrkdwn", text: preview } },
+    { type: "actions", elements: [
+      { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 게시" }, value: id, action_id: "setjip_confirm" },
+      { type: "button", text: { type: "plain_text", text: "✏️ 수정" }, value: id, action_id: "setjip_edit" },
+      { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: id, action_id: "setjip_cancel" },
+    ] },
+  ];
 }
 
 // 출판사 드라이브 링크 시트: PIVO(I열)로 행 찾아 A열=담당APM, C열=한국어타이틀만 채움(나머지 안 건드림).
