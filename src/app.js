@@ -973,14 +973,12 @@ const apmTools = createSdkMcpServer({
           const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
           if (!action && !(name && name.trim())) return { content: [{ type: "text", text: JSON.stringify({ error: "action(상태) 또는 name(새 이름) 중 하나는 필요해." }) }] };
-          let pid = pivo && String(pivo).trim();
-          if (!pid && work) { const w = await lookupWork(work); if (w.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, candidates: w.candidates, msg: "작품 후보 여러 개 — 되물어라." }) }] }; if (!w.found) return { content: [{ type: "text", text: JSON.stringify({ found: false, candidates: w.candidates || [], msg: `'${work}' 정확히 못 찾음.${w.candidates?.length ? " 후보가 있어 — 사용자에게 '혹시 이거?'로 보여주고 PIVO나 정확한 표기로 다시 받아라(임의로 고르지 말 것)." : " 작품명/PIVO 확인 필요."}` }) }] }; pid = String(w.pivoId || "").trim(); }
-          if (!pid) return { content: [{ type: "text", text: JSON.stringify({ error: "PIVO를 못 구함. 작품명 표기나 PIVO ID 확인 필요." }) }] };
-          const q = await quotationByPivo(pid).catch(() => null);
-          const d = Array.isArray(q?.data) ? q.data[0] : null;
-          if (!d?.projectUuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `PIVO ${pid}의 TOTUS 프로젝트를 못 찾음.` }) }] };
+          const rp = await resolveTotusProject({ work, pivo });   // 출판사 시트 비의존 — TOTUS에서 직접 찾음
+          if (rp.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, candidates: rp.candidates, msg: "TOTUS에 같은 이름 후보가 여러 개 — 사용자에게 보여주고 PIVO로 특정받아라(임의 선택 금지)." }) }] };
+          if (rp.notFound) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: rp.msg }) }] };
+          const d = { projectUuid: rp.projectUuid, projectName: rp.projectName };
           const change = action ? { action } : { name: name.trim() };
-          const label = action ? `상태 → *${TOTUS_ACTION_KO[action] || action}*` : `이름 → *${name.trim()}*`;
+          const label = action ? `상태 → *${TOTUS_ACTION_KO[action] || action}*${rp.status ? ` (현재 ${rp.status})` : ""}` : `이름 → *${name.trim()}*`;
           const id = `proj_${++totusProjSeq}`;
           const p = { projectUuid: d.projectUuid, projectName: d.projectName || "", steps: [change], label, createdAt: Date.now() };
           pendingTotusProj.set(id, p);
@@ -1010,24 +1008,22 @@ const apmTools = createSdkMcpServer({
         try {
           const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
-          let pid = pivo && String(pivo).trim();
-          if (!pid && work) { const w = await lookupWork(work); if (w.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, candidates: w.candidates, msg: "작품 후보 여러 개 — 되물어라." }) }] }; if (!w.found) return { content: [{ type: "text", text: JSON.stringify({ found: false, candidates: w.candidates || [], msg: `'${work}' 정확히 못 찾음.${w.candidates?.length ? " 후보가 있어 — 사용자에게 '혹시 이거?'로 보여주고 PIVO나 정확한 표기로 다시 받아라(임의로 고르지 말 것)." : " 작품명/PIVO 확인 필요."}` }) }] }; pid = String(w.pivoId || "").trim(); }
-          if (!pid) return { content: [{ type: "text", text: JSON.stringify({ error: "PIVO를 못 구함. 작품명/PIVO 확인 필요." }) }] };
-          const q = await quotationByPivo(pid).catch(() => null);
-          const d = Array.isArray(q?.data) ? q.data[0] : null;
-          if (!d?.projectUuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `PIVO ${pid}의 TOTUS 프로젝트를 못 찾음.` }) }] };
-          const cur = String(d.projectName || "").trim();
+          const rp = await resolveTotusProject({ work, pivo });   // 출판사 시트 비의존 — TOTUS에서 직접 찾음
+          if (rp.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, candidates: rp.candidates, msg: "TOTUS에 같은 이름 후보가 여러 개 — 사용자에게 보여주고 PIVO로 특정받아라(임의 선택 금지)." }) }] };
+          if (rp.notFound) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: rp.msg }) }] };
+          const cur = String(rp.projectName || "").trim();
           const already = /\(완\)\s*$/.test(cur);
           const newName = already ? cur : `${cur} (완)`;
           const steps = already ? [{ action: "complete" }] : [{ name: newName }, { action: "complete" }];
+          const statusLine = rp.status ? `\n• 현재 상태: ${rp.status}${/완료|complete|done/i.test(rp.status) ? " ⚠️(이미 완료 상태일 수 있음)" : ""}` : "";
           const label = already ? "상태 → *완료* (이름엔 이미 (완) 있음)" : `이름 → *${newName}* + 상태 → *완료*`;
           const id = `proj_${++totusProjSeq}`;
-          pendingTotusProj.set(id, { projectUuid: d.projectUuid, projectName: cur, steps, label, createdAt: Date.now() });
+          pendingTotusProj.set(id, { projectUuid: rp.projectUuid, projectName: cur, steps, label, createdAt: Date.now() });
           if (ctx?.client && ctx?.channel) {
             await ctx.client.chat.postMessage({
               channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: "완결 처리 확인",
               blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `🏁 *완결 작품 처리 확인*\n• 프로젝트: ${cur || d.projectUuid}\n• ${label}\n진행할까요? (실제 TOTUS 반영)` } },
+                { type: "section", text: { type: "mrkdwn", text: `🏁 *완결 작품 처리 확인*\n• 프로젝트: ${cur || rp.projectUuid}${statusLine}\n• ${label}\n진행할까요? (실제 TOTUS 반영)` } },
                 { type: "actions", elements: [
                   { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 완결 처리" }, value: id, action_id: "proj_confirm" },
                   { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: id, action_id: "proj_cancel" },
@@ -1035,7 +1031,7 @@ const apmTools = createSdkMcpServer({
               ],
             });
           }
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, projectName: cur, newName, already, note: "확인 버튼을 보냈음. ✅를 눌러야 (완) 표기+완료 반영. 처리했다고 말하지 말 것." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, projectName: cur, newName, already, status: rp.status, note: "확인 버튼을 보냈음. ✅를 눌러야 (완) 표기+완료 반영. 처리했다고 말하지 말 것. 현재 상태가 이미 완료면 사용자에게 알려라." }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
@@ -1473,6 +1469,31 @@ app.action("send_cancel", async ({ ack, body, client }) => {
   pendingSends.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
+
+// TOTUS 프로젝트 해석 — ①출판사 시트(lookupWork) 먼저 → ②못 찾으면 TOTUS(findProject) 폴백. 각 단계 완전→부분→후보.
+// 이름의 [PRJ-…] 접두 제거. 반환: {projectUuid, projectName, pivoId, status?, source} / {ambiguous, candidates} / {notFound, msg, candidates?}
+async function resolveTotusProject({ work, pivo }) {
+  const stripPrj = (s) => String(s || "").replace(/^\s*\[PRJ-[^\]]*\]\s*/, "").trim();
+  const viaQuote = async (pid) => {
+    const q = await quotationByPivo(String(pid).trim()).catch(() => null);
+    const d = Array.isArray(q?.data) ? q.data[0] : null;
+    return d?.projectUuid ? { projectUuid: d.projectUuid, projectName: stripPrj(d.projectName), pivoId: String(pid).trim() } : null;
+  };
+  if (pivo && String(pivo).trim()) { const v = await viaQuote(pivo); return v || { notFound: true, msg: `PIVO ${pivo}의 TOTUS 프로젝트를 못 찾음.` }; }
+  if (!work || !work.trim()) return { notFound: true, msg: "작품명(work) 또는 PIVO 필요." };
+  // ① 출판사 시트 (완전→부분→후보)
+  const w = await lookupWork(work);
+  const wCand = (w.candidates || []).map((c) => ({ name: c.koTitle || c.jaTitle || c.fixTitle, pivo: c.pivoId }));
+  if (w.ambiguous) return { ambiguous: true, candidates: wCand };
+  if (w.found && w.pivoId) { const v = await viaQuote(w.pivoId); if (v) return { ...v, source: "출판사 시트" }; }
+  // ② TOTUS 폴백 (시트에서 못 찾았거나 견적 없음)
+  const r = await findProject(work).catch(() => null);
+  const arr = Array.isArray(r?.data) ? r.data : [];
+  if (!arr.length) return { notFound: true, msg: `'${work}'를 출판사 시트·TOTUS 모두에서 못 찾음. PIVO나 정확한 표기 확인.`, candidates: wCand };
+  if (arr.length > 1) return { ambiguous: true, candidates: arr.slice(0, 6).map((p) => ({ name: stripPrj(p["프로젝트"]), pivo: p._detail?.pivoId || "", status: p._detail?.["진행상태"] || "" })) };
+  const p = arr[0];
+  return { projectUuid: p.uuid, projectName: stripPrj(p["프로젝트"]), pivoId: p._detail?.pivoId || "", status: p._detail?.["진행상태"] || "", hold: p._detail?.HOLD, source: "TOTUS" };
+}
 
 // 출판사 드라이브 링크 시트: PIVO(I열)로 행 찾아 A열=담당APM, C열=한국어타이틀만 채움(나머지 안 건드림).
 async function updatePublisherSheet(pivo, apmName, koTitle) {
