@@ -8,7 +8,7 @@ import { readRange } from "./sheets.js";
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data");
 const FILE = path.join(DIR, "completions-notified.json");
 const DELIVERY_ID = "1QWCtU1GnCT2BQZvuF_N-8MnpgiyqIDTcM0x6hdCi8mQ";
-const TABS = { "중일": "납품관리시트_Japan(중일 V5)", "한일": "납품관리시트_Japan(한일 V5)" };
+const TABS = { "중일": "납품관리시트_Japan(중일 V5)" };   // 툰식이는 중일 전용 — 한일 스캔 안 함
 // 컬럼: A고객사 B프로젝트명 C PM D APM E Job name(회차) F주문정보 G jp_end_date ... P pivo_id
 const C = { work: 1, apm: 3, job: 4, endDate: 6, pivo: 15 };
 
