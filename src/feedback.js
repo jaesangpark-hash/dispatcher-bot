@@ -24,8 +24,9 @@ function dateNum(s) {
   return m ? +`${m[1]}${m[2].padStart(2, "0")}${m[3].padStart(2, "0")}` : 0;
 }
 
-// 작품·회차로 최신 검수 배치의 총평/번역가/LG를 모아 공유 메시지 작성
-export async function buildFeedback({ work, episode }) {
+// 작품·회차로 검수 배치(初回分 또는 再提出･追話)의 총평/번역가/LG를 모아 공유 메시지 작성
+// batch: '再提出追話'/재제출/추가 → 再提出･追話 배치 / 그 외(初回 등) → 初回分(기본). F열(追話備考)로 선택.
+export async function buildFeedback({ work, episode, batch }) {
   const w = await lookupWork(work);
   if (!w.found) return w.ambiguous ? { found: false, ambiguous: true, candidates: w.candidates } : { found: false, query: work };
   const apmId = w.apm ? APM_SLACK[trim(w.apm)] : null;
@@ -44,18 +45,24 @@ export async function buildFeedback({ work, episode }) {
   const byDiv = (d) => mine.filter((x) => trim(x.r[C.division]) === d);
   const latest = (arr) => arr.slice().sort((a, b) => dateNum(b.r[C.date]) - dateNum(a.r[C.date]))[0] || null;
 
-  // 1) 총평 = 가장 최근 翻訳ck(総評). episode가 epNote에 들어가면 그 배치 우선.
+  // 1) 총평 = 翻訳ck(総評). 배치(初回分/再提出･追話)는 F열(追話備考)로 선택. 같은 배치 여럿이면 최근.
+  // batch 명시 우선, 없으면 회차로 추론(1-3화 등 ≤3=초회 / 4화+ =재제출·추가). 둘 다 없으면 최신.
+  const epMin = (() => { const m = String(episode ?? "").match(/\d+/); return m ? +m[0] : null; })();
+  const wantResubmit = /再提出|追話|재제출|추가|resubmit/i.test(String(batch ?? "")) || (!batch && epMin != null && epMin >= 4);
+  const wantInitial = /初回|초회/.test(String(batch ?? "")) || (!batch && epMin != null && epMin <= 3);
+  const matchF = (f) => wantResubmit ? /再提出|追話/.test(f) : wantInitial ? /初回/.test(f) : true;
   const sochongAll = byDiv(DIV.sochong);
   if (!sochongAll.length) return { found: false, query: work, msg: `'${w.koTitle}'에 翻訳ck(総評) 기록이 없음(아직 총평 미작성).` };
   const epStr = trim(episode);
-  let sochong = epStr ? sochongAll.find((x) => trim(x.r[C.epNote]) && trim(x.r[C.epNote]).includes(epStr)) : null;
-  sochong = sochong || latest(sochongAll);
-  const batchNote = trim(sochong.r[C.epNote]);
+  let pool = sochongAll.filter((x) => matchF(trim(x.r[C.epNote])));
+  if (!pool.length) pool = sochongAll;                 // 해당 배치 없으면 전체에서
+  const sochong = latest(pool);
+  const batchNote = trim(sochong.r[C.epNote]);         // 初回分 / 再提出･追話
 
-  // 같은 배치(epNote)로 번역가/LG. epNote 없으면 같은 날짜로.
+  // 같은 배치 = 그 총평과 같은 날짜(対応日). F엔 회차번호가 없어 날짜로 묶는 게 정확.
   const sameBatch = (arr) => {
-    const byNote = batchNote ? arr.filter((x) => trim(x.r[C.epNote]) === batchNote) : arr.filter((x) => dateNum(x.r[C.date]) === dateNum(sochong.r[C.date]));
-    return byNote.length ? byNote : arr;
+    const sd = arr.filter((x) => dateNum(x.r[C.date]) === dateNum(sochong.r[C.date]));
+    return sd.length ? sd : arr;
   };
   // 2) 번역가 = 翻訳ck(翻訳者) 중 이름(J) 있는 행
   const transRow = latest(sameBatch(byDiv(DIV.trans)).filter((x) => trim(x.r[C.translator])));
@@ -75,21 +82,23 @@ export async function buildFeedback({ work, episode }) {
   if (transRow) { sections.push(blk(`[번역가] ${trim(transRow.r[C.translator])}`, transRow.r[C.memo], transRow.r[C.grade])); rowsToMark.push(transRow.sheetRow); }
   if (lgRow) { sections.push(blk(`[LG] ${trim(lgRow.r[C.lg])}`, lgRow.r[C.memo], lgRow.r[C.grade])); rowsToMark.push(lgRow.sheetRow); }
   if (qaRow && qaName && qaRow !== lgRow) { sections.push(blk(`[${qaName}님]`, qaRow.r[C.memo], qaRow.r[C.grade])); rowsToMark.push(qaRow.sheetRow); }
-  // 제목의 <작품>은 &lt;&gt;로 이스케이프(슬랙이 <...>를 링크로 오해하지 않게)
-  const titleBlock = [
-    `&lt;${w.koTitle}&gt; ${epStr || batchNote || ""}화 고객 번역 검수 완료되었습니다.`,
+  // 제목의 <작품>은 &lt;&gt;로 이스케이프(슬랙이 <...>를 링크로 오해하지 않게). 회차는 epStr만(F는 회차 아님).
+  const epLabel = epStr ? `${epStr}화 ` : "";
+  const body = [
+    `&lt;${w.koTitle}&gt; ${epLabel}고객 번역 검수 완료되었습니다.`,
     "추가 제출은 불필요합니다.",
     "",
     sections.join("\n"),
   ].join("\n");
-  const text = `${apmId ? `<@${apmId}>` : `@${w.apm || "?"}`} CC <@${OWNER_ID}>\n${titleBlock}`;          // 실제 발송용(멘션)
-  const previewText = `@${w.apm || "?"} CC @박재상\n${titleBlock}`;                                         // 미리보기용(멘션 핑 방지)
+  const mentionReal = `${apmId ? `<@${apmId}>` : `@${w.apm || "?"}`} CC <@${OWNER_ID}>`;     // 실제 발송용(멘션)
+  const mentionPreview = `@${w.apm || "?"} CC @박재상`;                                        // 미리보기용(멘션 핑 방지)
 
   return {
     found: true,
-    text, previewText,
+    body, mentionReal, mentionPreview,
+    text: `${mentionReal}\n${body}`, previewText: `${mentionPreview}\n${body}`,   // 하위호환
     apmId, apmName: w.apm, koTitle: w.koTitle, pivoId: pivo,
-    episode: epStr, batchNote, batchDate: trim(sochong.r[C.date]),
+    episode: epStr, batchNote, batchType: batchNote || (wantResubmit ? "再提出･追話" : "初回分"), batchDate: trim(sochong.r[C.date]),
     rowsToMark,                                  // N열(피드백 공유) TRUE 표시 대상 시트 행
     markRange: (row) => `${WORK_LOG}!N${row}`,
     qaName, qaId,

@@ -137,7 +137,7 @@ const DISPATCHER_PROMPT = [
   "- 납품예정일 '변경/삭제(비우기)' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영, 변경 전용) / ②내부 납품관리시트 G열 = propose_delivery_edit(변경+삭제 둘 다). 둘 다 게이트형(버튼 확인). ★'납품일 지워/삭제/비워줘'(특히 재수급·문의로 고객사 확인 필요해 일정을 비워둘 때) → 내부 시트면 propose_delivery_edit에 new_date='삭제'(또는 빈 문자열)로 호출하면 G열을 비운다. 확인 끝나 다시 잡을 땐 같은 도구에 날짜를 준다. 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고(삭제는 보통 내부 시트), 절대 '변경/삭제했다'고 단정하지 말 것(버튼 눌러야 반영).",
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
   "★'피드백' 라우팅(자주 헷갈림): propose_retake=클라이언트 수정요청(리테이크)을 번역가에게 일본어로 전달 / share_feedback=검수 퀄리티 등급(총평·번역가·LG 등급+코멘트) 공유. 맥락에 리테이크 BOT 메시지(작품·리테이크화수·수정내용·프로젝트URL)가 있거나 '번역가에게/리테이크/수정 전달'이면 → propose_retake. 명시적 '검수 등급/퀄리티/총평 공유'만 → share_feedback. 애매하면 리테이크 BOT 메시지 유무로 판단(있으면 propose_retake). 한일은 KP평가 없어 share_feedback 불가→propose_retake.",
-  "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님).",
+  "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode,batch): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님). ★배치: 1-3화 등 초회분이면 batch 생략(初回分 기본), '재제출/추가분/再提出/追話'이거나 4화 이상 후속분이면 batch='再提出追話'로 그 배치 등급·코멘트를 고른다. 회차(예 '4')는 사용자가 말한 그대로 episode에. 초안은 ✏️수정 모달로 본문(문구·코멘트·등급) 손볼 수 있음.",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): propose_wongo_update(인자 없음). dryRun으로 보낼 건수 먼저 확인 버튼 → ✅눌러야 실제 전송+체크. '보냈다' 단정 금지.",
   "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★납품예정일 '조회' 구분(중요): ①'TOTUS/실제 시스템 납품예정일'(JobProcess deliveryDate) = totus_delivery_date(work, episode). ②'내부 납품시트' 납품일 = get_delivery_date. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — 그걸 '납품예정일'이라 단정 금지. '실제 TOTUS 납품예정일'을 물으면 totus_delivery_date로 정확히 답해라.",
@@ -252,6 +252,19 @@ function transStartBlocks(id, p) {
       { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 발송" }, value: id, action_id: "transstart_confirm" },
       { type: "button", text: { type: "plain_text", text: "✏️ 수정" }, value: id, action_id: "transstart_edit" },
       { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: id, action_id: "transstart_cancel" },
+    ] },
+  ];
+}
+// 피드백 공유 미리보기 블록(📣발송/✏️수정/취소). p.body 편집은 모달에서.
+function feedbackBlocks(id, p) {
+  const warnTxt = p.warn?.length ? `\n• ⚠️ ${p.warn.join(" / ")}` : "";
+  return [
+    { type: "section", text: { type: "mrkdwn", text: `📣 *피드백 공유 확인* — ${p.koTitle} ${p.episode ? p.episode + "화 " : ""}(${p.batchType || ""}${p.batchDate ? `, 배치 ${p.batchDate}` : ""})\n• 받는 곳: <#${p.channel}>${warnTxt}` } },
+    { type: "section", text: { type: "mrkdwn", text: `${p.mentionPreview}\n${p.body}` } },
+    { type: "actions", elements: [
+      { type: "button", style: "primary", text: { type: "plain_text", text: "📣 발송" }, value: id, action_id: "feedback_confirm" },
+      { type: "button", text: { type: "plain_text", text: "✏️ 수정" }, value: id, action_id: "feedback_edit" },
+      { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: id, action_id: "feedback_cancel" },
     ] },
   ];
 }
@@ -711,41 +724,33 @@ const apmTools = createSdkMcpServer({
       "번역 검수 피드백을 고객 공유용으로 정리해 지정 채널에 '발송 제안'한다('[작품] [회차] 피드백 공유해줘'). 퀄리티(KP평가) 작업기록 시트에서 총평·번역가·LG 코멘트와 등급(시트값 그대로)을 뽑아 양식 메시지를 만들고, APM을 받는이로(@APM CC @박재상) 확인 버튼과 함께 보낸다 — 재상 님이 버튼을 눌러야 실제 발송된다. 등급은 시트값을 그대로 쓰고 임의로 바꾸지 말 것. 발송 후 시트의 '피드백 공유' 열이 자동 체크된다. 절대 '보냈다'고 단정하지 말 것(확인 대기).",
       {
         work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
-        episode: z.string().describe("회차 표기(메시지에 '<작품> {episode}화'로 들어감). 예 '1-3'. 사용자가 말한 그대로."),
+        episode: z.string().describe("회차 표기(메시지에 '<작품> {episode}화'로 들어감). 예 '1-3', '4'. 사용자가 말한 그대로."),
+        batch: z.string().optional().describe("검수 배치: 초회(1-3화 등)=생략 또는 '初回' / 재제출·추가분(4화+ 등)='再提出追話'(또는 '재제출'·'추가'). 시트 F열(追話備考)로 그 배치 등급·코멘트를 고른다."),
         channel: z.string().optional().describe("보낼 채널 ID(C…). 생략 시 기본 피드백 채널"),
       },
-      async ({ work, episode, channel }) => {
+      async ({ work, episode, batch, channel }) => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
-          const fb = await buildFeedback({ work, episode });
+          const fb = await buildFeedback({ work, episode, batch });
           if (!fb.found) {
             if (fb.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: "작품 후보가 여러 개. 어느 작품인지 되물어라.", candidates: fb.candidates }) }] };
             return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: fb.msg || `'${work}'를 못 찾음.` }) }] };
           }
           const chan = channel || FEEDBACK_CHANNEL;
-          const fbId = `fb_${++feedbackSeq}`;
-          pendingFeedback.set(fbId, { channel: chan, text: fb.text, koTitle: fb.koTitle, episode: fb.episode, rowsToMark: fb.rowsToMark, createdAt: Date.now() });
           const warn = [];
           if (fb.missing.apm) warn.push(`APM(${fb.apmName || "?"}) Slack ID 미등록 — 멘션이 텍스트로 나갑니다`);
           if (fb.missing.translator) warn.push("번역가 코멘트 없음");
           if (fb.missing.lg) warn.push("LG 코멘트 없음");
           if (fb.missing.qa) warn.push("정성품질검수자(2번째 체커) 없음");
+          const fbId = `fb_${++feedbackSeq}`;
+          const p = { channel: chan, mentionReal: fb.mentionReal, mentionPreview: fb.mentionPreview, body: fb.body, koTitle: fb.koTitle, episode: fb.episode, batchType: fb.batchType, batchDate: fb.batchDate, rowsToMark: fb.rowsToMark, warn, createdAt: Date.now() };
+          pendingFeedback.set(fbId, p);
           if (ctx?.client && ctx?.channel) {
-            await ctx.client.chat.postMessage({
-              channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
-              text: `피드백 공유 확인: ${fb.koTitle} ${fb.episode}화 → <#${chan}>`,
-              blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `📣 *피드백 공유 확인* — ${fb.koTitle} ${fb.episode || fb.batchNote}화 (배치 ${fb.batchDate})\n• 받는 곳: <#${chan}>${warn.length ? `\n• ⚠️ ${warn.join(" / ")}` : ""}` } },
-                { type: "section", text: { type: "mrkdwn", text: fb.previewText } },
-                { type: "actions", elements: [
-                  { type: "button", style: "primary", text: { type: "plain_text", text: "📣 발송" }, value: fbId, action_id: "feedback_confirm" },
-                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: fbId, action_id: "feedback_cancel" },
-                ] },
-              ],
-            });
+            const posted = await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `피드백 공유 확인: ${fb.koTitle} ${fb.episode}화 → <#${chan}>`, blocks: feedbackBlocks(fbId, p) });
+            if (posted?.ts) { p.previewChannel = ctx.channel; p.previewTs = posted.ts; pendingFeedback.save(); }
           }
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: fb.koTitle, episode: fb.episode, to: chan, warnings: warn, note: "확인 버튼을 보냈음. 재상 님이 버튼을 눌러야 발송됨. 미리보기 그대로 보여주기만 하고, 보냈다고 말하지 말 것. 등급/코멘트를 임의로 바꾸지 말 것." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: fb.koTitle, episode: fb.episode, batch: fb.batchType, to: chan, warnings: warn, note: "확인 버튼을 보냈음(✏️수정으로 본문 손볼 수 있음). 재상 님이 버튼을 눌러야 발송됨. 미리보기 그대로 보여주기만 하고, 보냈다고 말하지 말 것. 등급/코멘트를 임의로 바꾸지 말 것." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -1458,7 +1463,8 @@ app.action("feedback_confirm", async ({ ack, body, client }) => {
   pendingFeedback.delete(id);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
   try {
-    await client.chat.postMessage({ channel: p.channel, text: p.text, ...SENDER });
+    const outText = p.mentionReal ? `${p.mentionReal}\n${p.body}` : p.text;   // 수정본 반영(body 편집 시)
+    await client.chat.postMessage({ channel: p.channel, text: outText, ...SENDER });
     appendFileSync("logs/feedback.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, channel: p.channel, work: p.koTitle, episode: p.episode, rows: p.rowsToMark }) + "\n");
     // 발송 성공 → 작업기록 '피드백 공유'(N열) TRUE 표시(베스트에포트: SA가 KP시트 편집자 아니면 실패해도 발송은 유지)
     let mark = "";
@@ -1475,6 +1481,40 @@ app.action("feedback_cancel", async ({ ack, body, client }) => {
   await ack();
   pendingFeedback.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+// 피드백 초안 수정 — 모달(본문 편집, 멘션 줄은 자동 고정)
+app.action("feedback_edit", async ({ ack, body, client }) => {
+  await ack();
+  if (body.user?.id !== DISPATCHER_USER_ID) return;
+  const id = body.actions?.[0]?.value;
+  const p = pendingFeedback.get(id);
+  if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정할 수 없어요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: "modal", callback_id: "feedback_edit_modal", private_metadata: id,
+      title: { type: "plain_text", text: "피드백 초안 수정" },
+      submit: { type: "plain_text", text: "적용" }, close: { type: "plain_text", text: "닫기" },
+      blocks: [
+        { type: "context", elements: [{ type: "mrkdwn", text: "받는이/CC 멘션 줄은 자동 고정이에요. 아래 본문(제목·문구·코멘트·등급)만 고치면 미리보기에 반영됩니다." }] },
+        { type: "input", block_id: "body", label: { type: "plain_text", text: "본문" },
+          element: { type: "plain_text_input", action_id: "val", multiline: true, initial_value: p.body } },
+      ],
+    },
+  }).catch((e) => console.error("[feedback_edit] views.open 실패:", e?.data?.error || e?.message));
+});
+
+app.view("feedback_edit_modal", async ({ ack, view, client, body }) => {
+  await ack();
+  const id = view.private_metadata;
+  const p = pendingFeedback.get(id);
+  if (!p || body.user?.id !== DISPATCHER_USER_ID) return;
+  const nb = view.state.values?.body?.val?.value;
+  if (typeof nb === "string" && nb.trim()) { p.body = nb; pendingFeedback.save(); }
+  if (p.previewChannel && p.previewTs) {
+    await client.chat.update({ channel: p.previewChannel, ts: p.previewTs, text: "피드백 공유 확인(수정됨)", blocks: feedbackBlocks(id, p) }).catch((e) => console.error("[feedback_edit_modal] update 실패:", e?.data?.error || e?.message));
+  }
 });
 
 // ── 리테이크 발송 확인/취소 (실제 발송은 LLM 밖, 여기서만) ──────────
