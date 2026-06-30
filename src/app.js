@@ -19,6 +19,7 @@ import { extractEpisode, QA_INSTRUCTIONS } from "./review.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
+import { addLearned, removeLearned, listLearned, learnedPromptBlock } from "./learned.js";
 import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch } from "./schedule.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
@@ -159,6 +160,7 @@ const DISPATCHER_PROMPT = [
   "- 스레드 찾기('○○ 작품 ~~ 스레드 찾아줘', '○○ 관련 논의 어디 있어', 과거 대화/스레드 내용): find_thread(query=작품명+키워드). 등록된 주요 업무 채널들에서 검색해 매칭 스레드를 찾고, 1개로 분명하면 내용(topContent)까지 와서 요약·답+링크. 여러 개면 후보를 보여주고 어느 건지 되묻거나 키워드를 좁힌다(임의 단정 금지). 사용자가 특정 채널을 말하면 channel 인자로. 특정 스레드/링크를 콕 집으면 read_thread. (등록 채널·봇 멤버 범위 내 — 전역 검색 아님)",
   "- '고객사 스케줄 시트'(중일, =내부 납품 시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. '○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일=mode:launch(work나 pivo + episode, PIVO로 정확매칭), 'N/일 납품 회차 카운트'=mode:delivery_on+date, '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. ID 묻지 말 것(이 도구가 그 시트임). 런칭일 못 찾으면 PIVO ID나 일본어 제목 확인을 요청(한국어만으론 시트에 없을 수 있음).",
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
+  "- 학습/교정(영구): 재상 님이 '앞으로 ~로 기억해/외워둬', '이건 이렇게 이해해', 또는 내가 잘못 이해한 걸 바로잡아 주면 → remember(note)로 저장한다(재기동에도 유지, 다음부터 자동 적용). '그 규칙 잊어'=forget, '뭐 배웠어'=list_learned. ★단순 '나중에 ~할 일'은 add_reminder(리마인더), 항구적 동작 규칙·별칭·이해 교정은 remember로 구분. 모호하면 '리마인더로 할까요, 규칙으로 외울까요?' 한 줄 확인.",
   "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝내거나 '그만'할 때까지 하루 여러 번 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. 완료('~했어'·'N번 완료'·'해결됐어')거나 중단('그만'·'멈춰'·'이건 그만 리마인드해') 신호 → complete_reminder(번호 또는 내용 일부). 재촉 중인 일을 대화로 처리하다가 '그만/됐어' 신호가 오면 그 항목을 complete_reminder로 빼라.",
   "그 밖에 도구가 없는 일이면, '도구가 없다'를 장황히 설명하지 말고 — 아는 선에서 바로 도움이 되는 답을 주고, 정확한 데이터가 필요하면 어디(어느 시트·채널)를 보면 되는지 한 줄로만 짚어준다.",
   "★계산·집계·무거운 작업은 compute로(암산·수동 카운트 금지, 타임아웃 방지): 합계·환율·정산·통계·CSV/시트 집계(개수·비율·분류·TOP N)는 머리로 세지 말고 compute로 코드 실행. 첨부 CSV/엑셀은 compute 안 attachments[i].text로 직접 접근(원문 재기입 금지). 시트 대량 집계는 read_tab으로 행을 가져와 compute에 넘겨 계산(수백 행 직접 세지 말 것). 번역 검수(review_episode)는 한 번에 한 작품·회차씩만 — 몰아치면 타임아웃. ★검수 요청이 **여러 작품**(예 '위 8작품 하나씩 순차 검수')이면 review_episode를 한 턴에 반복 호출하지 말고(중간에 타임아웃 남) **review_queue(works=[{work,episode,lang?}…])로 한 번에 큐잉**하라 — 그러면 봇이 작품당 별도 턴으로 차례차례 검수해 각 결과를 올린다. 한 작품만이면 review_episode 직접.",
@@ -1113,6 +1115,20 @@ const apmTools = createSdkMcpServer({
       { match: z.string().describe("완료할 리마인더의 번호 또는 내용 일부") },
       async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = completeReminder(a.match); return { content: [{ type: "text", text: JSON.stringify({ done: r.done, removed: r.removed.map((x) => x.text), remaining: r.remaining }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: false } }),
+    tool("remember",
+      "재상 님이 '앞으로 ~로 기억해/외워둬/이건 이렇게 이해해' 하고 가르친 규칙·별칭·교정을 영구 저장한다(재기동에도 유지 — 다음 부팅부터 시스템 지침에 포함돼 항상 적용). 예: \"'○○'는 △△ 작품이야\", \"'완료'라고 하면 완결처리야\", \"이 채널 요청은 ~로 처리해\". 단순 '나중에 할 일'(리마인더)은 add_reminder를, 항구적 동작 규칙/이해 교정은 이걸 쓴다. 잘못 이해했던 걸 바로잡아 줄 때도 이걸로 저장하면 다시 안 틀린다.",
+      { note: z.string().describe("기억할 규칙/별칭/교정 (한 문장으로 명확히)") },
+      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = addLearned(a.note); if (r.error) return { content: [{ type: "text", text: JSON.stringify(r) }] }; return { content: [{ type: "text", text: JSON.stringify({ saved: true, dup: !!r.dup, total: r.total, note: "저장했고 지금 대화부터 반영. 재기동 후에도 계속 적용됨." }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      { annotations: { readOnlyHint: false } }),
+    tool("forget",
+      "remember로 저장했던 학습 규칙을 지운다('그건 잊어/그 규칙 빼'). 번호 또는 내용 일부로 지정. (지운 건 다음 재기동부터 시스템 지침에서 빠짐)",
+      { match: z.string().describe("지울 학습 규칙의 번호 또는 내용 일부") },
+      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = removeLearned(a.match); return { content: [{ type: "text", text: JSON.stringify({ removed: r.removed, remaining: r.remaining }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      { annotations: { readOnlyHint: false } }),
+    tool("list_learned", "지금까지 가르쳐 저장된 학습 규칙(remember) 목록. '뭐 기억하고 있어/배운 거 보여줘' 류.",
+      {},
+      async () => { try { const _d = ownerOnly(); if (_d) return _d; return { content: [{ type: "text", text: JSON.stringify({ items: listLearned() }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      { annotations: { readOnlyHint: true } }),
   ],
 });
 
@@ -1269,11 +1285,14 @@ async function toAttachmentBlocks(files, cap = 6) {
 }
 
 function startSession() {
+  const learnedBlk = learnedPromptBlock();   // 재상 님이 가르친 규칙 — 부팅마다 시스템 프롬프트에 주입(재기동 유지)
+  const sysPrompt = learnedBlk ? [...DISPATCHER_PROMPT, learnedBlk] : DISPATCHER_PROMPT;
+  if (learnedBlk) console.log(`[learned] 학습 규칙 ${listLearned().length}개 주입`);
   const session = query({
     prompt: messageStream(),
     options: {
       model: DISPATCHER_MODEL,
-      systemPrompt: DISPATCHER_PROMPT,
+      systemPrompt: sysPrompt,
       mcpServers: { apm: { type: "sdk", name: "apm", instance: apmTools.instance } },
       // 명시한 apm 서버만 사용하고, 계정/조직에 배포된 외부 커넥터는 전부 무시한다.
       // (claude.ai 조직 커넥터의 깨진 헤더 'Bearer 복사한_토큰'이 봇 세션에 실려
@@ -1285,6 +1304,7 @@ function startSession() {
         "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
+        "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
         "WebSearch"],
     },
   });
