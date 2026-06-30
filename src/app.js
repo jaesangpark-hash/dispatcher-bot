@@ -158,7 +158,7 @@ const DISPATCHER_PROMPT = [
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
   "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝내거나 '그만'할 때까지 하루 여러 번 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. 완료('~했어'·'N번 완료'·'해결됐어')거나 중단('그만'·'멈춰'·'이건 그만 리마인드해') 신호 → complete_reminder(번호 또는 내용 일부). 재촉 중인 일을 대화로 처리하다가 '그만/됐어' 신호가 오면 그 항목을 complete_reminder로 빼라.",
   "그 밖에 도구가 없는 일이면, '도구가 없다'를 장황히 설명하지 말고 — 아는 선에서 바로 도움이 되는 답을 주고, 정확한 데이터가 필요하면 어디(어느 시트·채널)를 보면 되는지 한 줄로만 짚어준다.",
-  "★계산·집계·무거운 작업은 compute로(암산·수동 카운트 금지, 타임아웃 방지): 합계·환율·정산·통계·CSV/시트 집계(개수·비율·분류·TOP N)는 머리로 세지 말고 compute로 코드 실행. 첨부 CSV/엑셀은 compute 안 attachments[i].text로 직접 접근(원문 재기입 금지). 시트 대량 집계는 read_tab으로 행을 가져와 compute에 넘겨 계산(수백 행 직접 세지 말 것). 번역 검수(review_episode)는 한 번에 한 작품·회차씩만(여러 개면 '하나씩 순차로' 하고 한 건씩) — 몰아치면 타임아웃.",
+  "★계산·집계·무거운 작업은 compute로(암산·수동 카운트 금지, 타임아웃 방지): 합계·환율·정산·통계·CSV/시트 집계(개수·비율·분류·TOP N)는 머리로 세지 말고 compute로 코드 실행. 첨부 CSV/엑셀은 compute 안 attachments[i].text로 직접 접근(원문 재기입 금지). 시트 대량 집계는 read_tab으로 행을 가져와 compute에 넘겨 계산(수백 행 직접 세지 말 것). 번역 검수(review_episode)는 한 번에 한 작품·회차씩만 — 몰아치면 타임아웃. ★검수 요청이 **여러 작품**(예 '위 8작품 하나씩 순차 검수')이면 review_episode를 한 턴에 반복 호출하지 말고(중간에 타임아웃 남) **review_queue(works=[{work,episode,lang?}…])로 한 번에 큐잉**하라 — 그러면 봇이 작품당 별도 턴으로 차례차례 검수해 각 결과를 올린다. 한 작품만이면 review_episode 직접.",
   "★도구 라우팅(엄수·양방향 폴백 금지): ①운영·내부 데이터(작품·납품·일정·작업자·정산·고객사·스케줄 등)는 반드시 내부 도구(get_*·query_sheet·totus_*·read_tab·query_schedule 등)로만 조회한다. 못 찾으면 '못 찾았다'고 답하고 작품명 표기 확인을 요청한다 — 절대 웹으로 넘어가지 마라. ②WebSearch(웹 검색)는 사용자가 '웹에서/검색해줘'라고 명시했거나, 환율·일반상식·뉴스처럼 내부에 있을 리 없는 외부·실시간 정보일 때만 쓴다. 웹에서 못 찾으면 '웹에서 못 찾았다'고 답하고 내부 도구로 폴백하지 마라. ③즉 각 요청은 지정된 한쪽 출처에서만 처리하고, 미스는 '못 찾음'으로 끝낸다(반대편으로 안 넘어감). WebFetch(임의 URL 회수)는 쓰지 말고, 같은 검색을 2회 넘게 재시도하지 마라.",
   "비가역적이거나 고객사로 나가는 동작(발송·삭제·수정)은 절대 임의 실행하지 않고 먼저 확인을 받는다.",
   "모르면 모른다고 솔직하게, 추측이면 추측이라고 표시한다.",
@@ -690,6 +690,32 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("review_queue",
+      "여러 작품을 '순차 검수'할 때 쓴다(예 '위 8작품 하나씩 순차 검수해'). 작품마다 **별도 턴**으로 큐에 넣어, 한 턴=한 작품으로 차례차례 review_episode 검수하게 한다(한 턴에 몰면 타임아웃 나므로 절대 직접 여러 개를 검수하지 말고 이 도구로 큐잉). works=검수할 [{work, episode, lang?}] 목록(사용자/스레드에서 순서대로 파싱). 등록만 하고 즉시 반환하며, 이후 봇이 하나씩 자동으로 검수해 각 결과를 이 자리(스레드/DM)에 올린다.",
+      {
+        works: z.array(z.object({
+          work: z.string().describe("작품명(한국어)"),
+          episode: z.string().describe("회차 숫자"),
+          lang: z.enum(["ko-ja", "zh-ja"]).optional().describe("ko-ja=한일, zh-ja=중일"),
+        })).describe("검수할 작품·회차 목록(처리 순서대로)"),
+      },
+      async ({ works }) => {
+        try {
+          const ctx = currentCtx;
+          if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락을 못 잡음." }) }] };
+          const list = (works || []).filter((w) => w?.work && String(w.episode ?? "").trim());
+          if (!list.length) return { content: [{ type: "text", text: JSON.stringify({ error: "검수할 작품 목록(works)이 비었음. 작품명·회차를 파싱해 넘겨라." }) }] };
+          const reqUser = currentUser;
+          list.forEach((w, i) => {
+            const langArg = w.lang ? `, lang="${w.lang}"` : "";
+            const content = `[순차 검수 ${i + 1}/${list.length}] 다음 한 작품만 검수하라(다른 작품은 신경 쓰지 말 것). review_episode(work="${w.work}", episode="${String(w.episode).trim()}"${langArg}) 를 호출하고, 돌려받은 [검수 기준]대로 pairs를 2패스 검수해 문제 있는 항목만 [출력 템플릿]으로 작성하라. 문제 없으면 '${w.work} ${w.episode}화: 問題なし'.`;
+            queue.push({ content, ctx: { client: ctx.client, channel: ctx.channel, threadTs: ctx.threadTs, ts: ctx.ts, done: false }, user: reqUser });
+          });
+          if (wake) { const wk = wake; wake = null; wk(); }
+          return { content: [{ type: "text", text: JSON.stringify({ queued: list.length, order: list.map((w) => `${w.work} ${w.episode}`), note: `${list.length}작품을 한 작품씩 차례로 검수하도록 큐에 넣었음. 사용자에겐 '${list.length}작품 순차 검수 시작할게요 — 하나씩 결과 올릴게요'라고만 간단히 알리고, 직접 검수하려 들지 말 것(각 작품은 별도 턴에서 처리됨).` }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("send_message",
       "슬랙으로 메시지를 보낸다. 받는이가 재상 님 본인(U04463JR4HH)이면 바로 발송, 그 외(다른 사람/채널)면 프리뷰+확인 버튼 후 발송. target=채널ID(C…) 또는 사용자ID(U…). 사람 이름만 알면 먼저 query_sheet(worker_db)로 slack_id를 조회해 ID로 넘겨라. 특정 스레드에 댓글로 달려면 thread에 그 메시지 링크(permalink)를 넘겨라(그러면 그 스레드 답글로 발송). 임의로 '보냈다'고 말하지 말 것(확인 대기일 수 있음).",
       { target: z.string().optional().describe("받는 곳: 채널 ID(C…) 또는 사용자 ID(U…). thread(링크)를 주면 채널은 링크에서 자동 추출되므로 생략 가능"), text: z.string().describe("보낼 메시지 내용"), thread: z.string().optional().describe("스레드 답글로 달 대상 메시지의 슬랙 링크(permalink) 또는 thread_ts. 주면 그 스레드 안에 댓글로 발송") },
@@ -1177,7 +1203,7 @@ function startSession() {
       strictMcpConfig: true,
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
-        "mcp__apm__review_episode",
+        "mcp__apm__review_episode", "mcp__apm__review_queue",
         "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
