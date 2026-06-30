@@ -49,7 +49,7 @@ function receivedMax(raw) {
 // 시트를 블록(작품) 배열로 파싱 (TTL 캐시)
 async function getBlocks() {
   if (fresh(_cache.blocks)) return _cache.blocks.v;
-  const rows = (await readRange(SCHEDULE_ID, `${TAB}!A1:BZ500`)) || [];
+  const rows = (await readRange(SCHEDULE_ID, `${TAB}!A1:BZ`)) || [];   // ★범위 열어둠 — 500행 고정 시 아래 블록(전체의 다수) 누락됐었음
   const header = rows[0] || [];
   const weekCols = [];
   for (let k = WEEK_START; k < header.length; k++) weekCols.push({ idx: k, label: String(header[k] || "").trim() });
