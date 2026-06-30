@@ -138,11 +138,11 @@ const DISPATCHER_PROMPT = [
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
   "★'피드백' 라우팅(자주 헷갈림): propose_retake=클라이언트 수정요청(리테이크)을 번역가에게 일본어로 전달 / share_feedback=검수 퀄리티 등급(총평·번역가·LG 등급+코멘트) 공유. 맥락에 리테이크 BOT 메시지(작품·리테이크화수·수정내용·프로젝트URL)가 있거나 '번역가에게/리테이크/수정 전달'이면 → propose_retake. 명시적 '검수 등급/퀄리티/총평 공유'만 → share_feedback. 애매하면 리테이크 BOT 메시지 유무로 판단(있으면 propose_retake). 한일은 KP평가 없어 share_feedback 불가→propose_retake.",
   "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode,batch): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님). ★배치: 1-3화 등 초회분이면 batch 생략(初回分 기본), '재제출/추가분/再提出/追話'이거나 4화 이상 후속분이면 batch='再提出追話'로 그 배치 등급·코멘트를 고른다. 회차(예 '4')는 사용자가 말한 그대로 episode에. 초안은 ✏️수정 모달로 본문(문구·코멘트·등급) 손볼 수 있음.",
-  "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): propose_wongo_update(인자 없음). dryRun으로 보낼 건수 먼저 확인 버튼 → ✅눌러야 실제 전송+체크. '보냈다' 단정 금지.",
+  "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
   "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★납품예정일 '조회' 구분(중요): ①'TOTUS/실제 시스템 납품예정일'(JobProcess deliveryDate) = totus_delivery_date(work, episode). ②'내부 납품시트' 납품일 = get_delivery_date. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — 그걸 '납품예정일'이라 단정 금지. '실제 TOTUS 납품예정일'을 물으면 totus_delivery_date로 정확히 답해라.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
-  "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수).",
+  "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수). ★단 출판사가 bilibili comics(哔哩哔哩漫画/비리비리)면 길게 안내하지 말고 그냥 '비리비리예요'라고만 짧게 답하면 된다(재상 님은 비리비리면 알아서 찾음).",
   "- TOTUS 링크 요청: 작품 '프로젝트/작업진행 페이지 링크' = get_project_url(작품) (작품 단위, 회차 불필요). 특정 회차·오퍼레이션의 '에디터 링크' = get_editor_url(작품, 회차, 오퍼레이션명) (상태 무관 최신 task 기준).",
   "- 원본/원고/소스 'PSD·파일 다운로드' 요청 → get_source_files(작품, 회차[, page]). 특정 페이지만(예 '48화 2페이지', '3,4페이지')이면 page 인자에 번호를 넣는다. 돌려받은 **파일명 + 다운로드 링크만 그대로 안내**한다(봇이 파일을 직접 받거나 슬랙에 올리지 말 것 — 대용량이라 링크로만). 링크는 cf.totus.pro 서명 URL이라 클릭하면 바로 받힌다(로그인 불필요·일정 시간 후 만료).",
   "- 그 외 운영 시트 → query_sheet (사용 가능한 뷰 목록·필드는 그 도구 설명에 들어있으니 거기 보고 고른다).",
@@ -185,14 +185,12 @@ const pendingSends = new PersistMap("sends");        // sendId → { target, tex
 const pendingFeedback = new PersistMap("feedback");  // fbId → { channel, text, koTitle, episode, rowsToMark, ... }
 const pendingRetakes = new PersistMap("retakes");    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
 const pendingTransStart = new PersistMap("transstart"); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
-const pendingWongo = new PersistMap("wongo");           // wgId → { pending, createdAt } 원고수급 미발송 일괄 전송(GAS 웹앱)
 let editSeq = pendingEdits.maxSeq();
 let totusDateSeq = pendingTotusDates.maxSeq();
 let sendSeq = pendingSends.maxSeq();
 let feedbackSeq = pendingFeedback.maxSeq();
 let retakeSeq = pendingRetakes.maxSeq();
 let transStartSeq = pendingTransStart.maxSeq();
-let wongoSeq = pendingWongo.maxSeq();
 // 원고수급 미발송 일괄전송 GAS 웹앱 호출(dryRun=건수만, 아니면 실제 전송+체크)
 async function wongoPost(dryRun) {
   const url = process.env.WONGO_UPDATE_URL, secret = process.env.WONGO_UPDATE_SECRET;
@@ -914,34 +912,20 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
-    tool("propose_wongo_update",
-      "원고수급(납품·이관) 시트의 '미발송' 건(발송 여부 N열 미체크 & 담당 APM 매칭 & 작품명 있음)을 GAS 웹앱으로 일괄 전송하도록 '제안'한다. 먼저 dryRun으로 '보낼 N건'을 미리 집계해 확인 버튼을 보낸다(전송 안 함). 사용자가 ✅를 눌러야 실제로 슬랙 리포트 전송 + N열 체크 + n8n 반영이 일어난다. '원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘' 류에 사용. 빈 행·담당자 미매칭 행은 GAS가 자동 제외한다. 절대 '보냈다'고 단정하지 말 것(버튼 눌러야 실행).",
+    tool("run_wongo_update",
+      "원고수급(납품·이관) 시트의 '미발송' 건(발송 여부 N열 미체크 & 담당 APM 매칭 & 작품명 있음)을 GAS 웹앱으로 일괄 전송한다. ★재상 님이 버튼 없이 바로 실행하기로 함 — 이 도구는 확인 버튼 없이 즉시 슬랙 리포트 전송 + N열 체크 + n8n 반영을 수행하고 결과만 보고한다. '원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘' 류에 사용. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지). 빈 행·담당자 미매칭은 GAS가 제외. 성공 시 간단히, 실패/일부실패/타임아웃이면 분명히 보고.",
       {},
       async () => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
-          const ctx = currentCtx;
-          if (!ctx?.client || !ctx?.channel) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락을 못 잡음. 다시 불러줘." }) }] };
-          const dry = await wongoPost(true);                 // 건수만(전송 안 함)
-          const pending = dry.pending ?? 0;
-          if (!pending) return { content: [{ type: "text", text: JSON.stringify({ pending: 0, note: "보낼 미발송 건이 없어요(전부 발송됨/담당자 미매칭). 버튼 안 보냄." }) }] };
-          const wgId = `wg_${++wongoSeq}`;
-          pendingWongo.set(wgId, { pending, createdAt: Date.now() });
-          await ctx.client.chat.postMessage({
-            channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
-            text: `원고수급 미발송 ${pending}건 전송 확인`,
-            blocks: [
-              { type: "section", text: { type: "mrkdwn", text: `📦 *원고수급 미발송 일괄 전송*\n발송 여부 미체크 *${pending}건*을 담당 APM별로 슬랙 전송하고 체크해요.\n(빈 행·담당자 미매칭은 제외) 진행할까요?` } },
-              { type: "actions", elements: [
-                { type: "button", style: "primary", text: { type: "plain_text", text: `✅ ${pending}건 전송` }, value: wgId, action_id: "wongo_confirm" },
-                { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: wgId, action_id: "wongo_cancel" },
-              ] },
-            ],
-          });
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, pending, note: "미리보기+버튼을 보냈음. ✅를 눌러야 실제 전송됨. 전송했다고 말하지 말 것." }) }] };
-        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+          const r = await wongoPost(false);                 // 버튼 없이 즉시 실제 전송
+          const sent = r.managers ?? 0, failed = r.failedManagers ?? 0, rows = r.rows ?? 0;
+          if (sent === 0 && failed === 0) return { content: [{ type: "text", text: JSON.stringify({ ok: true, pending: 0, note: "보낼 미발송 건이 없었음(전부 발송됨/담당자 미매칭). 사용자에게 '보낼 거 없었어요'만 간단히." }) }] };
+          if (failed > 0) return { content: [{ type: "text", text: JSON.stringify({ ok: false, sent, failed, rows, codes: r.codes, note: `일부/전부 전송 실패(웹훅 응답코드 확인). 성공 ${sent}명/${rows}건만 체크됨, 실패분은 N 그대로. 사용자에게 실패 사실과 코드를 분명히 알릴 것.` }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ ok: true, sent, rows, note: `전송 완료(APM ${sent}명/${rows}건). 사용자에게 간단히 '○건 전송했어요'.` }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(e?.message ?? e), note: "전송 중 오류/타임아웃. 사용자에게 문제를 알리고 잠시 후 재시도 안내." }) }] }; }
       },
-      { annotations: { readOnlyHint: true } }),
+      { annotations: { readOnlyHint: false } }),
     tool("compute",
       "복잡한 계산은 암산하지 말고 이 도구로 JS 코드를 실행해 정확히 계산한다. 다행 합계·환율 변환·정산·통계·CSV 집계 등 숫자 계산은 반드시 이걸로. 첨부된 CSV/엑셀/텍스트 원문은 코드 안에서 `attachments`(배열 [{name,text}])로 바로 접근(전체 데이터, 다시 옮겨적지 말 것). 결과는 마지막 식이거나 `result` 변수에 담는다. 파일·네트워크 접근 없음(순수 계산), 5초 제한.",
       { code: z.string().describe("실행할 JS. attachments[i].text로 첨부 원문 접근. 예: const rows=attachments[0].text.trim().split('\\n').map(r=>r.split(',')); result = rows.slice(1).reduce((s,r)=>s+Number(r[2]||0),0);") },
@@ -1109,7 +1093,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_wongo_update", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__run_wongo_update", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "WebSearch"],
@@ -1381,38 +1365,7 @@ app.action("transstart_cancel", async ({ ack, body, client }) => {
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
 
-// ── 원고수급 미발송 일괄 전송 확인/취소 (실제 GAS 실행은 LLM 밖, 여기서만) ──
-app.action("wongo_confirm", async ({ ack, body, client }) => {
-  await ack();
-  const id = body.actions?.[0]?.value;
-  const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
-  const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
-  if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
-  const p = pendingWongo.get(id);
-  if (!p) return reply("⌛ 만료됐거나 이미 처리된 요청이에요.");
-  pendingWongo.delete(id);
-  if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
-  try {
-    const r = await wongoPost(false);                  // 실제 전송 + N열 체크 + n8n
-    appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "wongo_update", result: r }) + "\n");
-    const failed = r.failedManagers || 0;
-    if ((r.managers ?? 0) === 0 && failed === 0) {
-      await reply(`⚠️ 보낼 미발송 건이 없었어요(이미 다 체크됨/담당자 미매칭).`);
-    } else if (failed > 0) {
-      await reply(`⚠️ 일부만 전송 — 성공 APM ${r.managers}명/${r.rows}건 체크, *실패 ${failed}명*(슬랙 웹훅 응답코드 ${JSON.stringify(r.codes || {})}). 실패분은 N열 그대로 두었으니 원인 확인 후 재시도하면 됨.`);
-    } else {
-      await reply(`✅ 원고수급 미발송 전송 완료 — APM ${r.managers}명 / ${r.rows}건 전송·체크 (n8n 반영).`);
-    }
-  } catch (e) {
-    await reply(`❌ 전송 실패: ${e?.message ?? e}\n(GAS 웹앱 재배포·시크릿 확인 필요)`);
-  }
-});
-
-app.action("wongo_cancel", async ({ ack, body, client }) => {
-  await ack();
-  pendingWongo.delete(body.actions?.[0]?.value);
-  await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
-});
+// (원고수급 전송은 run_wongo_update가 버튼 없이 직접 실행 — 별도 확인 핸들러 없음)
 
 // 번역 개시 요청 수정 — 모달 열기(타이틀·수정사항·초도정보·검수시작일·APM)
 app.action("transstart_edit", async ({ ack, body, client }) => {
