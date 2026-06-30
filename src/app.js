@@ -144,6 +144,7 @@ const DISPATCHER_PROMPT = [
   "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode,batch): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님). ★배치: 1-3화 등 초회분이면 batch 생략(初回分 기본), '재제출/추가분/再提出/追話'이거나 4화 이상 후속분이면 batch='再提出追話'로 그 배치 등급·코멘트를 고른다. 회차(예 '4')는 사용자가 말한 그대로 episode에. 초안은 ✏️수정 모달로 본문(문구·코멘트·등급) 손볼 수 있음.",
   "- 완결 작품 처리('○○ 완결 작품 처리해줘/완결처리'): propose_totus_complete(work나 pivo). 프로젝트명 뒤 '(완)' + 상태 완료를 한 번에(게이트). 이미 (완) 있으면 상태만. '처리했다' 단정 금지.",
   "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
+  "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, apm, [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 담당 APM 이름만 받아라(번역/식자는 사용자가 주면 반영, 없으면 기본값). 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. 게이트(버튼)—'게시했다' 단정 금지. APM 이름이 안 나오면 누구 담당인지 한 줄 되묻기.",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
   "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 후 TOTUS 프로젝트명 가제→FIX 변경은 봇이 자동으로 이어서 제안하니, propose_totus_project를 따로 부르지 말 것. 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★용어 구분(엄수·문맥으로 판단): **'납품일'**(='예정' 글자 없음) → 무조건 **내부 납품 시트 get_delivery_date**. **'납품예정일'/'납품 예정일'/'TOTUS 납품예정일'**(예정 명시) → **TOTUS totus_delivery_date**. 즉 '예정'이 안 붙으면 시트가 기본이다 — 그냥 '납품일 조회'에 totus_delivery_date를 쓰지 마라(혼동 금지). 애매하면 시트(get_delivery_date) 우선. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — '납품예정일'이라 단정 금지.",
@@ -194,9 +195,12 @@ const pendingSends = new PersistMap("sends");        // sendId → { target, tex
 const pendingFeedback = new PersistMap("feedback");  // fbId → { channel, text, koTitle, episode, rowsToMark, ... }
 const pendingRetakes = new PersistMap("retakes");    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
 const pendingTransStart = new PersistMap("transstart"); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
+const pendingSetjip = new PersistMap("setjip");      // sjId → { channel, text, work, createdAt } 설정집 작성 요청 게시
+let setjipSeq = 0;
 let editSeq = pendingEdits.maxSeq();
 let totusDateSeq = pendingTotusDates.maxSeq();
 let totusProjSeq = pendingTotusProj.maxSeq();
+setjipSeq = pendingSetjip.maxSeq();
 const TOTUS_ACTION_KO = { hold: "홀드", unhold: "홀드 해제", process: "진행", pause: "일시정지", complete: "완료", cancel: "취소" };
 let sendSeq = pendingSends.maxSeq();
 let feedbackSeq = pendingFeedback.maxSeq();
@@ -442,6 +446,42 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: true } }
+    ),
+    tool(
+      "register_translation_monitor",
+      "번역검수 완료 모니터링 등록: 특정 중일 작품 1~3화의 번역검수(OTC0013) 완료를 감지해 DM으로 알린다. pivoId와 마감일(deadline YYYY-MM-DD)을 주면 D-1부터 마감일까지 집중 폴링, 완료 시 자동 알림. episodes 기본값 [1,2,3]. pivoId 모르면 get_work_info로 먼저 확인 후 호출.",
+      {
+        pivoId:    z.string().describe("PIVO ID 숫자"),
+        workTitle: z.string().optional().describe("작품명(일본어). 생략 시 pivoId로 표시"),
+        episodes:  z.array(z.number()).optional().describe("모니터링할 화수 배열 (기본 [1,2,3])"),
+        deadline:  z.string().describe("마감일 YYYY-MM-DD. D-1(전날)부터 이 날까지 폴링"),
+      },
+      async ({ pivoId, workTitle, episodes, deadline }) => {
+        try {
+          const base = process.env.N8N_WEBHOOK_BASE ?? "http://localhost:5678";
+          const url  = `${base}/webhook/translation-monitor-register`;
+          const body = {
+            pivoId,
+            workTitle:   workTitle ?? pivoId,
+            episodes:    episodes ?? [1, 2, 3],
+            deadline,
+            slackUserId: process.env.DISPATCHER_USER_ID ?? "U04463JR4HH",
+          };
+          const r = await fetch(url, {
+            method:  "POST",
+            headers: { "Content-Type": "application/json" },
+            body:    JSON.stringify(body),
+            signal:  AbortSignal.timeout(10000),
+          });
+          if (!r.ok) {
+            const t = await r.text();
+            throw new Error(`n8n 응답 ${r.status}: ${t.slice(0, 200)}`);
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ ok: true, registered: { pivoId, workTitle: workTitle ?? pivoId, episodes: episodes ?? [1, 2, 3], deadline } }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      }
     ),
     tool(
       "propose_delivery_edit",
@@ -765,6 +805,45 @@ const apmTools = createSdkMcpServer({
           if (!tc.text) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: "그 스레드를 못 읽음(봇이 채널 멤버인지 확인)." }) }] };
           return { content: [{ type: "text", text: JSON.stringify({ found: true, content: tc.text.slice(0, 6000) }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
+    tool("propose_setjip_request",
+      "설정집 작성 요청을 만들어 작업요청 채널에 게시하도록 '제안'한다(미리보기+✅). 견적요청 스레드에서 수주확정된 작품의 PIVO로 호출 — 작품명·원제·설정집 제출 희망일(자동 계산)·초도 납품일/회차·국가설정·기대치·특이사항·링크를 **견적+내부시트에서 자동**으로 채우고, **번역 작업자·식자 작업자·담당 APM만** 인자로 받는다(번역/식자는 기본값 있어 생략 가능, APM은 필수). 스레드에 여러 작품(PIVO)이 있으면 각 PIVO마다 한 번씩 호출. 절대 '게시했다'고 단정하지 말 것(버튼 눌러야 게시).",
+      {
+        pivo: z.string().describe("작품 PIVO ID(견적요청 스레드 본문의 [PV-xxxxxx])"),
+        apm: z.string().describe("담당 APM 이름(서주원/정태영/박재상) 또는 Slack ID(U…)"),
+        translator: z.string().optional().describe("번역 작업자(생략 시 '프리랜서 배정')"),
+        typesetter: z.string().optional().describe("식자 작업자(생략 시 '강연재 우선 배정/안되면 프리랜서')"),
+      },
+      async ({ pivo, apm, translator, typesetter }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const ctx = currentCtx;
+          if (!ctx?.client || !ctx?.channel) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락 없음." }) }] };
+          const e = await enrichSetjip(pivo);
+          if (e.error) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: e.error }) }] };
+          const apmId = /^[UW][A-Z0-9]+$/.test(String(apm || "").trim()) ? String(apm).trim() : (Object.entries(USER_NAMES).find(([, nm]) => nm === String(apm || "").trim())?.[0] || null);
+          const id = `sj_${++setjipSeq}`;
+          const p = { channel: SETJIP_CHANNEL, e, translator: translator || "", typesetter: typesetter || "", apmId, work: e.work_title, createdAt: Date.now() };
+          pendingSetjip.set(id, p);
+          const warn = [];
+          if (!apmId) warn.push(`APM '${apm}' Slack ID 못 찾음 — 멘션 없이 나감(이름 확인)`);
+          if (!e.sheetOk) warn.push("내부시트 미접근(견적값만) — 오리지널/원작링크/드라이브 누락 가능, 기대치/국가는 견적특이사항 기준");
+          const preview = buildSetjipText(e, { translator, typesetter, apmId, client_pm: "" }, true);
+          const posted = await ctx.client.chat.postMessage({
+            channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `설정집 작성 요청 확인 — ${e.work_title}`,
+            blocks: [
+              { type: "section", text: { type: "mrkdwn", text: `📝 *설정집 작성 요청 — <#${p.channel}>에 게시*${warn.length ? `\n• ⚠️ ${warn.join(" / ")}` : ""}\n아래 그대로 보낼게요. 확인해 주세요.` } },
+              { type: "section", text: { type: "mrkdwn", text: preview } },
+              { type: "actions", elements: [
+                { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 게시" }, value: id, action_id: "setjip_confirm" },
+                { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: id, action_id: "setjip_cancel" },
+              ] },
+            ],
+          });
+          if (posted?.ts) { p.previewChannel = ctx.channel; p.previewTs = posted.ts; pendingSetjip.save(); }
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: e.work_title, pivo: e.pivo, apm: apmId, warnings: warn, note: "미리보기+버튼 보냈음. ✅를 눌러야 작업요청 채널에 게시됨. 게시했다고 말하지 말 것. 검수 버튼/트리거는 이번 범위 밖(추후)." }) }] };
+        } catch (e2) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e2?.message ?? e2) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
     tool("send_message",
@@ -1301,7 +1380,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__find_thread", "mcp__apm__read_thread",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
@@ -1570,6 +1649,34 @@ app.action("send_cancel", async ({ ack, body, client }) => {
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
 
+// ── 설정집 작성 요청 게시 확인/취소 (실제 게시는 LLM 밖, 여기서만) ──
+app.action("setjip_confirm", async ({ ack, body, client }) => {
+  await ack();
+  const id = body.actions?.[0]?.value;
+  const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+  if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
+  const p = pendingSetjip.get(id);
+  if (!p) return reply("⌛ 만료됐거나 이미 처리된 요청이에요.");
+  pendingSetjip.delete(id);
+  if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
+  try {
+    try { await client.conversations.join({ channel: p.channel }); } catch {}
+    const text = buildSetjipText(p.e, { translator: p.translator, typesetter: p.typesetter, apmId: p.apmId, client_pm: "" }, false);
+    await client.chat.postMessage({ channel: p.channel, text, ...SENDER });
+    appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "setjip", channel: p.channel, work: p.work, pivo: p.e?.pivo }) + "\n");
+    await reply(`✅ 설정집 작성 요청 게시 완료 → <#${p.channel}> (${p.work})`);
+  } catch (e) {
+    await reply(`❌ 게시 실패: ${e?.message ?? e}\n(봇이 그 채널 멤버인지 확인)`);
+  }
+});
+
+app.action("setjip_cancel", async ({ ack, body, client }) => {
+  await ack();
+  pendingSetjip.delete(body.actions?.[0]?.value);
+  await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
 // TOTUS 프로젝트 해석 — ①출판사 시트(lookupWork) 먼저 → ②못 찾으면 TOTUS(findProject) 폴백. 각 단계 완전→부분→후보.
 // 이름의 [PRJ-…] 접두 제거. 반환: {projectUuid, projectName, pivoId, status?, source} / {ambiguous, candidates} / {notFound, msg, candidates?}
 async function resolveTotusProject({ work, pivo }) {
@@ -1593,6 +1700,69 @@ async function resolveTotusProject({ work, pivo }) {
   if (arr.length > 1) return { ambiguous: true, candidates: arr.slice(0, 6).map((p) => ({ name: stripPrj(p["프로젝트"]), pivo: p._detail?.pivoId || "", status: p._detail?.["진행상태"] || "" })) };
   const p = arr[0];
   return { projectUuid: p.uuid, projectName: stripPrj(p["프로젝트"]), pivoId: p._detail?.pivoId || "", status: p._detail?.["진행상태"] || "", hold: p._detail?.HOLD, source: "TOTUS" };
+}
+
+// 설정집 작성 요청 enrich — 견적 + 내부시트(Piccoma 중일ST_v2)에서 자동값 추출(n8n 모달빌드 로직 이식).
+const SETJIP_ST_ID = "1mjUrj81QQ6pAdHFsHuCrh4m6oLcleTwO6phZVxs1bJ4";
+async function enrichSetjip(pivo) {
+  const q = await quotationByPivo(String(pivo).trim()).catch(() => null);
+  const d = Array.isArray(q?.data) ? q.data[0] : null;
+  if (!d) return { error: `PIVO ${pivo} 견적을 못 찾음.` };
+  const WD = ["일", "월", "화", "수", "목", "금", "토"];
+  const nowKST = () => new Date(Date.now() + 9 * 3600 * 1000);
+  const fmt = (dt) => `${dt.getUTCMonth() + 1}/${dt.getUTCDate()}(${WD[dt.getUTCDay()]})`;
+  const addBiz = (start, n) => { const x = new Date(start.getTime()); let a = 0; while (a < n) { x.setUTCDate(x.getUTCDate() + 1); const w = x.getUTCDay(); if (w !== 0 && w !== 6) a++; } return x; };
+  const parseDot = (s) => { const m = String(s || "").match(/(\d{4})\.(\d{1,2})\.(\d{1,2})/); return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null; };
+  const submit_date = `${fmt(addBiz(nowKST(), 9))} 오전 중`;   // 실행일 + 9영업일
+  let delivery_date = ""; const dd = parseDot(d["초도작업_납품목표일"]); if (dd) { const w = dd.getUTCDay(); if (w === 6) dd.setUTCDate(dd.getUTCDate() - 1); else if (w === 0) dd.setUTCDate(dd.getUTCDate() - 2); delivery_date = fmt(dd); }
+  const episodes = String(d["초도작업_총작업량"] || "").trim();
+  const lines = String(d["견적특이사항"] || "").split("\n");
+  let country = "일본 설정"; const cLine = lines.find((l) => /(일본|중국|유럽|다국적)\s*설정/.test(l)); if (cLine) { if (cLine.includes("중국")) country = "중국 설정"; else if (cLine.includes("유럽")) country = "유럽 설정"; else if (cLine.includes("다국적")) country = "다국적 설정"; }
+  let expectation = ""; const eLine = lines.find((l) => /기대치/.test(l)); if (eLine) { const em = eLine.match(/기대치\s*[:：]?\s*(.*)$/); expectation = em ? em[1].trim() : ""; }
+  let notes = lines.filter((l) => !(cLine && l === cLine) && !(eLine && l === eLine)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  let isOriginal = false, originLink = "", driveLink = "", sheetOk = false;
+  try {   // 내부시트 override(SA 권한 있을 때). 없으면 견적-only로 진행.
+    const rows = (await readRangeRO(SETJIP_ST_ID, "Piccoma 중일ST_v2!A1:Z")) || [];
+    const hdr = rows[0] || []; const col = (nm) => hdr.findIndex((h) => String(h).trim() === nm);
+    const ci = { pivo: col("pivo_id"), exp: col("期待値"), country: col("설정"), orig: col("오리지널"), olink: col("원작링크"), drive: col("드라이브") };
+    const srow = ci.pivo >= 0 ? rows.slice(1).find((r) => String(r[ci.pivo] ?? "").trim() === String(pivo).trim()) : null;
+    if (srow) {
+      sheetOk = true;
+      const sval = (i) => i >= 0 ? String(srow[i] ?? "").trim() : "";
+      if (sval(ci.exp)) expectation = sval(ci.exp);
+      const sc = sval(ci.country); if (/중국/.test(sc)) country = "중국 설정"; else if (/유럽/.test(sc)) country = "유럽 설정"; else if (/다국적/.test(sc)) country = "다국적 설정"; else if (/일본/.test(sc)) country = "일본 설정";
+      isOriginal = /^(true|1|y|yes|o|✓|✔|예|체크)$/i.test(sval(ci.orig));
+      originLink = sval(ci.olink); driveLink = sval(ci.drive);
+    }
+  } catch (e) { /* 권한 없음 등 — 견적-only */ }
+  return { pivo: String(pivo).trim(), work_title: d.pivoTitle || "", original_title: d.pivoOriginalTitle || "", submit_date, delivery_date, episodes, country, expectation, notes, isOriginal, originLink, driveLink, projectUuid: d.projectUuid || "", quotationId: d.quotationId || "", quotationProductId: (d["상품목록"]?.[0]?.quotationProductId) || "", sheetOk };
+}
+// 설정집 작성 요청 메시지(모달 제출 빌드와 동일 포맷). preview=true면 APM 멘션 코드표기.
+function buildSetjipText(e, { translator, typesetter, apmId, client_pm }, preview = false) {
+  const B = "•";
+  const tr = (translator && translator.trim()) || "프리랜서 배정";
+  const ts = (typesetter && typesetter.trim()) || "강연재 우선 배정\n배정 안될 경우 프리랜서 배정";
+  const cp = (client_pm && client_pm.trim()) || "Hazel";
+  const head = apmId ? (preview ? `\`@${apmId}\`` : `<@${apmId}>`) : null;
+  const linkify = (u, label) => (u && u.indexOf("http") === 0) ? `🔗 <${u}|${label}>` : (u ? `${label} : ${u}` : null);
+  return [
+    head, "[중일 설정집 작성 요청]", "다음 작품 설정집 작성 요청 드립니다.", "",
+    `${B}작품명 : ${e.work_title}`, `${B}원제 : ${e.original_title}`, "",
+    `${B}고객사 담당자 : ${cp}`,
+    `${B}설정집 제출 희망일 : ${e.submit_date}`,
+    `${B}초도 납품일 : ${e.delivery_date}`,
+    `${B}번역 작업자 : ${tr}`,
+    `${B}기본 대사 폰트 : Ten mincho Antique`,
+    `${B}식자 작업자 : ${ts}`, "",
+    `${B}기대치 : ${e.expectation}`,
+    `${B}${e.country}`,
+    e.isOriginal ? `${B}오리지널 작품` : null,
+    `${B}초도 ${e.episodes}화`, "",
+    "특이사항", e.notes, "",
+    linkify(e.originLink, "원작 링크"), linkify(e.driveLink, "드라이브"),
+    e.projectUuid ? `🔗 <https://main.totus.pro/ko/setup?projectUuid=${e.projectUuid}&targetLanguageCode=LGC0003|설정집>` : null,
+    (e.quotationId && e.quotationProductId) ? `🔗 <https://admin.totus.pro/ko/quotation/detail/?id=${e.quotationId}&quotationProductId=${e.quotationProductId}|견적>` : null,
+  ].filter((x) => x !== null).join("\n");
 }
 
 // 출판사 드라이브 링크 시트: PIVO(I열)로 행 찾아 A열=담당APM, C열=한국어타이틀만 채움(나머지 안 건드림).
