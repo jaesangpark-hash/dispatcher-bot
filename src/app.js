@@ -146,7 +146,7 @@ const DISPATCHER_PROMPT = [
   "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
   "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, apm, [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 담당 APM 이름만 받아라(번역/식자는 사용자가 주면 반영, 없으면 기본값). 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. 게이트(버튼)—'게시했다' 단정 금지. APM 이름이 안 나오면 누구 담당인지 한 줄 되묻기.",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
-  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 후 TOTUS 프로젝트명 가제→FIX 변경은 봇이 자동으로 이어서 제안하니, propose_totus_project를 따로 부르지 말 것. 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
+  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 후 TOTUS 프로젝트명 가제→FIX 변경 제안 + 1-3화 번역검수 자동 모니터 등록은 봇이 자동으로 이어서 하니, propose_totus_project·register_translation_monitor를 따로 부르지 말 것(수동 등록 요청 때만 register). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★PIVO ID 상식: 프로젝트명·메시지·견적요청 본문의 **`[PV-숫자]`(보통 6자리)에서 그 숫자가 PIVO ID**다. 도구에 PIVO를 넘길 땐 'PV-' 접두를 떼고 **숫자만** 넘겨라('PV-201454'→'201454'). 그리고 PIVO로 견적/프로젝트를 못 찾으면 거기서 멈추지 말고 **일본어 가제나 중국어 원제로도 조회**해본다(견적 by-pivo·totus_find_project 둘 다 이름검색이 됨).",
   "★용어 구분(엄수·문맥으로 판단): **'납품일'**(='예정' 글자 없음) → 무조건 **내부 납품 시트 get_delivery_date**. **'납품예정일'/'납품 예정일'/'TOTUS 납품예정일'**(예정 명시) → **TOTUS totus_delivery_date**. 즉 '예정'이 안 붙으면 시트가 기본이다 — 그냥 '납품일 조회'에 totus_delivery_date를 쓰지 마라(혼동 금지). 애매하면 시트(get_delivery_date) 우선. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — '납품예정일'이라 단정 금지.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
@@ -215,6 +215,16 @@ async function wongoPost(dryRun) {
   const t = await r.text();
   let j; try { j = JSON.parse(t); } catch { throw new Error("GAS 응답 파싱 실패: " + t.slice(0, 150)); }
   if (j.error) throw new Error("GAS: " + j.error);
+  return j;
+}
+// n8n 로컬 웹훅 POST(.env N8N_WEBHOOK_BASE = http://localhost:5678). path=웹훅 경로.
+async function n8nPost(path, body) {
+  const base = process.env.N8N_WEBHOOK_BASE;
+  if (!base) throw new Error("N8N_WEBHOOK_BASE 미설정");
+  const r = await fetch(`${base.replace(/\/$/, "")}/webhook/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
+  const t = await r.text();
+  let j; try { j = JSON.parse(t); } catch { j = { raw: t.slice(0, 300) }; }
+  if (!r.ok) throw new Error(`n8n ${r.status}: ${t.slice(0, 200)}`);
   return j;
 }
 let currentCtx = null;            // { client, channel, ts } — handle()가 메시지마다 갱신(직렬 가정). 영속 대상 아님(client 비직렬)
@@ -836,6 +846,18 @@ const apmTools = createSdkMcpServer({
         } catch (e2) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e2?.message ?? e2) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("register_translation_monitor",
+      "번역 개시한 작품의 1-3화 번역검수(OTC0013) 완료를 자동 추적하도록 n8n 모니터에 등록한다. pivoId(+workTitle)를 보내면 n8n이 TOTUS에서 마감일 조회→모니터링 시트에 ep1/2/3 등록→마감 D-1부터 폴링→3화 완료 시 AI 검수까지 자동. ★보통 '번역 개시 요청' 발송(✅) 시 자동으로 등록되니 따로 부를 필요 없음 — 수동 등록('○○ 번역검수 모니터 등록')에만 쓴다.",
+      { pivoId: z.string().describe("PIVO 번호(숫자만)"), workTitle: z.string().optional().describe("작품명(라벨용)") },
+      async ({ pivoId, workTitle }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const num = String(pivoId).match(/\d{4,}/)?.[0] || String(pivoId).trim();
+          const r = await n8nPost("translation-monitor-register", { pivoId: num, workTitle: workTitle || "" });
+          return { content: [{ type: "text", text: JSON.stringify({ registered: true, pivoId: num, result: r, note: "n8n 등록 호출함. 마감일 D-1부터 자동 모니터링. 결과 메시지는 n8n DM으로 갈 수 있음." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: false } }),
     tool("send_message",
       "슬랙으로 메시지를 보낸다. 받는이가 재상 님 본인(U04463JR4HH)이면 바로 발송, 그 외(다른 사람/채널)면 프리뷰+확인 버튼 후 발송. target=채널ID(C…) 또는 사용자ID(U…). 사람 이름만 알면 먼저 query_sheet(worker_db)로 slack_id를 조회해 ID로 넘겨라. 특정 스레드에 댓글로 달려면 thread에 그 메시지 링크(permalink)를 넘겨라(그러면 그 스레드 답글로 발송). 임의로 '보냈다'고 말하지 말 것(확인 대기일 수 있음).",
       { target: z.string().optional().describe("받는 곳: 채널 ID(C…) 또는 사용자 ID(U…). thread(링크)를 주면 채널은 링크에서 자동 추출되므로 생략 가능"), text: z.string().describe("보낼 메시지 내용"), thread: z.string().optional().describe("스레드 답글로 달 대상 메시지의 슬랙 링크(permalink) 또는 thread_ts. 주면 그 스레드 안에 댓글로 발송") },
@@ -1370,7 +1392,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__find_thread", "mcp__apm__read_thread",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
@@ -1901,6 +1923,13 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
           });
         }
       } catch (e) { console.error("[transstart→proj] 실패:", e?.message ?? e); }
+    }
+    // 후속2: 1-3화 번역검수 자동 모니터 등록(n8n). PIVO 있고 N8N_WEBHOOK_BASE 설정 시.
+    if (p.pivo && process.env.N8N_WEBHOOK_BASE) {
+      try {
+        await n8nPost("translation-monitor-register", { pivoId: p.pivo, workTitle: p.koTitle || "" });
+        await reply(`📡 1-3화 번역검수 자동 모니터 등록됨 (마감 D-1부터 추적 → 3화 완료 시 AI 검수)`);
+      } catch (e) { await reply(`⚠️ 번역검수 모니터 등록 실패: ${e?.message ?? e} (n8n/웹훅 확인 — 수동 'register_translation_monitor' 가능)`); }
     }
   } catch (e) {
     const m = String(e?.data?.error || e?.message || e);
