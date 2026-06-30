@@ -460,23 +460,24 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "register_translation_monitor",
-      "번역검수 완료 모니터링 등록: 특정 중일 작품 1~3화의 번역검수(OTC0013) 완료를 감지해 DM으로 알린다. pivoId와 마감일(deadline YYYY-MM-DD)을 주면 D-1부터 마감일까지 집중 폴링, 완료 시 자동 알림. episodes 기본값 [1,2,3]. pivoId 모르면 get_work_info로 먼저 확인 후 호출.",
+      "번역검수 완료 모니터링 등록: 중일 작품 1~3화 번역검수(OTC0013) 완료를 감지해 DM으로 알린다. **pivoId만 주면 n8n이 TOTUS에서 마감일을 자동 조회**해 ep1/2/3을 모니터링 시트에 등록(마감 D-1부터 폴링→3화 완료 시 AI 검수). deadline은 자동이라 보통 생략(직접 지정하고 싶을 때만). ★보통 '번역 개시 요청' 발송(✅) 시 자동 등록되니, 수동 등록('○○ 번역검수 모니터 등록')에만 쓴다. pivoId는 PV- 접두 떼고 숫자만.",
       {
-        pivoId:    z.string().describe("PIVO ID 숫자"),
-        workTitle: z.string().optional().describe("작품명(일본어). 생략 시 pivoId로 표시"),
-        episodes:  z.array(z.number()).optional().describe("모니터링할 화수 배열 (기본 [1,2,3])"),
-        deadline:  z.string().describe("마감일 YYYY-MM-DD. D-1(전날)부터 이 날까지 폴링"),
+        pivoId:    z.string().describe("PIVO ID(숫자만, 'PV-' 접두 제거)"),
+        workTitle: z.string().optional().describe("작품명(라벨용). 생략 시 pivoId"),
+        episodes:  z.array(z.number()).optional().describe("모니터링할 화수 (기본 [1,2,3])"),
+        deadline:  z.string().optional().describe("마감일 YYYY-MM-DD. 생략 시 n8n이 TOTUS에서 자동 조회"),
       },
       async ({ pivoId, workTitle, episodes, deadline }) => {
         try {
           const base = process.env.N8N_WEBHOOK_BASE ?? "http://localhost:5678";
           const url  = `${base}/webhook/translation-monitor-register`;
+          const num  = String(pivoId).match(/\d{4,}/)?.[0] || String(pivoId).trim();   // 'PV-201454' → '201454'
           const body = {
-            pivoId,
-            workTitle:   workTitle ?? pivoId,
+            pivoId:      num,
+            workTitle:   workTitle ?? num,
             episodes:    episodes ?? [1, 2, 3],
-            deadline,
             slackUserId: process.env.DISPATCHER_USER_ID ?? "U04463JR4HH",
+            ...(deadline ? { deadline } : {}),   // 있으면 전달, 없으면 n8n이 자동 계산
           };
           const r = await fetch(url, {
             method:  "POST",
@@ -488,7 +489,8 @@ const apmTools = createSdkMcpServer({
             const t = await r.text();
             throw new Error(`n8n 응답 ${r.status}: ${t.slice(0, 200)}`);
           }
-          return { content: [{ type: "text", text: JSON.stringify({ ok: true, registered: { pivoId, workTitle: workTitle ?? pivoId, episodes: episodes ?? [1, 2, 3], deadline } }) }] };
+          const resp = await r.json().catch(() => ({}));
+          return { content: [{ type: "text", text: JSON.stringify({ ok: true, registered: { pivoId: num, workTitle: workTitle ?? num, episodes: episodes ?? [1, 2, 3], deadline: deadline || "(n8n 자동)" }, result: resp }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -846,18 +848,6 @@ const apmTools = createSdkMcpServer({
         } catch (e2) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e2?.message ?? e2) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
-    tool("register_translation_monitor",
-      "번역 개시한 작품의 1-3화 번역검수(OTC0013) 완료를 자동 추적하도록 n8n 모니터에 등록한다. pivoId(+workTitle)를 보내면 n8n이 TOTUS에서 마감일 조회→모니터링 시트에 ep1/2/3 등록→마감 D-1부터 폴링→3화 완료 시 AI 검수까지 자동. ★보통 '번역 개시 요청' 발송(✅) 시 자동으로 등록되니 따로 부를 필요 없음 — 수동 등록('○○ 번역검수 모니터 등록')에만 쓴다.",
-      { pivoId: z.string().describe("PIVO 번호(숫자만)"), workTitle: z.string().optional().describe("작품명(라벨용)") },
-      async ({ pivoId, workTitle }) => {
-        try {
-          const _d = ownerOnly(); if (_d) return _d;
-          const num = String(pivoId).match(/\d{4,}/)?.[0] || String(pivoId).trim();
-          const r = await n8nPost("translation-monitor-register", { pivoId: num, workTitle: workTitle || "" });
-          return { content: [{ type: "text", text: JSON.stringify({ registered: true, pivoId: num, result: r, note: "n8n 등록 호출함. 마감일 D-1부터 자동 모니터링. 결과 메시지는 n8n DM으로 갈 수 있음." }) }] };
-        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
-      },
-      { annotations: { readOnlyHint: false } }),
     tool("send_message",
       "슬랙으로 메시지를 보낸다. 받는이가 재상 님 본인(U04463JR4HH)이면 바로 발송, 그 외(다른 사람/채널)면 프리뷰+확인 버튼 후 발송. target=채널ID(C…) 또는 사용자ID(U…). 사람 이름만 알면 먼저 query_sheet(worker_db)로 slack_id를 조회해 ID로 넘겨라. 특정 스레드에 댓글로 달려면 thread에 그 메시지 링크(permalink)를 넘겨라(그러면 그 스레드 답글로 발송). 임의로 '보냈다'고 말하지 말 것(확인 대기일 수 있음).",
       { target: z.string().optional().describe("받는 곳: 채널 ID(C…) 또는 사용자 ID(U…). thread(링크)를 주면 채널은 링크에서 자동 추출되므로 생략 가능"), text: z.string().describe("보낼 메시지 내용"), thread: z.string().optional().describe("스레드 답글로 달 대상 메시지의 슬랙 링크(permalink) 또는 thread_ts. 주면 그 스레드 안에 댓글로 발송") },
