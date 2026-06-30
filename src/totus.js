@@ -50,10 +50,10 @@ export const deliverySourceGroups = (projectUuid, episodes) => getJSON(`/project
 
 // ── 쓰기(MUTATION) — JobProcess 납품예정일 일괄 변경 ────────────────
 // ★실제 변경. 봇의 게이트(확인 버튼) 핸들러에서만 호출할 것 (LLM 도구로 직접 노출 금지).
-async function postJSON(path, body, extra = {}) {
+async function sendJSON(method, path, body, extra = {}) {
   const { url, tok } = creds();
   const r = await fetch(`${url}/api/v1${path}`, {
-    method: "POST",
+    method,
     headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json", ...extra },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(30000),
@@ -65,4 +65,8 @@ async function postJSON(path, body, extra = {}) {
 // jps = [{ jobProcessUuid, deliveryDate(YYYY-MM-DD 또는 ISO), modificationReason? }]
 // dryRun=true면 부작용 없이 정규화 결과만. Prod warn 모드지만 X-Confirm-Mutation 권장.
 export const setDeliveryDate = (jps, dryRun = false) =>
-  postJSON(`/job-processes/dates`, { jobProcesses: jps, dryRun }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
+  sendJSON("POST", `/job-processes/dates`, { jobProcesses: jps, dryRun }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
+// 프로젝트 설정 변경(한 번에 하나, 우선순위 action>managerAuthUuid>name>genre).
+// body 예: { name: "새 프로젝트명" } / { action: "hold"|"unhold"|"process"|"pause"|"complete"|"cancel" } / { managerAuthUuid } / { genreCode }
+export const setProjectSettings = (projectUuid, body) =>
+  sendJSON("PATCH", `/projects/${projectUuid}/settings`, body, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });

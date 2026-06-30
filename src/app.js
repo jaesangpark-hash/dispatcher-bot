@@ -12,7 +12,7 @@ import { setCell, getCell, setCells, getCells } from "./sheets-write.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, deliverySourceGroups } from "./totus.js";
+import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups } from "./totus.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, QA_INSTRUCTIONS } from "./review.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
@@ -138,6 +138,8 @@ const DISPATCHER_PROMPT = [
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
   "★'피드백' 라우팅(자주 헷갈림): propose_retake=클라이언트 수정요청(리테이크)을 번역가에게 일본어로 전달 / share_feedback=검수 퀄리티 등급(총평·번역가·LG 등급+코멘트) 공유. 맥락에 리테이크 BOT 메시지(작품·리테이크화수·수정내용·프로젝트URL)가 있거나 '번역가에게/리테이크/수정 전달'이면 → propose_retake. 명시적 '검수 등급/퀄리티/총평 공유'만 → share_feedback. 애매하면 리테이크 BOT 메시지 유무로 판단(있으면 propose_retake). 한일은 KP평가 없어 share_feedback 불가→propose_retake.",
   "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode,batch): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님). ★배치: 1-3화 등 초회분이면 batch 생략(初回分 기본), '재제출/추가분/再提出/追話'이거나 4화 이상 후속분이면 batch='再提出追話'로 그 배치 등급·코멘트를 고른다. 회차(예 '4')는 사용자가 말한 그대로 episode에. 초안은 ✏️수정 모달로 본문(문구·코멘트·등급) 손볼 수 있음.",
+  "- 완결 작품 처리('○○ 완결 작품 처리해줘/완결처리'): propose_totus_complete(work나 pivo). 프로젝트명 뒤 '(완)' + 상태 완료를 한 번에(게이트). 이미 (완) 있으면 상태만. '처리했다' 단정 금지.",
+  "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
   "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★납품예정일 '조회' 구분(중요): ①'TOTUS/실제 시스템 납품예정일'(JobProcess deliveryDate) = totus_delivery_date(work, episode). ②'내부 납품시트' 납품일 = get_delivery_date. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — 그걸 '납품예정일'이라 단정 금지. '실제 TOTUS 납품예정일'을 물으면 totus_delivery_date로 정확히 답해라.",
@@ -181,12 +183,15 @@ class PersistMap extends Map {
 }
 const pendingEdits = new PersistMap("edits");        // changeId → { sheetId, tab, items[], newValue, clearing, ... }
 const pendingTotusDates = new PersistMap("totus");   // changeId → { items[], deliveryDate, reason, work, ... }
+const pendingTotusProj = new PersistMap("totusproj"); // id → { projectUuid, projectName, change, label, createdAt }
 const pendingSends = new PersistMap("sends");        // sendId → { target, text, createdAt }
 const pendingFeedback = new PersistMap("feedback");  // fbId → { channel, text, koTitle, episode, rowsToMark, ... }
 const pendingRetakes = new PersistMap("retakes");    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
 const pendingTransStart = new PersistMap("transstart"); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
 let editSeq = pendingEdits.maxSeq();
 let totusDateSeq = pendingTotusDates.maxSeq();
+let totusProjSeq = pendingTotusProj.maxSeq();
+const TOTUS_ACTION_KO = { hold: "홀드", unhold: "홀드 해제", process: "진행", pause: "일시정지", complete: "완료", cancel: "취소" };
 let sendSeq = pendingSends.maxSeq();
 let feedbackSeq = pendingFeedback.maxSeq();
 let retakeSeq = pendingRetakes.maxSeq();
@@ -926,6 +931,85 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(e?.message ?? e), note: "전송 중 오류/타임아웃. 사용자에게 문제를 알리고 잠시 후 재시도 안내." }) }] }; }
       },
       { annotations: { readOnlyHint: false } }),
+    tool("propose_totus_project",
+      "TOTUS 프로젝트의 이름(name) 또는 상태(action)를 변경하도록 '제안'한다(게이트형: 미리보기+✅버튼, 누르면 실제 변경). 작품(work) 또는 PIVO로 프로젝트를 찾고, action(상태) 또는 name(새 프로젝트명) 중 하나를 바꾼다(한 번에 하나). action: hold(홀드)·unhold(홀드해제)·process(진행)·pause(일시정지)·complete(완료)·cancel(취소). '○○ 홀드해줘/완료처리/취소', '○○ 프로젝트명 △△로 바꿔줘' 류. 프로젝트명 변경은 검수 후 가제→FIX 적용의 TOTUS 부분(시트는 별도). 절대 '바꿨다'고 단정하지 말 것(버튼 눌러야 반영).",
+      {
+        work: z.string().optional().describe("작품명(한/일/중). pivo가 있으면 생략 가능"),
+        pivo: z.string().optional().describe("PIVO ID(있으면 가장 정확)"),
+        action: z.enum(["hold", "unhold", "process", "pause", "complete", "cancel"]).optional().describe("상태 변경 액션. name과 동시 지정 시 action 우선"),
+        name: z.string().optional().describe("새 프로젝트명(이름 변경 시). 보통 [PV-id] [카카오픽코마] {한국어} {일본어FIX} 형태 전체 문자열"),
+      },
+      async ({ work, pivo, action, name }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const ctx = currentCtx;
+          if (!action && !(name && name.trim())) return { content: [{ type: "text", text: JSON.stringify({ error: "action(상태) 또는 name(새 이름) 중 하나는 필요해." }) }] };
+          let pid = pivo && String(pivo).trim();
+          if (!pid && work) { const w = await lookupWork(work); if (w.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, candidates: w.candidates, msg: "작품 후보 여러 개 — 되물어라." }) }] }; if (!w.found) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 못 찾음.` }) }] }; pid = String(w.pivoId || "").trim(); }
+          if (!pid) return { content: [{ type: "text", text: JSON.stringify({ error: "PIVO를 못 구함. 작품명 표기나 PIVO ID 확인 필요." }) }] };
+          const q = await quotationByPivo(pid).catch(() => null);
+          const d = Array.isArray(q?.data) ? q.data[0] : null;
+          if (!d?.projectUuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `PIVO ${pid}의 TOTUS 프로젝트를 못 찾음.` }) }] };
+          const change = action ? { action } : { name: name.trim() };
+          const label = action ? `상태 → *${TOTUS_ACTION_KO[action] || action}*` : `이름 → *${name.trim()}*`;
+          const id = `proj_${++totusProjSeq}`;
+          const p = { projectUuid: d.projectUuid, projectName: d.projectName || "", steps: [change], label, createdAt: Date.now() };
+          pendingTotusProj.set(id, p);
+          if (ctx?.client && ctx?.channel) {
+            await ctx.client.chat.postMessage({
+              channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: "TOTUS 프로젝트 변경 확인",
+              blocks: [
+                { type: "section", text: { type: "mrkdwn", text: `🛠 *TOTUS 프로젝트 변경 확인*\n• 프로젝트: ${d.projectName || d.projectUuid}\n• ${label}\n진행할까요? (실제 TOTUS 반영)` } },
+                { type: "actions", elements: [
+                  { type: "button", style: action === "cancel" ? "danger" : "primary", text: { type: "plain_text", text: "✅ 변경" }, value: id, action_id: "proj_confirm" },
+                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: id, action_id: "proj_cancel" },
+                ] },
+              ],
+            });
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, projectName: d.projectName, change, note: "확인 버튼을 보냈음. ✅를 눌러야 실제 TOTUS 반영. 바꿨다고 말하지 말 것." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
+    tool("propose_totus_complete",
+      "완결 작품 처리 — TOTUS 프로젝트명 맨 뒤에 '(완)'을 붙이고 상태를 '완료(complete)'로 한 번에 바꾸도록 '제안'한다(게이트형: 미리보기+✅). '○○ 완결 작품 처리해줘/완결처리' 류에 사용. work나 pivo로 프로젝트를 찾고, 확인 시 이름 변경 + 상태 완료를 순차 반영(API가 한 번에 하나라 PATCH 2번). 이미 '(완)'이 붙어있으면 상태만 완료로. 절대 '처리했다'고 단정하지 말 것(버튼 눌러야 반영).",
+      {
+        work: z.string().optional().describe("작품명(한/일/중). pivo 있으면 생략 가능"),
+        pivo: z.string().optional().describe("PIVO ID(있으면 가장 정확)"),
+      },
+      async ({ work, pivo }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const ctx = currentCtx;
+          let pid = pivo && String(pivo).trim();
+          if (!pid && work) { const w = await lookupWork(work); if (w.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, candidates: w.candidates, msg: "작품 후보 여러 개 — 되물어라." }) }] }; if (!w.found) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 못 찾음.` }) }] }; pid = String(w.pivoId || "").trim(); }
+          if (!pid) return { content: [{ type: "text", text: JSON.stringify({ error: "PIVO를 못 구함. 작품명/PIVO 확인 필요." }) }] };
+          const q = await quotationByPivo(pid).catch(() => null);
+          const d = Array.isArray(q?.data) ? q.data[0] : null;
+          if (!d?.projectUuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `PIVO ${pid}의 TOTUS 프로젝트를 못 찾음.` }) }] };
+          const cur = String(d.projectName || "").trim();
+          const already = /\(완\)\s*$/.test(cur);
+          const newName = already ? cur : `${cur} (완)`;
+          const steps = already ? [{ action: "complete" }] : [{ name: newName }, { action: "complete" }];
+          const label = already ? "상태 → *완료* (이름엔 이미 (완) 있음)" : `이름 → *${newName}* + 상태 → *완료*`;
+          const id = `proj_${++totusProjSeq}`;
+          pendingTotusProj.set(id, { projectUuid: d.projectUuid, projectName: cur, steps, label, createdAt: Date.now() });
+          if (ctx?.client && ctx?.channel) {
+            await ctx.client.chat.postMessage({
+              channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: "완결 처리 확인",
+              blocks: [
+                { type: "section", text: { type: "mrkdwn", text: `🏁 *완결 작품 처리 확인*\n• 프로젝트: ${cur || d.projectUuid}\n• ${label}\n진행할까요? (실제 TOTUS 반영)` } },
+                { type: "actions", elements: [
+                  { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 완결 처리" }, value: id, action_id: "proj_confirm" },
+                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: id, action_id: "proj_cancel" },
+                ] },
+              ],
+            });
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, projectName: cur, newName, already, note: "확인 버튼을 보냈음. ✅를 눌러야 (완) 표기+완료 반영. 처리했다고 말하지 말 것." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("compute",
       "복잡한 계산은 암산하지 말고 이 도구로 JS 코드를 실행해 정확히 계산한다. 다행 합계·환율 변환·정산·통계·CSV 집계 등 숫자 계산은 반드시 이걸로. 첨부된 CSV/엑셀/텍스트 원문은 코드 안에서 `attachments`(배열 [{name,text}])로 바로 접근(전체 데이터, 다시 옮겨적지 말 것). 결과는 마지막 식이거나 `result` 변수에 담는다. 파일·네트워크 접근 없음(순수 계산), 5초 제한.",
       { code: z.string().describe("실행할 JS. attachments[i].text로 첨부 원문 접근. 예: const rows=attachments[0].text.trim().split('\\n').map(r=>r.split(',')); result = rows.slice(1).reduce((s,r)=>s+Number(r[2]||0),0);") },
@@ -1093,7 +1177,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__run_wongo_update", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "WebSearch"],
@@ -1290,6 +1374,39 @@ app.action("totus_date_confirm", async ({ ack, body, client }) => {
 app.action("totus_date_cancel", async ({ ack, body, client }) => {
   await ack();
   pendingTotusDates.delete(body.actions?.[0]?.value);
+  await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+// ── TOTUS 프로젝트 이름/상태 변경 확인/취소 (실제 PATCH는 LLM 밖, 여기서만) ──
+app.action("proj_confirm", async ({ ack, body, client }) => {
+  await ack();
+  const id = body.actions?.[0]?.value;
+  const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+  if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
+  const p = pendingTotusProj.get(id);
+  if (!p) return reply("⌛ 만료됐거나 이미 처리된 변경이에요.");
+  pendingTotusProj.delete(id);
+  if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
+  const steps = p.steps || [p.change];   // 단일/복수 변경 공용(완결=이름+상태 2단계). API는 한 번에 하나라 순차 PATCH.
+  try {
+    const done = [], failed = [];
+    for (const ch of steps) {
+      try {
+        const res = await setProjectSettings(p.projectUuid, ch);
+        appendFileSync("logs/totus-proj.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, projectUuid: p.projectUuid, projectName: p.projectName, change: ch, ok: res?.success, resp: res?.data }) + "\n");
+        if (res?.success) done.push(ch); else failed.push({ ch, resp: res });
+      } catch (e) { failed.push({ ch, err: String(e?.message ?? e) }); }
+    }
+    const desc = (c) => c.action ? `상태 ${TOTUS_ACTION_KO[c.action] || c.action}` : `이름 변경`;
+    if (!failed.length) await reply(`✅ TOTUS 변경 완료 — ${p.projectName || p.projectUuid}: ${done.map(desc).join(" + ")}`);
+    else await reply(`⚠️ 일부 실패 — 성공: ${done.map(desc).join(", ") || "없음"} / 실패: ${failed.map((f) => desc(f.ch)).join(", ")}. 실패분만 다시 시도해줘.`);
+  } catch (e) { await reply(`❌ 변경 실패: ${e?.message ?? e}`); }
+});
+
+app.action("proj_cancel", async ({ ack, body, client }) => {
+  await ack();
+  pendingTotusProj.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
 
