@@ -460,12 +460,12 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "register_translation_monitor",
-      "번역검수 완료 모니터링 등록: 중일 작품 1~3화 번역검수(OTC0013) 완료를 감지해 DM으로 알린다. **pivoId만 주면 n8n이 TOTUS에서 마감일을 자동 조회**해 ep1/2/3을 모니터링 시트에 등록(마감 D-1부터 폴링→3화 완료 시 AI 검수). deadline은 자동이라 보통 생략(직접 지정하고 싶을 때만). ★보통 '번역 개시 요청' 발송(✅) 시 자동 등록되니, 수동 등록('○○ 번역검수 모니터 등록')에만 쓴다. pivoId는 PV- 접두 떼고 숫자만.",
+      "번역검수 완료 모니터링 등록: 중일 작품 1~3화 번역검수(OTC0013) 완료를 감지해 DM으로 알린다. **pivoId만 있으면 즉시 호출**한다 — n8n이 TOTUS에서 마감일을 자동 조회하므로 ★마감일은 절대 사용자에게 묻지 말 것(deadline 비워서 호출). 사용자가 스스로 마감일을 준 경우에만 deadline에 넣는다. 등록되면 마감 D-1부터 폴링→3화 완료 시 AI 검수까지 자동. 보통 '번역 개시 요청' 발송(✅) 시 자동 등록되니 수동('○○ 번역검수 모니터 등록')에만 쓴다. pivoId는 PV- 접두 떼고 숫자만.",
       {
         pivoId:    z.string().describe("PIVO ID(숫자만, 'PV-' 접두 제거)"),
         workTitle: z.string().optional().describe("작품명(라벨용). 생략 시 pivoId"),
         episodes:  z.array(z.number()).optional().describe("모니터링할 화수 (기본 [1,2,3])"),
-        deadline:  z.string().optional().describe("마감일 YYYY-MM-DD. 생략 시 n8n이 TOTUS에서 자동 조회"),
+        deadline:  z.string().optional().describe("★사용자에게 묻지 말 것. n8n이 TOTUS에서 자동 조회. 사용자가 명시적으로 준 경우에만 넣음"),
       },
       async ({ pivoId, workTitle, episodes, deadline }) => {
         try {
