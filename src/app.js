@@ -9,6 +9,7 @@ import { lookupWork } from "./works.js";
 import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
 import { setCell, getCell, setCells, getCells } from "./sheets-write.js";
+import { readRange as readRangeRO } from "./sheets.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -1427,8 +1428,16 @@ app.action("proj_confirm", async ({ ack, body, client }) => {
       } catch (e) { failed.push({ ch, err: String(e?.message ?? e) }); }
     }
     const desc = (c) => c.action ? `상태 ${TOTUS_ACTION_KO[c.action] || c.action}` : `이름 변경`;
-    if (!failed.length) await reply(`✅ TOTUS 변경 완료 — ${p.projectName || p.projectUuid}: ${done.map(desc).join(" + ")}`);
-    else await reply(`⚠️ 일부 실패 — 성공: ${done.map(desc).join(", ") || "없음"} / 실패: ${failed.map((f) => desc(f.ch)).join(", ")}. 실패분만 다시 시도해줘.`);
+    let sheetMsg = "";
+    if (p.sheet?.pivo) {   // 번역개시 체인: TOTUS 이름 변경 후 출판사 시트 A(APM)·C(한국어) 채움
+      try {
+        const sr = await updatePublisherSheet(p.sheet.pivo, p.sheet.apmName, p.sheet.koTitle);
+        sheetMsg = sr.ok ? `\n📄 출판사 시트 ${sr.row}행 반영(한국어${p.sheet.apmName ? "·APM" : ""})` : `\n⚠️ 출판사 시트 미반영: ${sr.msg}`;
+        appendFileSync("logs/totus-proj.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "publisher_sheet", pivo: p.sheet.pivo, apm: p.sheet.apmName, ko: p.sheet.koTitle, result: sr }) + "\n");
+      } catch (e) { sheetMsg = `\n⚠️ 출판사 시트 반영 실패: ${e?.message ?? e}`; }
+    }
+    if (!failed.length) await reply(`✅ TOTUS 변경 완료 — ${p.projectName || p.projectUuid}: ${done.map(desc).join(" + ")}${sheetMsg}`);
+    else await reply(`⚠️ 일부 실패 — 성공: ${done.map(desc).join(", ") || "없음"} / 실패: ${failed.map((f) => desc(f.ch)).join(", ")}. 실패분만 다시 시도해줘.${sheetMsg}`);
   } catch (e) { await reply(`❌ 변경 실패: ${e?.message ?? e}`); }
 });
 
@@ -1464,6 +1473,22 @@ app.action("send_cancel", async ({ ack, body, client }) => {
   pendingSends.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
+
+// 출판사 드라이브 링크 시트: PIVO(I열)로 행 찾아 A열=담당APM, C열=한국어타이틀만 채움(나머지 안 건드림).
+async function updatePublisherSheet(pivo, apmName, koTitle) {
+  const OPS = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
+  const TAB = "출판사 드라이브 링크";
+  const rows = (await readRangeRO(OPS, `${TAB}!A1:I3000`)) || [];
+  let rowNum = -1;
+  for (let i = 1; i < rows.length; i++) { if (String(rows[i]?.[8] ?? "").trim() === String(pivo).trim()) { rowNum = i + 1; break; } }
+  if (rowNum < 0) return { ok: false, msg: `출판사 시트에 PIVO ${pivo} 행이 없음(작품 미등록)` };
+  const updates = [];
+  if (apmName) updates.push({ a1: `${TAB}!A${rowNum}`, value: apmName });
+  if (koTitle) updates.push({ a1: `${TAB}!C${rowNum}`, value: koTitle });
+  if (!updates.length) return { ok: false, msg: "채울 값(APM·한국어) 없음" };
+  await setCells(OPS, updates);
+  return { ok: true, row: rowNum };
+}
 
 // ── 번역 개시 요청 확인/취소/수정 (스레드 답글 발송은 LLM 밖, 여기서만) ──
 app.action("transstart_confirm", async ({ ack, body, client }) => {
@@ -1508,14 +1533,16 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
         const d = Array.isArray(q?.data) ? q.data[0] : null;
         if (d?.projectUuid && ja && ko && !ko.startsWith("(미정")) {
           const newName = `[PV-${p.pivo}] [Piccoma중일] ${ja}(${ko})`;
+          const apmName = USER_NAMES[p.apmId] || "";   // 출판사 시트 A열(APM 이름)용
           const pjId = `proj_${++totusProjSeq}`;
-          pendingTotusProj.set(pjId, { projectUuid: d.projectUuid, projectName: d.projectName || "", steps: [{ name: newName }], label: `이름 → *${newName}*`, createdAt: Date.now() });
+          // sheet: 확정 시 TOTUS 이름 변경 후 출판사 시트 A(APM)·C(한국어)도 같이 채움
+          pendingTotusProj.set(pjId, { projectUuid: d.projectUuid, projectName: d.projectName || "", steps: [{ name: newName }], label: `이름 → *${newName}*`, sheet: { pivo: p.pivo, apmName, koTitle: ko }, createdAt: Date.now() });
           await client.chat.postMessage({
-            channel: chan, thread_ts: thread, ...SENDER, text: "TOTUS 프로젝트명 변경 제안",
+            channel: chan, thread_ts: thread, ...SENDER, text: "TOTUS 프로젝트명 + 출판사 시트 변경 제안",
             blocks: [
-              { type: "section", text: { type: "mrkdwn", text: `🛠 이어서 *TOTUS 프로젝트명*도 FIX로 바꿀까요?\n\`${newName}\`` } },
+              { type: "section", text: { type: "mrkdwn", text: `🛠 이어서 *TOTUS 프로젝트명* + *출판사 시트*도 FIX로 반영할까요?\n• 프로젝트명: \`${newName}\`\n• 출판사 시트: 한국어 *${ko}*${apmName ? ` · 담당 APM *${apmName}*` : " · (APM 미상 — A열 생략)"}` } },
               { type: "actions", elements: [
-                { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 프로젝트명 변경" }, value: pjId, action_id: "proj_confirm" },
+                { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 프로젝트명+시트 반영" }, value: pjId, action_id: "proj_confirm" },
                 { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: pjId, action_id: "proj_cancel" },
               ] },
             ],
