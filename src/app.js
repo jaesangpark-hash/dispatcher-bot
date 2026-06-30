@@ -156,6 +156,7 @@ const DISPATCHER_PROMPT = [
   "- 번역 검수/QA 요청(예: '게임속기연 90 검수', '○○ ○○화 검수해줘') → review_episode(work, episode). 한일이면 lang 생략(ko-ja 기본), 중일이면 zh-ja. 스레드에서 작품명·회차가 보이면 그걸 읽어 호출한다. 도구가 돌려준 [검수 기준]과 pairs로 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성한다(작품/회차/단계 + task URL + 페이지-텍박 + 수정전→후 + 사유). 문제 없으면 '問題なし'. 이 검수표는 그대로 작업자에게 복붙되는 것이니 임의 해설·강조 없이 템플릿만 깔끔히. error가 오면 그 사유를 그대로 전한다.",
   "★ 검수 결과 전달 규칙: 검수표는 **그냥 네 답변 텍스트로 출력만** 해라 — 시스템이 사용자가 부른 바로 그 자리(스레드/DM)에 자동으로 전달한다. send_message 도구로 직접 보내거나, DM/채널로 따로 발송하거나, 작업자 DB(slack_id/채널)를 조회해 보내려 하지 마라. 'DM으로 보냈다'·'DB에 ID가 없어 못 보냈다' 같은 발송 관련 말도 하지 마라(전달은 시스템 몫). 진행 신호(🔎 추출 완료)도 시스템이 자동으로 띄우니 네가 따로 만들지 마라.",
   "- query_sheet 뷰에 없는 탭을 물으면 → read_tab(탭 이름). 시트 실제 헤더가 곧 필드명이라 사용자가 말한 헤더로 바로 거른다. 표 헤더가 중간 행이면 headerRow 지정. 알려진 6개 시트의 어떤 탭이든 조회 가능.",
+  "- 스레드 찾기('○○ 작품 ~~ 스레드 찾아줘', '○○ 관련 논의 어디 있어', 과거 대화/스레드 내용): find_thread(query=작품명+키워드). 등록된 주요 업무 채널들에서 검색해 매칭 스레드를 찾고, 1개로 분명하면 내용(topContent)까지 와서 요약·답+링크. 여러 개면 후보를 보여주고 어느 건지 되묻거나 키워드를 좁힌다(임의 단정 금지). 사용자가 특정 채널을 말하면 channel 인자로. 특정 스레드/링크를 콕 집으면 read_thread. (등록 채널·봇 멤버 범위 내 — 전역 검색 아님)",
   "- '고객사 스케줄 시트'(중일, =내부 납품 시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. '○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일=mode:launch(work나 pivo + episode, PIVO로 정확매칭), 'N/일 납품 회차 카운트'=mode:delivery_on+date, '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. ID 묻지 말 것(이 도구가 그 시트임). 런칭일 못 찾으면 PIVO ID나 일본어 제목 확인을 요청(한국어만으론 시트에 없을 수 있음).",
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
   "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝내거나 '그만'할 때까지 하루 여러 번 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. 완료('~했어'·'N번 완료'·'해결됐어')거나 중단('그만'·'멈춰'·'이건 그만 리마인드해') 신호 → complete_reminder(번호 또는 내용 일부). 재촉 중인 일을 대화로 처리하다가 '그만/됐어' 신호가 오면 그 항목을 complete_reminder로 빼라.",
@@ -213,6 +214,8 @@ let currentCtx = null;            // { client, channel, ts } — handle()가 메
 const EDIT_TTL_MS = 24 * 60 * 60 * 1000;   // 버튼 유효 24h (영속화로 재시작에도 유지)
 
 const SETJIP_CHANNEL = process.env.SETJIP_CHANNEL || "C09AUQN8GEB";   // 설정집 작성 요청 채널(#재팬_작업요청)
+// 스레드 검색 대상 채널(.env SEARCH_CHANNELS = "ID:이름,ID:이름,…"). find_thread가 여기서만 검색.
+const SEARCH_CHANNELS = (process.env.SEARCH_CHANNELS || "").split(",").map((s) => s.trim()).filter(Boolean).map((s) => { const [id, ...n] = s.split(":"); return { id: id.trim(), name: (n.join(":").trim() || id.trim()) }; });
 const KO_WD = ["일", "월", "화", "수", "목", "금", "토"];
 
 // 고객 번역 검수 시작일 = 요청일(오늘 KST) + days(주말 포함 달력일, 기본 11). "M/D" 반환.
@@ -718,6 +721,50 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("find_thread",
+      "등록된 주요 업무 채널들에서 작품명/키워드로 스레드를 찾아 내용을 가져온다('A작품 최종 리뷰 스레드 찾아줘', '○○ 관련 스레드' 류). query에 작품명+키워드를 자연어 그대로. 채널을 특정하고 싶으면 channel(이름 일부나 ID). 결과가 1개로 분명하면 그 스레드 내용(topContent)까지 같이 와서 바로 요약·답하면 되고, 여러 개면 후보를 사용자에게 보여주고 어느 건지 고르게 하거나 키워드를 더 좁혀라. 못 찾으면 기간(days)·키워드 조정 안내. (등록 채널·봇 멤버 범위 안에서만 — 전역 슬랙 검색 아님)",
+      {
+        query: z.string().describe("작품명+키워드(예 '아비스 최종 리뷰', '돈의여신 납품 지연')"),
+        channel: z.string().optional().describe("특정 채널만(이름 일부/ID). 생략 시 등록 채널 전체"),
+        days: z.number().optional().describe("최근 며칠 내 검색(기본 60). 오래된 스레드면 늘려라"),
+      },
+      async ({ query, channel, days }) => {
+        try {
+          const ctx = currentCtx;
+          if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락 없음." }) }] };
+          if (!SEARCH_CHANNELS.length) return { content: [{ type: "text", text: JSON.stringify({ error: "검색 채널 미등록(.env SEARCH_CHANNELS)." }) }] };
+          const matches = await findThreads(ctx.client, query, { channel, days: days || 60 });
+          if (!matches.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `등록 채널에서 '${query}' 관련 스레드를 못 찾음. 키워드를 바꾸거나 days를 늘리거나 channel을 지정해봐.`, channels: SEARCH_CHANNELS.map((c) => c.name) }) }] };
+          for (const m of matches) { try { const pl = await ctx.client.chat.getPermalink({ channel: m.channelId, message_ts: m.ts }); m.link = pl.permalink; } catch { } }
+          let topContent = null;
+          const clear = matches.length === 1 || (matches[0].score >= 0.99 && (matches[1]?.score ?? 0) < 0.6);
+          if (clear) { const tc = await fetchThreadContext(ctx.client, matches[0].channelId, matches[0].ts); topContent = (tc.text || "").slice(0, 4000); }
+          return { content: [{ type: "text", text: JSON.stringify({
+            found: true,
+            matches: matches.map((m) => ({ channel: m.channelName, link: m.link || "", snippet: m.snippet, replies: m.replyCount, score: +m.score.toFixed(2) })),
+            topContent,
+            note: topContent ? "최상위 스레드가 분명해 내용(topContent)을 같이 가져옴 — 요약해 답하고 링크 제시. 그 스레드 전체가 더 필요하면 read_thread(link)." : "후보가 여러 개 — 사용자에게 목록(작품/스니펫/링크) 보여주고 어느 스레드인지 고르게 하거나 키워드를 좁혀라. 임의로 단정 금지.",
+          }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
+    tool("read_thread",
+      "특정 스레드의 전체 내용을 읽어온다. find_thread가 준 link(또는 슬랙 메시지 permalink/thread_ts)를 넘기면 그 스레드의 루트+댓글을 다 가져와 요약·인용에 쓴다. 사용자가 후보 중 하나를 고르거나 링크를 직접 줄 때.",
+      { thread: z.string().describe("스레드 슬랙 링크(permalink) 또는 thread_ts"), channel: z.string().optional().describe("thread_ts만 줄 때의 채널 ID(C…)") },
+      async ({ thread, channel }) => {
+        try {
+          const ctx = currentCtx;
+          if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락 없음." }) }] };
+          const pl = parseSlackLink(thread);
+          const chan = pl?.channel || channel;
+          const ts = pl?.ts || thread;
+          if (!chan || !ts) return { content: [{ type: "text", text: JSON.stringify({ error: "스레드 링크에서 채널/ts를 못 읽음. permalink를 주거나 channel을 함께 줘." }) }] };
+          const tc = await fetchThreadContext(ctx.client, chan, ts);
+          if (!tc.text) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: "그 스레드를 못 읽음(봇이 채널 멤버인지 확인)." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ found: true, content: tc.text.slice(0, 6000) }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("send_message",
       "슬랙으로 메시지를 보낸다. 받는이가 재상 님 본인(U04463JR4HH)이면 바로 발송, 그 외(다른 사람/채널)면 프리뷰+확인 버튼 후 발송. target=채널ID(C…) 또는 사용자ID(U…). 사람 이름만 알면 먼저 query_sheet(worker_db)로 slack_id를 조회해 ID로 넘겨라. 특정 스레드에 댓글로 달려면 thread에 그 메시지 링크(permalink)를 넘겨라(그러면 그 스레드 답글로 발송). 임의로 '보냈다'고 말하지 말 것(확인 대기일 수 있음).",
       { target: z.string().optional().describe("받는 곳: 채널 ID(C…) 또는 사용자 ID(U…). thread(링크)를 주면 채널은 링크에서 자동 추출되므로 생략 가능"), text: z.string().describe("보낼 메시지 내용"), thread: z.string().optional().describe("스레드 답글로 달 대상 메시지의 슬랙 링크(permalink) 또는 thread_ts. 주면 그 스레드 안에 댓글로 발송") },
@@ -1152,6 +1199,39 @@ async function fetchThreadContext(client, channel, threadTs) {
   }
 }
 
+// 등록 업무 채널(SEARCH_CHANNELS)에서 작품명/키워드로 스레드(루트 메시지) 검색. 토큰 커버리지로 점수.
+const _tnorm = (s) => String(s ?? "").replace(/[\s~～〜〰（）()\[\]【】「」『』·・,.\-—–:：!?！？]/g, "").toLowerCase();
+async function findThreads(client, query, { channel = "", days = 60, maxPages = 2 } = {}) {
+  const toks = String(query ?? "").split(/\s+/).map(_tnorm).filter((t) => t.length >= 2);
+  if (!toks.length || !SEARCH_CHANNELS.length) return [];
+  const ch = String(channel || "").trim();
+  const targets = ch ? SEARCH_CHANNELS.filter((c) => c.id === ch || c.name.includes(ch) || ch.includes(c.name) || ch.includes(c.id)) : SEARCH_CHANNELS;
+  const oldest = String(Math.floor(Date.now() / 1000) - Math.abs(days) * 86400);
+  const out = [];
+  for (const c of (targets.length ? targets : SEARCH_CHANNELS)) {
+    let cursor, pages = 0;
+    while (pages++ < maxPages) {
+      let r;
+      try { r = await client.conversations.history({ channel: c.id, limit: 200, oldest, ...(cursor ? { cursor } : {}) }); }
+      catch (e) { break; }
+      for (const m of (r.messages || [])) {
+        if (m.subtype && m.subtype !== "file_share") continue;
+        const nt = _tnorm(m.text || "");
+        if (!nt) continue;
+        const matched = toks.filter((t) => nt.includes(t));
+        if (!matched.length) continue;
+        // 밀도: 매칭 토큰 글자수 / 메시지 길이 — 여러 작품 나열한 일일 묶음 스레드(긴 글)는 낮게, 집중 스레드는 높게.
+        const density = matched.reduce((s, t) => s + t.length, 0) / Math.max(nt.length, 1);
+        out.push({ channelId: c.id, channelName: c.name, ts: m.thread_ts || m.ts, score: matched.length / toks.length, density, snippet: String(m.text || "").replace(/\s+/g, " ").slice(0, 140), replyCount: m.reply_count || 0, tsNum: parseFloat(m.ts) || 0 });
+      }
+      cursor = r.response_metadata?.next_cursor; if (!cursor) break;
+    }
+  }
+  const byTs = {};
+  for (const o of out) { const k = o.channelId + "|" + o.ts; if (!byTs[k] || o.score > byTs[k].score) byTs[k] = o; }
+  return Object.values(byTs).sort((a, b) => b.score - a.score || b.density - a.density || b.tsNum - a.tsNum).slice(0, 8);
+}
+
 // 슬랙 첨부(url_private)를 봇 토큰으로 받아 Claude content 블록으로 변환. (files:read 스코프 필요)
 // 이미지=image블록, PDF=document블록, 엑셀=시트별 CSV 텍스트, csv/txt/md/json 등=텍스트.
 async function toAttachmentBlocks(files, cap = 6) {
@@ -1201,7 +1281,7 @@ function startSession() {
       strictMcpConfig: true,
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
-        "mcp__apm__review_episode", "mcp__apm__review_queue",
+        "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__find_thread", "mcp__apm__read_thread",
         "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
