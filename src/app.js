@@ -147,6 +147,7 @@ const DISPATCHER_PROMPT = [
   "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, apm, [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 담당 APM 이름만 받아라(번역/식자는 사용자가 주면 반영, 없으면 기본값). 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. 게이트(버튼)—'게시했다' 단정 금지. APM 이름이 안 나오면 누구 담당인지 한 줄 되묻기.",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
   "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 후 TOTUS 프로젝트명 가제→FIX 변경은 봇이 자동으로 이어서 제안하니, propose_totus_project를 따로 부르지 말 것. 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
+  "★PIVO ID 상식: 프로젝트명·메시지·견적요청 본문의 **`[PV-숫자]`(보통 6자리)에서 그 숫자가 PIVO ID**다. 도구에 PIVO를 넘길 땐 'PV-' 접두를 떼고 **숫자만** 넘겨라('PV-201454'→'201454'). 그리고 PIVO로 견적/프로젝트를 못 찾으면 거기서 멈추지 말고 **일본어 가제나 중국어 원제로도 조회**해본다(견적 by-pivo·totus_find_project 둘 다 이름검색이 됨).",
   "★용어 구분(엄수·문맥으로 판단): **'납품일'**(='예정' 글자 없음) → 무조건 **내부 납품 시트 get_delivery_date**. **'납품예정일'/'납품 예정일'/'TOTUS 납품예정일'**(예정 명시) → **TOTUS totus_delivery_date**. 즉 '예정'이 안 붙으면 시트가 기본이다 — 그냥 '납품일 조회'에 totus_delivery_date를 쓰지 마라(혼동 금지). 애매하면 시트(get_delivery_date) 우선. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — '납품예정일'이라 단정 금지.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수). ★단 출판사가 bilibili comics(哔哩哔哩漫画)나 kuaikan(快看漫画)이면 긴 검색 안내는 생략하되 **플랫폼명 + 중국어 원제(zhTitle)** 를 함께 짧게 준다(원제로 검색하므로 필수). 예: '비리비리예요 — 원제: 「{zhTitle}」' / '콰이칸이에요 — 원제: 「{zhTitle}」'.",
@@ -1682,9 +1683,10 @@ app.action("setjip_cancel", async ({ ack, body, client }) => {
 async function resolveTotusProject({ work, pivo }) {
   const stripPrj = (s) => String(s || "").replace(/^\s*\[PRJ-[^\]]*\]\s*/, "").trim();
   const viaQuote = async (pid) => {
-    const q = await quotationByPivo(String(pid).trim()).catch(() => null);
+    const num = String(pid).match(/\d{4,}/)?.[0] || String(pid).trim();   // 'PV-201454' → '201454'
+    const q = await quotationByPivo(num).catch(() => null);
     const d = Array.isArray(q?.data) ? q.data[0] : null;
-    return d?.projectUuid ? { projectUuid: d.projectUuid, projectName: stripPrj(d.projectName), pivoId: String(pid).trim() } : null;
+    return d?.projectUuid ? { projectUuid: d.projectUuid, projectName: stripPrj(d.projectName), pivoId: num } : null;
   };
   if (pivo && String(pivo).trim()) { const v = await viaQuote(pivo); return v || { notFound: true, msg: `PIVO ${pivo}의 TOTUS 프로젝트를 못 찾음.` }; }
   if (!work || !work.trim()) return { notFound: true, msg: "작품명(work) 또는 PIVO 필요." };
@@ -1705,9 +1707,15 @@ async function resolveTotusProject({ work, pivo }) {
 // 설정집 작성 요청 enrich — 견적 + 내부시트(Piccoma 중일ST_v2)에서 자동값 추출(n8n 모달빌드 로직 이식).
 const SETJIP_ST_ID = "1mjUrj81QQ6pAdHFsHuCrh4m6oLcleTwO6phZVxs1bJ4";
 async function enrichSetjip(pivo) {
-  const q = await quotationByPivo(String(pivo).trim()).catch(() => null);
-  const d = Array.isArray(q?.data) ? q.data[0] : null;
-  if (!d) return { error: `PIVO ${pivo} 견적을 못 찾음.` };
+  const raw = String(pivo).trim();
+  const num = raw.match(/\d{4,}/)?.[0];                      // 'PV-201454' → '201454' (PV- 접두 제거)
+  let q = num ? await quotationByPivo(num).catch(() => null) : null;
+  let d = Array.isArray(q?.data) ? q.data[0] : null;
+  if (!d) {   // PIVO로 못 찾으면 일본어 가제/중국어 원제로 이름검색 폴백(by-pivo가 이름검색도 함)
+    const title = raw.replace(/\[?\s*PV-?\d+\s*\]?/i, "").replace(/\[[^\]]*\]/g, "").trim();
+    if (title) { q = await quotationByPivo(title).catch(() => null); d = Array.isArray(q?.data) ? q.data[0] : null; }
+  }
+  if (!d) return { error: `'${pivo}' 견적을 못 찾음 — PIVO 번호(숫자만)나 일본어 가제/중국어 원제로 확인 필요.` };
   const WD = ["일", "월", "화", "수", "목", "금", "토"];
   const nowKST = () => new Date(Date.now() + 9 * 3600 * 1000);
   const fmt = (dt) => `${dt.getUTCMonth() + 1}/${dt.getUTCDate()}(${WD[dt.getUTCDay()]})`;
