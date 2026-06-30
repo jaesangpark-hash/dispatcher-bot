@@ -27,9 +27,25 @@ function matchRows(rows, queryRaw) {
     h = rows.filter((r) => TITLE_COLS.some((c) => { const n = norm(r[c]); return n && tokens.every((t) => n.includes(t)); }));
     if (h.length) return h;
   }
-  // 3) 연속 부분문자열(양방향)
-  h = rows.filter((r) => TITLE_COLS.some((c) => { const n = norm(r[c]); return n && (n.includes(q) || q.includes(n)); }));
+  // 3) 부분문자열 — 제목이 쿼리를 포함(부분입력 OK). 쿼리가 제목을 포함하는 경우는 '나머지'에 2자+ 변별어가
+  //    없을 때만(노이즈만 남을 때) 허용 — '아비스 인 케이지'가 짧은 '아비스'로 붕괴하는 오매칭 방지.
+  h = rows.filter((r) => TITLE_COLS.some((c) => {
+    const n = norm(r[c]); if (!n) return false;
+    if (n.includes(q)) return true;
+    if (q.includes(n)) return !/[가-힣]{2,}|[぀-ヿ㐀-鿿]{2,}/.test(q.split(n).join(""));
+    return false;
+  }));
   return h;
+}
+
+// 느슨한 후보(제안용 — 확정 매칭 아님): 부분문자열 양방향 + 토큰 일부 포함. '못 찾음'일 때 '혹시 이거?'로.
+function looseMatch(rows, queryRaw) {
+  const q = norm(queryRaw); if (!q) return [];
+  const toks = String(queryRaw).split(/\s+/).map(norm).filter((t) => t.length >= 2);
+  return rows.filter((r) => TITLE_COLS.some((c) => {
+    const n = norm(r[c]); if (!n) return false;
+    return n.includes(q) || q.includes(n) || toks.some((t) => n.includes(t));
+  }));
 }
 
 // 단일 최선(첫 매칭) — 내부 정규화용(delivery 등)
@@ -42,12 +58,12 @@ export async function resolveWorkRow(queryRaw) {
 export async function lookupWork(queryRaw) {
   const rows = (await readRange(MASTER, RANGE)).slice(1);
   const hits = matchRows(rows, queryRaw);
-  if (!hits.length) return { found: false, query: queryRaw };
   if (hits.length === 1) return { found: true, ...mapRow(hits[0]) };
-  return {
-    found: false, ambiguous: true, query: queryRaw, count: hits.length,
-    candidates: hits.slice(0, 6).map((r) => ({ koTitle: r[2], jaTitle: r[3], fixTitle: r[4], pivoId: r[8], apm: r[0] })),
-  };
+  const cand = (arr) => arr.slice(0, 6).map((r) => ({ koTitle: r[2], jaTitle: r[3], fixTitle: r[4], pivoId: r[8], apm: r[0] }));
+  if (hits.length > 1) return { found: false, ambiguous: true, query: queryRaw, count: hits.length, candidates: cand(hits) };
+  // 정확히 못 찾음 → 느슨한 후보를 제안(있으면). 변별어 있는 쿼리가 짧은 제목으로 잘못 붙는 대신 '혹시 이거?'.
+  const near = looseMatch(rows, queryRaw);
+  return { found: false, query: queryRaw, ...(near.length ? { candidates: cand(near) } : {}) };
 }
 
 // 다른 시트 검색용: 입력 → 작품의 모든 제목 후보 [한국어, 가제, FIX]

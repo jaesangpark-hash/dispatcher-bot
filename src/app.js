@@ -974,7 +974,7 @@ const apmTools = createSdkMcpServer({
           const ctx = currentCtx;
           if (!action && !(name && name.trim())) return { content: [{ type: "text", text: JSON.stringify({ error: "action(상태) 또는 name(새 이름) 중 하나는 필요해." }) }] };
           let pid = pivo && String(pivo).trim();
-          if (!pid && work) { const w = await lookupWork(work); if (w.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, candidates: w.candidates, msg: "작품 후보 여러 개 — 되물어라." }) }] }; if (!w.found) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 못 찾음.` }) }] }; pid = String(w.pivoId || "").trim(); }
+          if (!pid && work) { const w = await lookupWork(work); if (w.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, candidates: w.candidates, msg: "작품 후보 여러 개 — 되물어라." }) }] }; if (!w.found) return { content: [{ type: "text", text: JSON.stringify({ found: false, candidates: w.candidates || [], msg: `'${work}' 정확히 못 찾음.${w.candidates?.length ? " 후보가 있어 — 사용자에게 '혹시 이거?'로 보여주고 PIVO나 정확한 표기로 다시 받아라(임의로 고르지 말 것)." : " 작품명/PIVO 확인 필요."}` }) }] }; pid = String(w.pivoId || "").trim(); }
           if (!pid) return { content: [{ type: "text", text: JSON.stringify({ error: "PIVO를 못 구함. 작품명 표기나 PIVO ID 확인 필요." }) }] };
           const q = await quotationByPivo(pid).catch(() => null);
           const d = Array.isArray(q?.data) ? q.data[0] : null;
@@ -1011,7 +1011,7 @@ const apmTools = createSdkMcpServer({
           const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
           let pid = pivo && String(pivo).trim();
-          if (!pid && work) { const w = await lookupWork(work); if (w.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, candidates: w.candidates, msg: "작품 후보 여러 개 — 되물어라." }) }] }; if (!w.found) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 못 찾음.` }) }] }; pid = String(w.pivoId || "").trim(); }
+          if (!pid && work) { const w = await lookupWork(work); if (w.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, candidates: w.candidates, msg: "작품 후보 여러 개 — 되물어라." }) }] }; if (!w.found) return { content: [{ type: "text", text: JSON.stringify({ found: false, candidates: w.candidates || [], msg: `'${work}' 정확히 못 찾음.${w.candidates?.length ? " 후보가 있어 — 사용자에게 '혹시 이거?'로 보여주고 PIVO나 정확한 표기로 다시 받아라(임의로 고르지 말 것)." : " 작품명/PIVO 확인 필요."}` }) }] }; pid = String(w.pivoId || "").trim(); }
           if (!pid) return { content: [{ type: "text", text: JSON.stringify({ error: "PIVO를 못 구함. 작품명/PIVO 확인 필요." }) }] };
           const q = await quotationByPivo(pid).catch(() => null);
           const d = Array.isArray(q?.data) ? q.data[0] : null;
