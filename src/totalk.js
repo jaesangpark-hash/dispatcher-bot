@@ -130,13 +130,17 @@ function logSent(email, name, channel, ts) {
 let _since = null;
 
 // ── 폴링 1회 ─────────────────────────────────────────────
-export async function pollOnce(slackClient) {
+// opts.dryRun=true(기본): 발송/기록/커서이동 없이 새 멘션 목록만 반환(초안용).
+// opts.dryRun=false: 실제 작업자 채널 발송 + ts 기록 + _since 이동.
+export async function pollOnce(slackClient, opts = {}) {
+  const dryRun = opts.dryRun !== false;   // 기본 안전: 발송 안 함
   try {
     const map    = await loadWorkerMap();
     const emails = [...map.keys()];
-    if (!emails.length) { console.warn("[totalk] 이메일 없음"); return; }
+    if (!emails.length) { console.warn("[totalk] 이메일 없음"); return { dryRun, count: 0, items: [] }; }
 
     let sent = 0, unmapped = 0;
+    const items = [];   // 미리보기(초안)용 수집
 
     for (let i = 0; i < emails.length; i += BATCH_SIZE) {
       const batch  = emails.slice(i, i + BATCH_SIZE);
@@ -155,39 +159,32 @@ export async function pollOnce(slackClient) {
         const info   = map.get(email);
 
         for (const mention of (worker.멘션목록 || [])) {
+          const raw  = mention.에디터링크?.[0];
+          const link = raw ? (raw.startsWith("http") ? raw : TOTUS_EDITOR_BASE + raw) : null;
+          const who  = info?.slackId ? `<@${info.slackId}>` : name;   // 멘션 당한 작업자를 @ 멘션
+          const text = [
+            `🔔 *[토톡 멘션]* ${who} 님께 멘션이 왔습니다`,
+            (mention.본문 || "").slice(0, 300),
+            link ? `🔗 ${link}` : null,
+          ].filter(Boolean).join("\n");
+
+          items.push({ email, name, channel: info?.channelId || null, channelRegistered: !!info?.channelId, text });
+
+          if (dryRun) continue;   // 초안 모드: 발송/기록 안 함
+
           if (!info?.channelId) {
             // 채널 미등록 → PM DM
             const dmRes = await slackClient.conversations.open({ users: PM_SLACK_ID() });
             const dmCh  = dmRes.channel?.id;
-            if (dmCh) {
-              const raw  = mention.에디터링크?.[0];
-              const link = raw ? (raw.startsWith("http") ? raw : TOTUS_EDITOR_BASE + raw) : null;
-              await slackClient.chat.postMessage({
-                channel: dmCh, unfurl_links: false,
-                text: [
-                  `⚠️ <@${PM_SLACK_ID()}> 토톡 멘션 미발송 — 채널 미등록`,
-                  `작업자: ${name} (${email})`,
-                  `작성자: ${mention.작성자?.이름 || mention.작성자?.이메일 || "?"}  ｜  ${mention.생성일시 || ""}`,
-                  (mention.본문 || "").slice(0, 150),
-                  link ? `🔗 ${link}` : null,
-                ].filter(Boolean).join("\n"),
-              });
-            }
+            if (dmCh) await slackClient.chat.postMessage({ channel: dmCh, unfurl_links: false,
+              text: [`⚠️ <@${PM_SLACK_ID()}> 토톡 멘션 미발송 — 채널 미등록`, `작업자: ${name} (${email})`, (mention.본문 || "").slice(0, 150), link ? `🔗 ${link}` : null].filter(Boolean).join("\n") });
             await logToSheet(mention, name, email, false, "채널미등록");
             unmapped++;
           } else {
-            const raw  = mention.에디터링크?.[0];
-            const link = raw ? (raw.startsWith("http") ? raw : TOTUS_EDITOR_BASE + raw) : null;
-            const who  = info.slackId ? `<@${info.slackId}>` : name;   // 멘션 당한 작업자를 @ 멘션
-            const text = [
-              `🔔 *[토톡 멘션]* ${who} 님께 멘션이 왔습니다`,
-              (mention.본문 || "").slice(0, 300),
-              link ? `🔗 ${link}` : null,
-            ].filter(Boolean).join("\n");
             const res = await slackClient.chat.postMessage({ channel: info.channelId, text, unfurl_links: false })
               .catch(e => { console.error(`[totalk] 발송 실패(${email}):`, e.message); return null; });
             const ok = !!res?.ok;
-            if (ok) logSent(email, name, info.channelId, res.ts);   // 오발송 회수용 ts 기록
+            if (ok) logSent(email, name, info.channelId, res.ts);
             await logToSheet(mention, name, email, ok, ok ? "" : "발송오류");
             if (ok) sent++;
           }
@@ -195,9 +192,13 @@ export async function pollOnce(slackClient) {
       }
     }
 
+    if (dryRun) {
+      console.log(`[totalk] 초안 조회 ${items.length}건 (발송 안 함)`);
+      return { dryRun: true, count: items.length, items };
+    }
     _since = new Date().toISOString();
     console.log(`[totalk] 발송 ${sent}건 / 미매핑 ${unmapped}건`);
-    return { sent, unmapped, since: _since };
+    return { dryRun: false, sent, unmapped, since: _since };
   } catch (e) {
     console.error("[totalk] 폴링 오류:", e.message);
     return { error: e.message };

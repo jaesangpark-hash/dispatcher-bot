@@ -1207,12 +1207,12 @@ const apmTools = createSdkMcpServer({
       {},
       async () => { try { const _d = ownerOnly(); if (_d) return _d; return { content: [{ type: "text", text: JSON.stringify({ items: listLearned() }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: true } }),
-    tool("check_totalk_mentions", "TOTUS ToTalk 멘션 지금 즉시 수동 확인. 새 멘션 있으면 작업자 슬랙 채널에 알림 발송 + 히스토리 시트 기록. '토톡 확인해줘/멘션 왔는지 봐줘' 류.",
+    tool("check_totalk_mentions", "새 TOTUS ToTalk 멘션을 조회만 해서 초안으로 보여준다. ★절대 발송하지 않는다(작업자 채널로 안 나감, 시트 기록·커서 이동도 없음). '토톡 확인해줘/멘션 왔는지 봐줘/초안 띄워줘' 류에 사용. 반환된 items(작업자·채널등록여부·초안텍스트)를 재상 님께 초안으로 보기 좋게 정리해 보여줄 것. 실제 발송은 이 도구로 하지 말고, 재상 님이 명시적으로 '발송해'라고 할 때만 별도 처리.",
       {},
       async () => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
-          const result = await pollOnce(app.client);
+          const result = await pollOnce(app.client, { dryRun: true });   // 초안만, 발송 안 함
           return { content: [{ type: "text", text: JSON.stringify(result) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       }),
