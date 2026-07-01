@@ -2132,7 +2132,9 @@ app.event("app_home_opened", async ({ event, client }) => {
 let _channelJoined = false;
 async function postReminder(text) {
   if (!_channelJoined) { try { await app.client.conversations.join({ channel: REMINDER_CHANNEL }); } catch {} _channelJoined = true; }
-  await app.client.chat.postMessage({ channel: REMINDER_CHANNEL, text, ...SENDER });
+  // 재상 님 멘션을 맨 앞에 붙여 실제 알림이 오게 한다(채널 발송만으론 알림 안 옴).
+  const mention = DISPATCHER_USER_ID ? `<@${DISPATCHER_USER_ID}> ` : "";
+  await app.client.chat.postMessage({ channel: REMINDER_CHANNEL, text: `${mention}${text}`, ...SENDER });
 }
 
 // 미해결 문의/재수급 → 한 섹션 텍스트(없으면 null)
