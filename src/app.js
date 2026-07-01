@@ -228,6 +228,13 @@ async function n8nPost(path, body) {
   return j;
 }
 let currentCtx = null;            // { client, channel, ts } — handle()가 메시지마다 갱신(직렬 가정). 영속 대상 아님(client 비직렬)
+// 지금 턴이 온 스레드(요청 자리)의 슬랙 퍼머링크. 리마인더에 '어디서 요청했는지' 링크를 붙일 때 사용.
+async function ctxPermalink() {
+  const c = currentCtx;
+  if (!c?.client || !c?.channel || !c?.ts) return null;
+  try { const pl = await c.client.chat.getPermalink({ channel: c.channel, message_ts: c.ts }); return pl?.permalink || null; }
+  catch { return null; }
+}
 const EDIT_TTL_MS = 24 * 60 * 60 * 1000;   // 버튼 유효 24h (영속화로 재시작에도 유지)
 
 const SETJIP_CHANNEL = process.env.SETJIP_CHANNEL || "C09AUQN8GEB";   // 설정집 작성 요청 채널(#재팬_작업요청)
@@ -498,50 +505,43 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "propose_delivery_edit",
-      "납품 시트 납품일(G열) 변경/삭제를 '제안'한다. 즉시 바꾸지 않고 대상 셀들을 찾아 프리뷰(기존→새값)를 확인 버튼으로 보낸다. 사용자가 버튼을 눌러야 반영. new_date에 날짜를 주면 변경, '삭제'(또는 빈 문자열)면 납품일을 지운다(빈칸). episode는 한 회차('5')뿐 아니라 범위·여러 회차('1-20','1,3,5','1-5,9')도 받으며, 여러 회차면 한 번에 같은 날짜로 일괄 변경(확인 버튼 1개). 절대 '변경/삭제했다'고 단정하지 말 것(확인 대기).",
+      "납품 시트 납품일(G열)을 변경/삭제한다. ★재상 님 요청으로 확인 버튼 없이 즉시 반영(2026-07-01) 후 결과를 한 번에 요약 보고. ★회차마다 날짜가 다르면 절대 여러 번 호출하지 말고 changes 배열에 전부 담아 **한 번에** 호출(같은 날짜 회차는 episode+new_date로도 됨). new_date에 날짜면 변경, '삭제'(또는 빈 문자열)면 납품일을 지운다(빈칸). episode는 단일('5')·범위('1-20')·목록('1,3,5')·혼합('1-5,9') 가능. 변경 후 '완료'로 보고(단정해도 됨).",
       {
         work: z.string().describe("작품명(한/일/중 무엇이든)"),
-        episode: z.string().describe("회차. 단일('5'), 범위('1-20'), 목록('1,3,5'), 혼합('1-5,9') 모두 가능. 사용자가 '1~20화'라 하면 '1-20'으로 넘겨라."),
-        new_date: z.string().describe("새 납품일 yyyy-mm-dd(여러 회차면 전부 이 날짜로). 납품일을 '지우기/삭제'면 '삭제' 또는 빈 문자열."),
+        episode: z.string().optional().describe("같은 날짜로 바꿀 회차. 단일('5'), 범위('1-20'), 목록('1,3,5'), 혼합('1-5,9'). changes를 쓸 땐 생략."),
+        new_date: z.string().optional().describe("episode에 적용할 새 납품일 yyyy-mm-dd. '지우기/삭제'면 '삭제' 또는 빈 문자열. changes를 쓸 땐 생략."),
+        changes: z.array(z.object({ episode: z.string(), new_date: z.string() })).optional().describe("회차별로 날짜가 다를 때 전부 한 번에. 예: [{episode:'15',new_date:'2026-07-06'},{episode:'23-24',new_date:'2026-07-20'}]. new_date에 '삭제'/'' 도 됨. 이걸 쓰면 episode/new_date는 무시. 회차 겹치면 뒤가 이김."),
         lang: z.enum(["zh-ja", "ko-ja"]).optional().describe("중일=zh-ja(기본), 한일=ko-ja"),
       },
-      async ({ work, episode, new_date, lang }) => {
+      async ({ work, episode, new_date, changes, lang }) => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
-          const ctx = currentCtx;
-          const clearing = !new_date || /^(삭제|지움|지워|지우기|비우기|비움|없음|빈칸|clear|none|empty)$/i.test(String(new_date).trim());
-          const newValue = clearing ? "" : new_date;
-          const shownNew = clearing ? "(삭제·빈칸)" : new_date;
-          const eps = parseEpisodeSpec(episode);
-          if (!eps.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `회차 '${episode}'를 못 읽음. 예: 5 / 1-20 / 1,3,5` }) }] };
-          const r = await resolveDeliveryCells({ work, episodes: eps, lang: lang ?? "zh-ja" });
-          if (!r.found.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' ${compactRanges(eps)}화를 납품 시트에서 못 찾음. 작품명/회차 확인 필요.` }) }] };
-          const changeId = `edit_${++editSeq}`;
-          pendingEdits.set(changeId, { sheetId: r.sheetId, tab: r.tab, lang: r.lang, workName: r.workName, newValue, clearing, shownNew, items: r.found.map((f) => ({ cellA1: f.cellA1, oldValue: f.currentDate, episode: f.episode })), createdAt: Date.now() });
-          const verb = clearing ? "삭제" : "변경";
-          const foundEps = r.found.map((f) => f.episode);
-          const lines = r.found.slice(0, 12).map((f) => `• ${f.episode}화: ${f.currentDate || "(빈칸)"} → ${shownNew}`).join("\n");
-          const more = r.found.length > 12 ? `\n…외 ${r.found.length - 12}건` : "";
-          const missLine = r.missing.length ? `\n⚠️ 못 찾음(제외): ${compactRanges(r.missing)}화` : "";
-          if (ctx?.client && ctx?.channel) {
-            await ctx.client.chat.postMessage({
-              channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
-              text: `납품일 ${verb} 확인: ${r.workName} ${compactRanges(foundEps)}화 (${r.found.length}건) → ${shownNew}`,
-              blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `⚠️ *납품일 ${verb} 확인* — *${r.workName}* (${r.lang})\n${compactRanges(foundEps)}화 *${r.found.length}건*을 *${shownNew}* (으)로 일괄 ${verb}\n${lines}${more}${missLine}` } },
-                { type: "actions", elements: [
-                  { type: "button", style: "primary", text: { type: "plain_text", text: `✅ ${r.found.length}건 ${verb}` }, value: changeId, action_id: "delivery_edit_confirm" },
-                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: changeId, action_id: "delivery_edit_cancel" },
-                ] },
-              ],
-            });
+          const tasks = (Array.isArray(changes) && changes.length) ? changes : (episode && new_date != null ? [{ episode, new_date }] : []);
+          if (!tasks.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: "회차·날짜가 없음. episode+new_date 또는 changes 배열이 필요." }) }] };
+          const CLEAR_RE = /^(삭제|지움|지워|지우기|비우기|비움|없음|빈칸|clear|none|empty)$/i;
+          const epVal = new Map();   // episode → { value, shown } (뒤에 온 게 이김)
+          for (const t of tasks) {
+            const raw = String(t.new_date ?? "").trim();
+            const clearing = !raw || CLEAR_RE.test(raw);
+            const value = clearing ? "" : raw;
+            const shown = clearing ? "(삭제·빈칸)" : raw;
+            for (const ep of parseEpisodeSpec(t.episode)) epVal.set(ep, { value, shown });
           }
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, action: verb, workName: r.workName, episodes: foundEps, count: r.found.length, missing: r.missing, to: shownNew, note: "확인 버튼(1개)을 보냈음. 사용자가 버튼을 눌러야 반영됨. '버튼을 눌러 확인해 주세요'라고만 안내하고, 변경/삭제 완료라고 말하지 말 것. 못 찾은 회차가 있으면 그 회차 번호를 사용자에게 알려라." }) }] };
+          const eps = [...epVal.keys()];
+          if (!eps.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: "회차를 못 읽음. 예: 5 / 1-20 / 1,3,5" }) }] };
+          const r = await resolveDeliveryCells({ work, episodes: eps, lang: lang ?? "zh-ja" });
+          if (!r.found.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' ${compactRanges(eps.sort((a, b) => a - b))}화를 납품 시트에서 못 찾음. 작품명/회차 확인 필요.` }) }] };
+          const updates = r.found.map((f) => ({ a1: f.cellA1, value: epVal.get(f.episode).value, episode: f.episode, old: f.currentDate }));
+          await setCells(r.sheetId, updates.map((u) => ({ a1: u.a1, value: u.value })));
+          for (const u of updates) appendFileSync("logs/edits.jsonl", JSON.stringify({ at: new Date().toISOString(), user: DISPATCHER_USER_ID, cell: u.a1, work: r.workName, episode: u.episode, from: u.old, to: u.value, clearing: u.value === "" }) + "\n");
+          const groups = {};   // 표시값(날짜/삭제)별 회차 묶기(보고용)
+          for (const f of r.found) { const s = epVal.get(f.episode).shown; (groups[s] ||= []).push(f.episode); }
+          const changed = Object.entries(groups).sort(([a], [b]) => a.localeCompare(b)).map(([s, e]) => `${compactRanges(e.sort((x, y) => x - y))}화 → ${s}`);
+          return { content: [{ type: "text", text: JSON.stringify({ applied: true, workName: r.workName, changed, count: r.found.length, missing: r.missing, note: "이미 시트에 반영됨(확인 불필요). changed를 한 번에 담백하게 완료 보고. 못 찾은 회차(missing)만 따로 짧게 알려라." }) }] };
         } catch (e) {
-          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) + " (SA가 해당 시트 편집자인지 확인 필요)" }) }] };
         }
       },
-      { annotations: { readOnlyHint: true } }
     ),
     tool(
       "propose_totus_delivery_edit",
@@ -1176,12 +1176,12 @@ const apmTools = createSdkMcpServer({
     tool("add_reminder",
       "재상 님이 '나중에 챙길 일'을 기억해달라고 할 때 저장한다(재촉 리마인더). 시간 지정 불필요 — 끝내거나 '그만'할 때까지 하루 여러 번(기본 09·14·18시) 자동으로 재촉 DM이 간다. '이거 기억해둬'·'나중에 ~해야 해'·'~하는 거 잊지마' 류에 사용.",
       { text: z.string().describe("기억할 내용") },
-      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = addReminder(a.text); return { content: [{ type: "text", text: JSON.stringify({ saved: true, id: r.id, total: r.total, note: "하루 여러 번 재촉 예정. 끝나거나 '그만'하면 지움." }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const link = await ctxPermalink(); const r = addReminder(a.text, link); return { content: [{ type: "text", text: JSON.stringify({ saved: true, id: r.id, total: r.total, note: "하루 여러 번 재촉 예정(요청 스레드 링크 포함). 끝나거나 '그만'하면 지움." }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: false } }),
     tool("schedule_reminder",
       "특정 시각에 1회 리마인드. '월요일 오전 10시에 ~ 리마인드'처럼 시각이 주어질 때 사용. when은 ISO8601(예 2026-06-22T10:00:00+09:00) — 메시지 앞 [현재 시각(KST)] 기준으로 계산해서 넣어라. 시각 없이 '그냥 기억해둬'면 이게 아니라 add_reminder를 쓴다.",
       { text: z.string().describe("리마인드할 내용"), when: z.string().describe("발송 시각 ISO8601(KST 오프셋 +09:00 권장)") },
-      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = addScheduled(a.text, a.when); if (r.error) return { content: [{ type: "text", text: JSON.stringify(r) }] }; return { content: [{ type: "text", text: JSON.stringify({ scheduled: true, id: r.id, dueAt: r.dueAt }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const link = await ctxPermalink(); const r = addScheduled(a.text, a.when, link); if (r.error) return { content: [{ type: "text", text: JSON.stringify(r) }] }; return { content: [{ type: "text", text: JSON.stringify({ scheduled: true, id: r.id, dueAt: r.dueAt }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: false } }),
     tool("list_reminders", "저장된 리마인더 목록(재촉형+시각지정형, dueAt 있으면 시각지정). '내 할일/리마인더 뭐 있어' 류.",
       {},
@@ -2163,7 +2163,7 @@ async function checkNag() {
     catch (e) { console.error("[nag] 완결 스캔 실패:", e?.message ?? e); }
     const parts = [];
     if (reminders.length) {
-      const lines = reminders.map((x) => `${x.id}. ${x.text}`).join("\n");
+      const lines = reminders.map((x) => `${x.id}. ${x.text}${x.link ? ` <${x.link}|🔗요청스레드>` : ""}`).join("\n");
       parts.push(`📌 *아직 안 끝난 일* (하루 ${hours.length || 1}번 챙겨드려요)\n${lines}\n끝났거나 그만 챙겨도 되면 "N번 완료"·"그만 리마인드해"라고 알려주세요.`);
     }
     const iq = fmtInquiries(inquiries);
@@ -2178,7 +2178,7 @@ async function checkNag() {
 async function checkScheduled() {
   try {
     const fired = dueScheduled();
-    for (const x of fired) await postReminder(`⏰ 리마인드: ${x.text}`);
+    for (const x of fired) await postReminder(`⏰ 리마인드: ${x.text}${x.link ? ` <${x.link}|🔗요청스레드>` : ""}`);
     if (fired.length) console.log(`[reminder] 예약 발송 ${fired.length}건`);
   } catch (e) { console.error("[reminder] 예약 실패:", e?.message ?? e); }
 }
