@@ -2,6 +2,7 @@ import "dotenv/config";
 import pkg from "@slack/bolt";
 const { App } = pkg;
 import { pollOnce, initSince } from "./totalk.js";
+import { runInitiative, dueDailyInitiative } from "./initiative.js";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { lookupDelivery } from "./delivery.js";
@@ -2193,7 +2194,31 @@ async function checkScheduled() {
     if (fired.length) console.log(`[reminder] 예약 발송 ${fired.length}건`);
   } catch (e) { console.error("[reminder] 예약 실패:", e?.message ?? e); }
 }
-async function tick() { await checkScheduled(); await checkNag(); }
+// ── Initiative Engine V3 슬라이스① (조언 모드) — 하루 1회, 도구 없는 판단 호출로 조언만 DM ──
+const INITIATIVE_ENABLED = true;   // 끄려면 false
+const INITIATIVE_HOUR = 10;        // 이 시각(로컬) 이후 그날 첫 tick에서 1회 판단
+async function checkInitiative() {
+  try {
+    if (!INITIATIVE_ENABLED || !BRAIN_ON) return;
+    if (!dueDailyInitiative(INITIATIVE_HOUR)) return;
+    let overdue = [], completions = [];
+    try { overdue = await overdueInquiries(parseInt(INQUIRY_OVERDUE_DAYS, 10) || 2); } catch (e) { console.error("[initiative] 문의 스캔 실패:", e?.message); }
+    try { completions = await dueCompletions(7); } catch (e) { console.error("[initiative] 완결 스캔 실패:", e?.message); }
+    const signals = { 미해결_문의재수급: overdue.slice(0, 25), 완결후보: completions.slice(0, 25) };
+    const nowStr = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "full", timeStyle: "short" });
+    const v = await runInitiative({ model: DISPATCHER_MODEL, nowStr, signals });
+    if (v?.speak && v.message) {
+      try {
+        const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID });
+        if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: `💡 *[먼저 제안]* ${v.message}`, ...SENDER });
+        console.log(`[initiative] 발화 — ${v.topic || ""}`);
+      } catch (e) { console.error("[initiative] DM 실패:", e?.message); }
+    } else {
+      console.log(`[initiative] 침묵 (${v?.reason || v?.skipped || "low-value"})`);
+    }
+  } catch (e) { console.error("[initiative] 실패:", e?.message ?? e); }
+}
+async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); }
 
 (async () => {
   await app.start();
