@@ -1,6 +1,7 @@
 import "dotenv/config";
 import pkg from "@slack/bolt";
 const { App } = pkg;
+import { pollOnce, initSince } from "./totalk.js";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { lookupDelivery } from "./delivery.js";
@@ -1206,6 +1207,15 @@ const apmTools = createSdkMcpServer({
       {},
       async () => { try { const _d = ownerOnly(); if (_d) return _d; return { content: [{ type: "text", text: JSON.stringify({ items: listLearned() }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: true } }),
+    tool("check_totalk_mentions", "TOTUS ToTalk 멘션 지금 즉시 수동 확인. 새 멘션 있으면 작업자 슬랙 채널에 알림 발송 + 히스토리 시트 기록. '토톡 확인해줘/멘션 왔는지 봐줘' 류.",
+      {},
+      async () => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const result = await pollOnce(app.client);
+          return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      }),
   ],
 });
 
@@ -2187,6 +2197,7 @@ async function tick() { await checkScheduled(); await checkNag(); }
 (async () => {
   await app.start();
   if (BRAIN_ON) startSession();   // 엔진을 미리 띄워 워밍(콜드스타트 제거)
+  initSince();                    // 토톡 since = 오늘 KST 자정
   tick();                         // 부팅 직후 1회
   setInterval(tick, 60 * 1000);   // 1분마다 (예약은 ~1분 내 발송, 재촉·문의는 dueNagSlot이 시각 슬롯별 하루 1회로 제한)
   console.log(`🤖 디스패처 가동 — 브레인 ${BRAIN_ON ? `ON (${DISPATCHER_MODEL}, 세션 워밍됨)` : "OFF (에코 모드)"} · 재촉 ${BOT_NAG_HOURS}시 · 예약 1분틱`);
