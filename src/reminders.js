@@ -16,21 +16,21 @@ function save(d) {
   fs.writeFileSync(FILE, JSON.stringify(d, null, 2));
 }
 
-export function addReminder(text) {
+export function addReminder(text, link = null) {
   const d = load();
   const id = d.items.reduce((m, x) => Math.max(m, x.id), 0) + 1;
-  d.items.push({ id, text: String(text).trim(), createdAt: new Date().toISOString() });
+  d.items.push({ id, text: String(text).trim(), createdAt: new Date().toISOString(), link: link || null });
   save(d);
   return { id, total: d.items.length };
 }
 
 // 시각 지정 1회 리마인더. dueAt = ISO8601. 유효·미래가 아니면 에러 반환.
-export function addScheduled(text, dueAtISO) {
+export function addScheduled(text, dueAtISO, link = null) {
   const t = new Date(dueAtISO);
   if (isNaN(t.getTime())) return { error: `시각 해석 실패: '${dueAtISO}' (ISO8601 필요)` };
   const d = load();
   const id = d.items.reduce((m, x) => Math.max(m, x.id), 0) + 1;
-  d.items.push({ id, text: String(text).trim(), createdAt: new Date().toISOString(), dueAt: t.toISOString() });
+  d.items.push({ id, text: String(text).trim(), createdAt: new Date().toISOString(), dueAt: t.toISOString(), link: link || null });
   save(d);
   return { id, dueAt: t.toISOString(), total: d.items.length };
 }
