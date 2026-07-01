@@ -545,60 +545,56 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "propose_totus_delivery_edit",
-      "TOTUS 시스템(어드민/카카오픽코마)의 실제 납품예정일(deliveryDate)을 '변경 제안'한다. 내부 납품관리시트 G열(propose_delivery_edit)과는 다른, 진짜 TOTUS 납품예정일이며 변경 시 PIVO에도 자동 반영된다. 즉시 안 바꾸고 작품·회차로 jobProcess를 찾아 확인 버튼을 보낸다 — 사용자가 버튼을 눌러야 실제 변경. episode는 한 회차('5')뿐 아니라 범위·여러 회차('1-20','1,3,5')도 받으며 여러 회차면 같은 날짜로 일괄 변경(확인 버튼 1개). 절대 '변경했다'고 단정 말 것(확인 대기).",
+      "TOTUS 시스템(어드민/카카오픽코마)의 실제 납품예정일(deliveryDate)을 변경한다. 내부 납품관리시트 G열(propose_delivery_edit)과는 다른, 진짜 TOTUS 납품예정일이며 변경 시 PIVO에도 자동 반영된다. ★재상 님 요청으로 확인 버튼 없이 즉시 변경(2026-07-01) — 호출하면 바로 반영되고 결과를 한 번에 요약 보고한다. ★회차마다 날짜가 다르면 절대 여러 번 호출하지 말고 changes 배열에 전부 담아 **한 번에** 호출할 것(같은 날짜 회차는 episode+new_date로도 됨). episode는 단일('5')·범위('1-20')·목록('1,3,5') 가능. 변경 후 '완료'로 보고(단정해도 됨).",
       {
         work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
-        episode: z.string().describe("회차(작업단위번호). 단일('5'), 범위('1-20'), 목록('1,3,5') 가능. '1~20화'면 '1-20'으로."),
-        new_date: z.string().describe("새 납품예정일 YYYY-MM-DD (KST 23:59로 자동 변환, 여러 회차면 전부 이 날짜)"),
+        episode: z.string().optional().describe("같은 날짜로 바꿀 회차. 단일('5'), 범위('1-20'), 목록('1,3,5'). changes를 쓸 땐 생략."),
+        new_date: z.string().optional().describe("episode에 적용할 새 납품예정일 YYYY-MM-DD. changes를 쓸 땐 생략."),
+        changes: z.array(z.object({ episode: z.string(), new_date: z.string() })).optional().describe("회차별로 날짜가 다를 때 전부 한 번에. 예: [{episode:'15',new_date:'2026-07-06'},{episode:'22',new_date:'2026-07-13'},{episode:'23-24',new_date:'2026-07-20'}]. 이걸 쓰면 episode/new_date는 무시. 회차가 겹치면 뒤에 온 날짜가 이긴다."),
         reason: z.enum(["RETAKE", "CUSTOMER_REQUEST", "INTERNAL_REQUEST", "ETC"]).optional().describe("변경 사유(기본 CUSTOMER_REQUEST)"),
       },
-      async ({ work, episode, new_date, reason }) => {
+      async ({ work, episode, new_date, changes, reason }) => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
-          const ctx = currentCtx;
-          const eps = parseEpisodeSpec(episode);
-          if (!eps.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `회차 '${episode}'를 못 읽음. 예: 5 / 1-20 / 1,3,5` }) }] };
+          const tasks = (Array.isArray(changes) && changes.length) ? changes : (episode && new_date ? [{ episode, new_date }] : []);
+          if (!tasks.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: "회차·날짜가 없음. episode+new_date 또는 changes 배열이 필요." }) }] };
+          const bad = tasks.find((t) => !/^\d{4}-\d{2}-\d{2}$/.test(String(t.new_date || "").trim()));
+          if (bad) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `날짜 형식 오류: '${bad.new_date}'. YYYY-MM-DD 필요.` }) }] };
           const fp = await findProject(work);
           const proj = (fp?.data || [])[0];
           if (!proj?.uuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음. 작품명 표기 확인 필요.` }) }] };
           const jp = await jobProcesses(proj.uuid);
           const all = (jp?.data || []).flatMap((o) => o.JOB목록 || []);
           const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
-          const found = [], missing = [], ambiguous = [];
-          for (const ep of eps) {
-            const m = all.filter((x) => Number(x.작업단위번호) === ep);
-            if (!m.length) missing.push(ep);
-            else if (m.length > 1) ambiguous.push(ep);
-            else found.push({ jobProcessUuid: m[0].jobProcessUuid, episode: ep, currentDate: m[0].납품예정일 ? String(m[0].납품예정일).slice(0, 10) : null });
+          const items = new Map();  // episode → {jobProcessUuid, episode, currentDate, deliveryDate} (뒤에 온 게 이김)
+          const missing = new Set(), ambiguous = new Set();
+          for (const t of tasks) {
+            const date = String(t.new_date).trim();
+            for (const ep of parseEpisodeSpec(t.episode)) {
+              const m = all.filter((x) => Number(x.작업단위번호) === ep);
+              if (!m.length) missing.add(ep);
+              else if (m.length > 1) ambiguous.add(ep);
+              else items.set(ep, { jobProcessUuid: m[0].jobProcessUuid, episode: ep, currentDate: m[0].납품예정일 ? String(m[0].납품예정일).slice(0, 10) : null, deliveryDate: date });
+            }
           }
-          if (!found.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `${projName}에서 변경 가능한 회차를 못 찾음(못 찾음 ${compactRanges(missing) || "-"}, 복수후보 ${compactRanges(ambiguous) || "-"}). 회차 확인 필요.`, missing, ambiguous }) }] };
-          const changeId = `tdate_${++totusDateSeq}`;
-          pendingTotusDates.set(changeId, { items: found, deliveryDate: new_date, reason: reason || "CUSTOMER_REQUEST", work: projName, createdAt: Date.now() });
-          const foundEps = found.map((f) => f.episode);
-          const lines = found.slice(0, 12).map((f) => `• ${f.episode}화: ${f.currentDate || "미설정"} → ${new_date}`).join("\n");
-          const more = found.length > 12 ? `\n…외 ${found.length - 12}건` : "";
-          let warn = "";
-          if (missing.length) warn += `\n⚠️ 못 찾음(제외): ${compactRanges(missing)}화`;
-          if (ambiguous.length) warn += `\n⚠️ 후보 복수라 제외: ${compactRanges(ambiguous)}화 (개별 확인 필요)`;
-          if (ctx?.client && ctx?.channel) {
-            await ctx.client.chat.postMessage({
-              channel: ctx.channel, thread_ts: ctx.ts, ...SENDER,
-              text: `TOTUS 납품예정일 변경 확인: ${projName} ${compactRanges(foundEps)}화 (${found.length}건) → ${new_date}`,
-              blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `⚠️ *TOTUS 납품예정일 변경 확인* — *${projName}*\n${compactRanges(foundEps)}화 *${found.length}건*을 *${new_date}* (으)로 일괄 변경 (PIVO 자동 반영)\n${lines}${more}${warn}` } },
-                { type: "actions", elements: [
-                  { type: "button", style: "primary", text: { type: "plain_text", text: `✅ ${found.length}건 변경` }, value: changeId, action_id: "totus_date_confirm" },
-                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: changeId, action_id: "totus_date_cancel" },
-                ] },
-              ],
-            });
+          const list = [...items.values()].sort((a, b) => a.episode - b.episode);
+          const miss = [...missing].sort((a, b) => a - b), amb = [...ambiguous].sort((a, b) => a - b);
+          if (!list.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `${projName}에서 변경 가능한 회차를 못 찾음(못 찾음 ${compactRanges(miss) || "-"}, 복수후보 ${compactRanges(amb) || "-"}). 회차 확인 필요.`, missing: miss, ambiguous: amb }) }] };
+          const rsn = reason || "CUSTOMER_REQUEST";
+          const res = await setDeliveryDate(list.map((it) => ({ jobProcessUuid: it.jobProcessUuid, deliveryDate: it.deliveryDate, modificationReason: rsn })), false);
+          appendFileSync("logs/totus-dates.jsonl", JSON.stringify({ at: new Date().toISOString(), user: DISPATCHER_USER_ID, work: projName, items: list.map((it) => ({ episode: it.episode, to: it.deliveryDate })), reason: rsn, ok: res?.success, resp: res?.data }) + "\n");
+          const groups = {};  // 날짜별 회차 묶기(보고용)
+          for (const it of list) (groups[it.deliveryDate] ||= []).push(it.episode);
+          const changed = Object.entries(groups).sort(([a], [b]) => a.localeCompare(b)).map(([d, eps]) => `${compactRanges(eps.sort((x, y) => x - y))}화 → ${d}`);
+          const failed = res?.data?.failedJobProcessUuids || [];
+          if (!res?.success || failed.length) {
+            return { content: [{ type: "text", text: JSON.stringify({ applied: false, work: projName, changed, count: list.length, failedCount: failed.length || undefined, missing: miss, ambiguous: amb, note: "변경 실패 또는 일부 실패. 실패/못 찾은 회차를 사용자에게 알려라." }) }] };
           }
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: projName, episodes: foundEps, count: found.length, missing, ambiguous, to: new_date, note: "확인 버튼(1개)을 보냈음. 사용자가 버튼을 눌러야 실제 변경됨. '버튼을 눌러 확인해 주세요'라고만 안내. 못 찾거나 후보 복수인 회차가 있으면 그 번호를 사용자에게 알려라." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ applied: true, work: projName, changed, count: list.length, missing: miss, ambiguous: amb, note: "이미 변경 완료됨(확인 불필요, PIVO 자동 반영). changed를 한 번에 담백하게 '변경 완료'로 보고. missing/ambiguous 있으면 그 회차만 따로 짧게 알려라." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
       },
-      { annotations: { readOnlyHint: true } }
     ),
     tool(
       "totus_delivery_date",
