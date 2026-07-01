@@ -80,7 +80,7 @@ async function loadWorkerMap() {
   const map = new Map();
   for (const row of (j.values || []).slice(1)) {
     const email = (row[1] || "").trim().toLowerCase();
-    if (email) map.set(email, { name: row[0]?.trim() || "", channelId: row[3]?.trim() || "" });
+    if (email) map.set(email, { name: row[0]?.trim() || "", slackId: row[2]?.trim() || "", channelId: row[3]?.trim() || "" });
   }
   _sheetCache = { map, at: Date.now() };
   console.log(`[totalk] workers ${map.size}명 로드`);
@@ -117,6 +117,13 @@ async function logToSheet(mention, workerName, workerEmail, sent, reason) {
   } catch (e) {
     console.warn("[totalk] 시트 기록 실패:", e.message);
   }
+}
+
+// ── 발송 ts 기록(오발송 회수용) ───────────────────────────
+// logs/totalk-sent.jsonl 에 {at, email, name, channel, ts} 한 줄씩. 회수 시 이 파일로 chat.delete.
+function logSent(email, name, channel, ts) {
+  try { fs.appendFileSync("logs/totalk-sent.jsonl", JSON.stringify({ at: new Date().toISOString(), email, name, channel, ts }) + "\n"); }
+  catch (e) { console.warn("[totalk] ts 기록 실패:", e.message); }
 }
 
 // ── since 커서 ──────────────────────────────────────────
@@ -171,14 +178,16 @@ export async function pollOnce(slackClient) {
           } else {
             const raw  = mention.에디터링크?.[0];
             const link = raw ? (raw.startsWith("http") ? raw : TOTUS_EDITOR_BASE + raw) : null;
+            const who  = info.slackId ? `<@${info.slackId}>` : name;   // 멘션 당한 작업자를 @ 멘션
             const text = [
-              `🔔 *[토톡 멘션]* ${name} 님께 멘션이 왔습니다`,
-              `작성자: ${mention.작성자?.이름 || mention.작성자?.이메일 || "?"}  ｜  ${mention.생성일시 || ""}${mention.프로젝트UUID ? "  ｜  PRJ-" + mention.프로젝트UUID.slice(0, 8) : ""}`,
+              `🔔 *[토톡 멘션]* ${who} 님께 멘션이 왔습니다`,
               (mention.본문 || "").slice(0, 300),
               link ? `🔗 ${link}` : null,
             ].filter(Boolean).join("\n");
-            const ok = await slackClient.chat.postMessage({ channel: info.channelId, text, unfurl_links: false })
-              .then(() => true).catch(e => { console.error(`[totalk] 발송 실패(${email}):`, e.message); return false; });
+            const res = await slackClient.chat.postMessage({ channel: info.channelId, text, unfurl_links: false })
+              .catch(e => { console.error(`[totalk] 발송 실패(${email}):`, e.message); return null; });
+            const ok = !!res?.ok;
+            if (ok) logSent(email, name, info.channelId, res.ts);   // 오발송 회수용 ts 기록
             await logToSheet(mention, name, email, ok, ok ? "" : "발송오류");
             if (ok) sent++;
           }
