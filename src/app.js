@@ -1392,6 +1392,7 @@ function startSession() {
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
+        "mcp__apm__check_totalk_mentions",
         "WebSearch"],
     },
   });
