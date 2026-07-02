@@ -87,6 +87,50 @@ async function loadWorkerMap() {
   return map;
 }
 
+// ── 중일 작품 필터: 출판사 드라이브 링크(I열 PIVO) → projectUuid 집합 ──────
+// ToTalk 멘션을 '중일 작품(이 시트에 있는 작품)'으로만 한정하기 위한 캐시. PIVO→uuid는 증분·영속.
+const JUNGIL_FILE = "data/jungil-uuids.json";
+const PUB_SHEET_ID = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
+const PUB_TAB = "출판사 드라이브 링크";
+const PUB_PIVO_COL = 8;   // I열 = PIVO ID
+let _jungil = null;       // { pivoToUuid:{}, uuids:Set }
+
+function loadJungil() {
+  try { const j = JSON.parse(fs.readFileSync(JUNGIL_FILE, "utf8")); const p2u = j.pivoToUuid || {}; return { pivoToUuid: p2u, uuids: new Set(Object.values(p2u).filter(Boolean)) }; }
+  catch { return { pivoToUuid: {}, uuids: new Set() }; }
+}
+function saveJungil(c) { try { fs.mkdirSync("data", { recursive: true }); fs.writeFileSync(JUNGIL_FILE, JSON.stringify({ builtAt: new Date().toISOString(), pivoToUuid: c.pivoToUuid })); } catch (e) { console.warn("[totalk] jungil 저장 실패:", e.message); } }
+
+async function resolvePivoUuid(pivo) {
+  try {
+    const r = await (await fetch(`${BASE()}/api/v1/projects?pivoId=${encodeURIComponent(pivo)}`, { headers: { Authorization: `Bearer ${TOKEN()}` } })).json();
+    const arr = r.data || [];
+    const hit = arr.find((x) => String(x.프로젝트 || "").includes("PV-" + pivo)) || arr[0];
+    return hit?.uuid || null;
+  } catch { return null; }
+}
+
+// 출판사 드라이브 링크 PIVO 목록 읽어 미해결분만 uuid 해석(증분). 오래 걸릴 수 있어 하루 1회/부팅 시만.
+export async function refreshJungil() {
+  const cache = _jungil || loadJungil();
+  try {
+    const tok = await getReadToken();
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${PUB_SHEET_ID}/values/${encodeURIComponent(PUB_TAB + "!A:I")}`;
+    const j = await (await fetch(url, { headers: { Authorization: `Bearer ${tok}` } })).json();
+    if (j.error) { console.error("[totalk] 출판사시트 읽기 실패:", j.error.message); _jungil = cache; return cache; }
+    const pivos = new Set();
+    for (const row of (j.values || []).slice(1)) { const p = String(row[PUB_PIVO_COL] || "").trim(); if (/^\d{4,}$/.test(p)) pivos.add(p); }
+    let added = 0;
+    for (const p of pivos) { if (cache.pivoToUuid[p]) continue; const u = await resolvePivoUuid(p); if (u) { cache.pivoToUuid[p] = u; added++; } }
+    cache.uuids = new Set(Object.values(cache.pivoToUuid).filter(Boolean));
+    _jungil = cache; saveJungil(cache);
+    console.log(`[totalk] 중일 캐시: ${cache.uuids.size} uuid (신규 ${added}, 시트 PIVO ${pivos.size})`);
+  } catch (e) { console.error("[totalk] 중일 캐시 갱신 실패:", e.message); _jungil = cache; }
+  return cache;
+}
+
+function jungilSet() { if (!_jungil) _jungil = loadJungil(); return _jungil.uuids; }
+
 // ── 히스토리 시트 append ──────────────────────────────────
 async function logToSheet(mention, workerName, workerEmail, sent, reason) {
   if (!HISTORY_SHEET_ID()) return;
@@ -146,7 +190,11 @@ export async function pollOnce(slackClient, opts = {}) {
     const emails = [...map.keys()];
     if (!emails.length) { console.warn("[totalk] 이메일 없음"); return { dryRun, count: 0, items: [] }; }
 
-    let sent = 0, unmapped = 0, skipped = 0;
+    // 중일 작품 필터 준비(비어있으면 1회 빌드). 이후 mention.프로젝트UUID ∈ 집합만 통과.
+    let jset = jungilSet();
+    if (jset.size === 0) { console.log("[totalk] 중일 캐시 비어있음 — 빌드"); await refreshJungil(); jset = jungilSet(); }
+
+    let sent = 0, unmapped = 0, skipped = 0, notJungil = 0;
     const items = [];   // 미리보기(초안)용 수집
     const seen = dryRun ? null : loadSeen();   // 발송 모드에서만 중복 차단
 
@@ -167,6 +215,7 @@ export async function pollOnce(slackClient, opts = {}) {
         const info   = map.get(email);
 
         for (const mention of (worker.멘션목록 || [])) {
+          if (!jset.has(mention.프로젝트UUID)) { notJungil++; continue; }   // 중일 작품만(출판사 드라이브 링크 시트 기준)
           const raw  = mention.에디터링크?.[0];
           const link = raw ? (raw.startsWith("http") ? raw : TOTUS_EDITOR_BASE + raw) : null;
           const who  = info?.slackId ? `<@${info.slackId}>` : name;   // 멘션 당한 작업자를 @ 멘션
@@ -205,14 +254,14 @@ export async function pollOnce(slackClient, opts = {}) {
     }
 
     if (dryRun) {
-      console.log(`[totalk] 초안 조회 ${items.length}건 (발송 안 함)`);
-      return { dryRun: true, count: items.length, items };
+      console.log(`[totalk] 초안 조회 ${items.length}건 (중일 아님 제외 ${notJungil}, 발송 안 함)`);
+      return { dryRun: true, count: items.length, notJungil, items };
     }
     saveSeen(seen);                          // 처리한 코멘트UUID 영속
     _since = new Date().toISOString();
     saveSince(_since);                       // 커서 영속(재기동에도 diff만)
-    console.log(`[totalk] 발송 ${sent}건 / 미매핑 ${unmapped}건 / 중복스킵 ${skipped}건`);
-    return { dryRun: false, sent, unmapped, skipped, since: _since };
+    console.log(`[totalk] 발송 ${sent}건 / 미매핑 ${unmapped}건 / 중복스킵 ${skipped}건 / 중일아님 ${notJungil}건`);
+    return { dryRun: false, sent, unmapped, skipped, notJungil, since: _since };
   } catch (e) {
     console.error("[totalk] 폴링 오류:", e.message);
     return { error: e.message };

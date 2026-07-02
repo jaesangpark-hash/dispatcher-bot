@@ -1,7 +1,7 @@
 import "dotenv/config";
 import pkg from "@slack/bolt";
 const { App } = pkg;
-import { pollOnce, initSince } from "./totalk.js";
+import { pollOnce, initSince, refreshJungil } from "./totalk.js";
 import { runInitiative, dueDailyInitiative } from "./initiative.js";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
@@ -2223,7 +2223,8 @@ async function tick() { await checkScheduled(); await checkNag(); await checkIni
 (async () => {
   await app.start();
   if (BRAIN_ON) startSession();   // 엔진을 미리 띄워 워밍(콜드스타트 제거)
-  initSince();                    // 토톡 since = 오늘 KST 자정
+  initSince();                    // 토톡 since 복원(없으면 KST 자정)
+  refreshJungil().catch((e) => console.error("[totalk] 중일 캐시 초기빌드 실패:", e?.message));   // 중일 작품 uuid 집합 백그라운드 빌드
   tick();                         // 부팅 직후 1회
   setInterval(tick, 60 * 1000);   // 1분마다 (예약은 ~1분 내 발송, 재촉·문의는 dueNagSlot이 시각 슬롯별 하루 1회로 제한)
   console.log(`🤖 디스패처 가동 — 브레인 ${BRAIN_ON ? `ON (${DISPATCHER_MODEL}, 세션 워밍됨)` : "OFF (에코 모드)"} · 재촉 ${BOT_NAG_HOURS}시 · 예약 1분틱`);
