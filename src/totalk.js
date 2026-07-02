@@ -219,13 +219,15 @@ export async function pollOnce(slackClient, opts = {}) {
           const raw  = mention.에디터링크?.[0];
           const link = raw ? (raw.startsWith("http") ? raw : TOTUS_EDITOR_BASE + raw) : null;
           const who  = info?.slackId ? `<@${info.slackId}>` : name;   // 멘션 당한 작업자를 @ 멘션
+          const title = String(mention.프로젝트명 || "").replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();   // 작품명(대괄호 태그 제거)
           const text = [
             `🔔 *[토톡 멘션]* ${who} 님께 멘션이 왔습니다`,
+            title ? `📗 ${title}` : null,
             (mention.본문 || "").slice(0, 300),
             link ? `🔗 ${link}` : null,
           ].filter(Boolean).join("\n");
 
-          items.push({ email, name, channel: info?.channelId || null, channelRegistered: !!info?.channelId, text });
+          items.push({ email, name, work: title, channel: info?.channelId || null, channelRegistered: !!info?.channelId, text });
 
           if (dryRun) continue;   // 초안 모드: 발송/기록 안 함
 
