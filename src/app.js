@@ -577,7 +577,7 @@ const apmTools = createSdkMcpServer({
               const m = all.filter((x) => Number(x.작업단위번호) === ep);
               if (!m.length) missing.add(ep);
               else if (m.length > 1) ambiguous.add(ep);
-              else items.set(ep, { jobProcessUuid: m[0].jobProcessUuid, episode: ep, currentDate: m[0].납품예정일 ? String(m[0].납품예정일).slice(0, 10) : null, deliveryDate: date });
+              else items.set(ep, { jobProcessUuid: m[0].jobProcessUuid, episode: ep, currentDate: m[0].납품예정일 ? new Date(new Date(m[0].납품예정일).getTime() - 1000).toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" }) : null, deliveryDate: date });
             }
           }
           const list = [...items.values()].sort((a, b) => a.episode - b.episode);
@@ -610,7 +610,8 @@ const apmTools = createSdkMcpServer({
           if (!proj?.uuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음.` }) }] };
           const jp = await jobProcesses(proj.uuid);
           const items = (jp?.data || []).flatMap((o) => o.JOB목록 || []);
-          const fmt = (iso) => (iso ? String(iso).slice(0, 10) : null);
+          // 납품예정일 = "M/D 23:59:59 KST" 관례 → −1초 후 KST 날짜로 정규화(자정 00:00 저장분을 전날 마감으로). raw UTC slice는 오전 시각서 깨짐.
+          const fmt = (iso) => (iso ? new Date(new Date(iso).getTime() - 1000).toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" }) : null);
           const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
           if (episode != null && episode !== "") {
             const ep = Number(episode);
