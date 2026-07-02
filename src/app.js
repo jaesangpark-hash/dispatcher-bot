@@ -1094,7 +1094,7 @@ const apmTools = createSdkMcpServer({
         work: z.string().optional().describe("작품명(한/일/중). pivo가 있으면 생략 가능"),
         pivo: z.string().optional().describe("PIVO ID(있으면 가장 정확)"),
         action: z.enum(["hold", "unhold", "process", "pause", "complete", "cancel"]).optional().describe("상태 변경 액션. name과 동시 지정 시 action 우선"),
-        name: z.string().optional().describe("새 프로젝트명(이름 변경 시). 보통 [PV-id] [카카오픽코마] {한국어} {일본어FIX} 형태 전체 문자열"),
+        name: z.string().optional().describe("새 프로젝트명(이름 변경 시) 전체 문자열. ★형식=[PV-id] [Piccoma중일] {일본어FIX}({한국어}). （仮）·(O)·중국어 원제는 제거, 태그는 카카오픽코마가 아니라 Piccoma중일. 예: [PV-210009] [Piccoma중일] 究極の選ばれし者(최강 선인의 고교생 환생기)"),
       },
       async ({ work, pivo, action, name }) => {
         try {
