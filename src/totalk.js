@@ -87,49 +87,41 @@ async function loadWorkerMap() {
   return map;
 }
 
-// ── 중일 작품 필터: 출판사 드라이브 링크(I열 PIVO) → projectUuid 집합 ──────
-// ToTalk 멘션을 '중일 작품(이 시트에 있는 작품)'으로만 한정하기 위한 캐시. PIVO→uuid는 증분·영속.
-const JUNGIL_FILE = "data/jungil-uuids.json";
+// ── 중일 작품 필터 + APM: 출판사 드라이브 링크(A열 APM · I열 PIVO) ──────
+// 멘션 프로젝트명의 PV-숫자가 이 시트에 있으면 중일 작품(발송 대상). 담당 APM도 여기서.
+// (개발팀이 mentions 응답에 프로젝트명 추가 → PIVO→uuid 변환 불필요, 시트 1회 읽기로 끝)
+const JUNGIL_FILE = "data/jungil.json";
 const PUB_SHEET_ID = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
 const PUB_TAB = "출판사 드라이브 링크";
+const PUB_APM_COL = 0;    // A열 = APM 이름
 const PUB_PIVO_COL = 8;   // I열 = PIVO ID
-let _jungil = null;       // { pivoToUuid:{}, uuids:Set }
+const APM_SLACK = { "서주원": "U07E0QPL8MV", "정태영": "U05CE8HFA6B", "박재상": "U04463JR4HH" };   // APM 이름→Slack ID
+let _jungil = null;       // { pivoApm: { "146958": "정태영", ... } }
 
-function loadJungil() {
-  try { const j = JSON.parse(fs.readFileSync(JUNGIL_FILE, "utf8")); const p2u = j.pivoToUuid || {}; return { pivoToUuid: p2u, uuids: new Set(Object.values(p2u).filter(Boolean)) }; }
-  catch { return { pivoToUuid: {}, uuids: new Set() }; }
-}
-function saveJungil(c) { try { fs.mkdirSync("data", { recursive: true }); fs.writeFileSync(JUNGIL_FILE, JSON.stringify({ builtAt: new Date().toISOString(), pivoToUuid: c.pivoToUuid })); } catch (e) { console.warn("[totalk] jungil 저장 실패:", e.message); } }
+function loadJungil() { try { const j = JSON.parse(fs.readFileSync(JUNGIL_FILE, "utf8")); return { pivoApm: j.pivoApm || {} }; } catch { return { pivoApm: {} }; } }
+function saveJungil(c) { try { fs.mkdirSync("data", { recursive: true }); fs.writeFileSync(JUNGIL_FILE, JSON.stringify({ builtAt: new Date().toISOString(), pivoApm: c.pivoApm })); } catch (e) { console.warn("[totalk] jungil 저장 실패:", e.message); } }
 
-async function resolvePivoUuid(pivo) {
-  try {
-    const r = await (await fetch(`${BASE()}/api/v1/projects?pivoId=${encodeURIComponent(pivo)}`, { headers: { Authorization: `Bearer ${TOKEN()}` } })).json();
-    const arr = r.data || [];
-    const hit = arr.find((x) => String(x.프로젝트 || "").includes("PV-" + pivo)) || arr[0];
-    return hit?.uuid || null;
-  } catch { return null; }
-}
-
-// 출판사 드라이브 링크 PIVO 목록 읽어 미해결분만 uuid 해석(증분). 오래 걸릴 수 있어 하루 1회/부팅 시만.
+// 출판사 드라이브 링크에서 PIVO→APM 맵 갱신(TOTUS 호출 없이 시트 1회 읽기).
 export async function refreshJungil() {
-  const cache = _jungil || loadJungil();
+  const cache = { pivoApm: {} };
   try {
     const tok = await getReadToken();
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${PUB_SHEET_ID}/values/${encodeURIComponent(PUB_TAB + "!A:I")}`;
     const j = await (await fetch(url, { headers: { Authorization: `Bearer ${tok}` } })).json();
-    if (j.error) { console.error("[totalk] 출판사시트 읽기 실패:", j.error.message); _jungil = cache; return cache; }
-    const pivos = new Set();
-    for (const row of (j.values || []).slice(1)) { const p = String(row[PUB_PIVO_COL] || "").trim(); if (/^\d{4,}$/.test(p)) pivos.add(p); }
-    let added = 0;
-    for (const p of pivos) { if (cache.pivoToUuid[p]) continue; const u = await resolvePivoUuid(p); if (u) { cache.pivoToUuid[p] = u; added++; } }
-    cache.uuids = new Set(Object.values(cache.pivoToUuid).filter(Boolean));
+    if (j.error) { console.error("[totalk] 출판사시트 읽기 실패:", j.error.message); return _jungil || loadJungil(); }
+    for (const row of (j.values || []).slice(1)) {
+      const p = String(row[PUB_PIVO_COL] || "").trim();
+      if (/^\d{4,}$/.test(p)) cache.pivoApm[p] = String(row[PUB_APM_COL] || "").trim();
+    }
     _jungil = cache; saveJungil(cache);
-    console.log(`[totalk] 중일 캐시: ${cache.uuids.size} uuid (신규 ${added}, 시트 PIVO ${pivos.size})`);
-  } catch (e) { console.error("[totalk] 중일 캐시 갱신 실패:", e.message); _jungil = cache; }
-  return cache;
+    console.log(`[totalk] 중일 캐시: ${Object.keys(cache.pivoApm).length} 작품(PIVO→APM)`);
+  } catch (e) { console.error("[totalk] 중일 캐시 갱신 실패:", e.message); _jungil = _jungil || loadJungil(); }
+  return _jungil;
 }
 
-function jungilSet() { if (!_jungil) _jungil = loadJungil(); return _jungil.uuids; }
+function jungilMap() { if (!_jungil) _jungil = loadJungil(); return _jungil.pivoApm; }
+// APM 이름 → @멘션 문자열(맵에 있으면 <@id>, 없으면 이름+님, 비면 '-')
+function apmMention(name) { const n = String(name || "").trim(); if (!n) return "-"; return APM_SLACK[n] ? `<@${APM_SLACK[n]}>` : `${n} 님`; }
 
 // ── 히스토리 시트 append ──────────────────────────────────
 async function logToSheet(mention, workerName, workerEmail, sent, reason) {
@@ -190,9 +182,9 @@ export async function pollOnce(slackClient, opts = {}) {
     const emails = [...map.keys()];
     if (!emails.length) { console.warn("[totalk] 이메일 없음"); return { dryRun, count: 0, items: [] }; }
 
-    // 중일 작품 필터 준비(비어있으면 1회 빌드). 이후 mention.프로젝트UUID ∈ 집합만 통과.
-    let jset = jungilSet();
-    if (jset.size === 0) { console.log("[totalk] 중일 캐시 비어있음 — 빌드"); await refreshJungil(); jset = jungilSet(); }
+    // 중일 작품 필터 준비(PIVO→APM 맵, 비어있으면 1회 빌드). 멘션 프로젝트명의 PV-숫자가 맵에 있으면 통과.
+    let pmap = jungilMap();
+    if (!Object.keys(pmap).length) { console.log("[totalk] 중일 캐시 비어있음 — 빌드"); await refreshJungil(); pmap = jungilMap(); }
 
     let sent = 0, unmapped = 0, skipped = 0, notJungil = 0;
     const items = [];   // 미리보기(초안)용 수집
@@ -215,15 +207,21 @@ export async function pollOnce(slackClient, opts = {}) {
         const info   = map.get(email);
 
         for (const mention of (worker.멘션목록 || [])) {
-          if (!jset.has(mention.프로젝트UUID)) { notJungil++; continue; }   // 중일 작품만(출판사 드라이브 링크 시트 기준)
+          const pm = String(mention.프로젝트명 || "").match(/PV-(\d{4,})/);   // 프로젝트명의 PV-숫자
+          const pivo = pm ? pm[1] : null;
+          if (!pivo || !(pivo in pmap)) { notJungil++; continue; }   // 중일 작품만(출판사 드라이브 링크 시트 기준)
           const raw  = mention.에디터링크?.[0];
           const link = raw ? (raw.startsWith("http") ? raw : TOTUS_EDITOR_BASE + raw) : null;
           const who  = info?.slackId ? `<@${info.slackId}>` : name;   // 멘션 당한 작업자를 @ 멘션
           const title = String(mention.프로젝트명 || "").replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();   // 작품명(대괄호 태그 제거)
+          const apm = apmMention(pmap[pivo]);   // 담당 APM @멘션
+          const body = String(mention.본문 || "").slice(0, 500);
           const text = [
-            `🔔 *[토톡 멘션]* ${who} 님께 멘션이 왔습니다`,
-            title ? `📗 ${title}` : null,
-            (mention.본문 || "").slice(0, 300),
+            `📩 *Totalk 알림*`,
+            `작품명 : ${title}`,
+            `담당자 : ${apm}`,
+            `본문 : ${who} ${body}`,
+            `수신일시 : ${mention.생성일시 || ""}`,
             link ? `🔗 ${link}` : null,
           ].filter(Boolean).join("\n");
 
@@ -240,7 +238,7 @@ export async function pollOnce(slackClient, opts = {}) {
             const dmRes = await slackClient.conversations.open({ users: PM_SLACK_ID() });
             const dmCh  = dmRes.channel?.id;
             if (dmCh) await slackClient.chat.postMessage({ channel: dmCh, unfurl_links: false,
-              text: [`⚠️ <@${PM_SLACK_ID()}> 토톡 멘션 미발송 — 채널 미등록`, `작업자: ${name} (${email})`, (mention.본문 || "").slice(0, 150), link ? `🔗 ${link}` : null].filter(Boolean).join("\n") });
+              text: `⚠️ <@${PM_SLACK_ID()}> 토톡 멘션 미발송 — 작업자(${name} / ${email}) 채널 미등록\n\n${text}` });
             await logToSheet(mention, name, email, false, "채널미등록");
             unmapped++;
           } else {
