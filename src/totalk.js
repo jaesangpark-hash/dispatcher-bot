@@ -126,8 +126,15 @@ function logSent(email, name, channel, ts) {
   catch (e) { console.warn("[totalk] ts 기록 실패:", e.message); }
 }
 
-// ── since 커서 ──────────────────────────────────────────
+// ── 중복 차단: 이미 발송/처리한 코멘트UUID 집합(재기동에도 유지) ──────
+const SEEN_FILE = "data/totalk-seen.json";
+function loadSeen() { try { return new Set(JSON.parse(fs.readFileSync(SEEN_FILE, "utf8"))); } catch { return new Set(); } }
+function saveSeen(set) { try { fs.mkdirSync("data", { recursive: true }); fs.writeFileSync(SEEN_FILE, JSON.stringify([...set].slice(-3000))); } catch (e) { console.warn("[totalk] seen 저장 실패:", e.message); } }
+
+// ── since 커서(파일 영속) ────────────────────────────────
+const SINCE_FILE = "data/totalk-since.json";
 let _since = null;
+function saveSince(iso) { try { fs.mkdirSync("data", { recursive: true }); fs.writeFileSync(SINCE_FILE, JSON.stringify({ since: iso })); } catch {} }
 
 // ── 폴링 1회 ─────────────────────────────────────────────
 // opts.dryRun=true(기본): 발송/기록/커서이동 없이 새 멘션 목록만 반환(초안용).
@@ -139,8 +146,9 @@ export async function pollOnce(slackClient, opts = {}) {
     const emails = [...map.keys()];
     if (!emails.length) { console.warn("[totalk] 이메일 없음"); return { dryRun, count: 0, items: [] }; }
 
-    let sent = 0, unmapped = 0;
+    let sent = 0, unmapped = 0, skipped = 0;
     const items = [];   // 미리보기(초안)용 수집
+    const seen = dryRun ? null : loadSeen();   // 발송 모드에서만 중복 차단
 
     for (let i = 0; i < emails.length; i += BATCH_SIZE) {
       const batch  = emails.slice(i, i + BATCH_SIZE);
@@ -172,6 +180,10 @@ export async function pollOnce(slackClient, opts = {}) {
 
           if (dryRun) continue;   // 초안 모드: 발송/기록 안 함
 
+          const cid = mention.코멘트UUID;
+          if (cid && seen.has(cid)) { skipped++; continue; }   // 이미 발송한 멘션 → 중복 차단
+          if (cid) seen.add(cid);                              // 이번에 처리 표시(성공/실패 무관, 재발송 방지)
+
           if (!info?.channelId) {
             // 채널 미등록 → PM DM
             const dmRes = await slackClient.conversations.open({ users: PM_SLACK_ID() });
@@ -196,9 +208,11 @@ export async function pollOnce(slackClient, opts = {}) {
       console.log(`[totalk] 초안 조회 ${items.length}건 (발송 안 함)`);
       return { dryRun: true, count: items.length, items };
     }
+    saveSeen(seen);                          // 처리한 코멘트UUID 영속
     _since = new Date().toISOString();
-    console.log(`[totalk] 발송 ${sent}건 / 미매핑 ${unmapped}건`);
-    return { dryRun: false, sent, unmapped, since: _since };
+    saveSince(_since);                       // 커서 영속(재기동에도 diff만)
+    console.log(`[totalk] 발송 ${sent}건 / 미매핑 ${unmapped}건 / 중복스킵 ${skipped}건`);
+    return { dryRun: false, sent, unmapped, skipped, since: _since };
   } catch (e) {
     console.error("[totalk] 폴링 오류:", e.message);
     return { error: e.message };
@@ -213,11 +227,15 @@ export function tickTotalk(slackClient) {
   pollOnce(slackClient).catch(e => console.error("[totalk] tick 오류:", e.message));
 }
 
-// ── since 초기화: 오늘 KST 자정 ──────────────────────────
+// ── since 초기화: 저장된 커서 복원(재기동에도 diff만), 없으면 오늘 KST 자정 ──
 export function initSince() {
+  try {
+    const s = JSON.parse(fs.readFileSync(SINCE_FILE, "utf8"));
+    if (s?.since) { _since = s.since; console.log(`[totalk] since 복원: ${_since}`); return; }
+  } catch {}
   const kstNow = new Date(Date.now() + 9 * 3600 * 1000);
   _since = new Date(
     Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()) - 9 * 3600 * 1000
   ).toISOString();
-  console.log(`[totalk] since 초기화: ${_since}`);
+  console.log(`[totalk] since 초기화(자정): ${_since}`);
 }
