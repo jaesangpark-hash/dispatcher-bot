@@ -192,7 +192,7 @@ export async function pollOnce(slackClient, opts = {}) {
 
     for (let i = 0; i < emails.length; i += BATCH_SIZE) {
       const batch  = emails.slice(i, i + BATCH_SIZE);
-      const params = new URLSearchParams({ emails: batch.join(","), read: "false", size: "100" });
+      const params = new URLSearchParams({ emails: batch.join(","), read: "false", activeOnly: "true", size: "100" });
       if (_since) params.set("since", _since);
 
       const json = await (await fetch(`${BASE()}/api/v1/totalk/mentions?${params}`, {
