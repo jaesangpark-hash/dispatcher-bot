@@ -92,8 +92,13 @@ export async function buildFeedback({ work, episode, batch }) {
     "",
     sections.join("\n"),
   ].join("\n");
-  const mentionReal = `${apmId ? `<@${apmId}>` : `@${w.apm || "?"}`} CC <@${OWNER_ID}>`;     // 실제 발송용(멘션)
-  const mentionPreview = `@${w.apm || "?"} CC @박재상`;                                        // 미리보기용(멘션 핑 방지)
+  // 학습규칙#7: ワタナベ(와타나베, 作業者ID 38203)가 평가자에 포함되면 CC에 에리나(U075B3S7VPD) 추가.
+  const ERINA_ID = "U075B3S7VPD";
+  const hasWatanabe = [transRow, lgRow, ...qaRows].filter(Boolean).some((x) => trim(x.r[C.workerId]) === "38203" || /ワタナベ|와타나베|watanabe/i.test(qaNameOf(x)));
+  const extraReal = hasWatanabe ? ` <@${ERINA_ID}>` : "";
+  const extraPrev = hasWatanabe ? " @에리나" : "";
+  const mentionReal = `${apmId ? `<@${apmId}>` : `@${w.apm || "?"}`} CC <@${OWNER_ID}>${extraReal}`;     // 실제 발송용(멘션)
+  const mentionPreview = `@${w.apm || "?"} CC @박재상${extraPrev}`;                                        // 미리보기용(멘션 핑 방지)
 
   return {
     found: true,
