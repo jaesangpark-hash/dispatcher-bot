@@ -15,7 +15,7 @@ const APM_SLACK = { "서주원": "U07E0QPL8MV", "정태영": "U05CE8HFA6B" };
 const OWNER_ID = "U04463JR4HH";             // 박재상 (CC 고정)
 // 정성품질검수자(=배치의 2번째 翻訳ck(チェッカー)) 作業者ID(O열) → 한글 이름. 새 검수자는 여기 추가.
 // 시트 L열은 로마자라, 발송 메시지에서만 이 한글 표기를 쓴다(매핑 없으면 L열 값으로 폴백).
-const QA_KO = { "215635": "바바 아야코", "26223": "우메자키 에이코", "9322": "가츠라 이치로", "38203": "와타나베", "22716": "덴 유카", "20536": "모리시타 토모미", "31680": "타무라 에미" };
+const QA_KO = { "215635": "바바 아야코", "26223": "우메자키 에이코", "9322": "가츠라 이치로", "38203": "와타나베", "22716": "덴 유카", "20536": "모리시타 토모미", "31680": "타무라 에미", "326350": "아키야마 미유" };
 
 const trim = (s) => String(s ?? "").trim();
 // "2026/6/22" / "2026-06-22" → 비교 가능한 정수(yyyymmdd). 못 읽으면 0.
@@ -68,11 +68,13 @@ export async function buildFeedback({ work, episode, batch }) {
   const transRow = latest(sameBatch(byDiv(DIV.trans)).filter((x) => trim(x.r[C.translator])));
   // 3) LG = 翻訳ck(チェッカー) 중 이름(K) 있는 행
   const lgRow = latest(sameBatch(byDiv(DIV.checker)).filter((x) => trim(x.r[C.lg])));
-  // 4) 정성품질검수자 = 배치의 2번째 翻訳ck(チェッカー)(시트 순서). 이름은 한글(QA_KO)>L열 순.
+  // 4) 정성품질검수자 = LG로 잡힌 행을 뺀 나머지 翻訳ck(チェッカー) 전부(여러 명 가능). 이름은 한글(QA_KO)>L열>ID 순.
   const checkersBatch = sameBatch(byDiv(DIV.checker));
-  const qaRow = checkersBatch[1] || null;
-  const qaId = qaRow ? trim(qaRow.r[C.workerId]) : "";
-  const qaName = qaRow ? (QA_KO[qaId] || trim(qaRow.r[C.qaName]) || (qaId ? `ID:${qaId}` : "")) : "";
+  const qaNameOf = (x) => { const id = trim(x.r[C.workerId]); return QA_KO[id] || trim(x.r[C.qaName]) || (id ? `ID:${id}` : ""); };
+  const qaRows = checkersBatch.filter((x) => x !== lgRow && (trim(x.r[C.workerId]) || trim(x.r[C.qaName])));
+  const qaNames = qaRows.map(qaNameOf).filter(Boolean);
+  const qaName = qaNames[0] || "";
+  const qaId = qaRows[0] ? trim(qaRows[0].r[C.workerId]) : "";
 
   // ── 메시지 조립: 섹션별 [헤더] + 코드블록(코멘트 + 빈줄 + 등급) ──
   // 회색 박스 = 코드블록(```). 헤더는 박스 밖 일반 텍스트. 멘션·제목은 박스 밖(렌더링).
@@ -81,7 +83,7 @@ export async function buildFeedback({ work, episode, batch }) {
   const sections = [blk("[총평]", sochong.r[C.memo], sochong.r[C.grade])];
   if (transRow) { sections.push(blk(`[번역가] ${trim(transRow.r[C.translator])}`, transRow.r[C.memo], transRow.r[C.grade])); rowsToMark.push(transRow.sheetRow); }
   if (lgRow) { sections.push(blk(`[LG] ${trim(lgRow.r[C.lg])}`, lgRow.r[C.memo], lgRow.r[C.grade])); rowsToMark.push(lgRow.sheetRow); }
-  if (qaRow && qaName && qaRow !== lgRow) { sections.push(blk(`[${qaName}님]`, qaRow.r[C.memo], qaRow.r[C.grade])); rowsToMark.push(qaRow.sheetRow); }
+  for (const qaRow of qaRows) { const nm = qaNameOf(qaRow); if (nm) { sections.push(blk(`[${nm}님]`, qaRow.r[C.memo], qaRow.r[C.grade])); rowsToMark.push(qaRow.sheetRow); } }
   // 제목의 <작품>은 &lt;&gt;로 이스케이프(슬랙이 <...>를 링크로 오해하지 않게). 회차는 epStr만(F는 회차 아님).
   const epLabel = epStr ? `${epStr}화 ` : "";
   const body = [
@@ -101,8 +103,8 @@ export async function buildFeedback({ work, episode, batch }) {
     episode: epStr, batchNote, batchType: batchNote || (wantResubmit ? "再提出･追話" : "初回分"), batchDate: trim(sochong.r[C.date]),
     rowsToMark,                                  // N열(피드백 공유) TRUE 표시 대상 시트 행
     markRange: (row) => `${WORK_LOG}!N${row}`,
-    qaName, qaId,
-    missing: { translator: !transRow, lg: !lgRow, qa: !(qaRow && qaName), apm: !apmId },
+    qaName, qaId, qaNames,
+    missing: { translator: !transRow, lg: !lgRow, qa: !qaNames.length, apm: !apmId },
   };
 }
 
