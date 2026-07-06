@@ -1190,6 +1190,20 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("outline_children",
+      "Outline에서 특정 부모 문서의 하위 문서 목록(제목·생성일·url·id)을 반환한다. doc 생략 시 *자동화 정기 스크럼 부모 문서* 하위 = 주차별 회의록 목록. ★스크럼 주차 비교(지난주 vs 이번주)는 검색이 부정확하니 이걸 먼저 써서 목록을 받고, 원하는 주차(예 07-01·2026-07-08)를 골라 outline_read로 본문을 읽어라. 제목 날짜 형식은 '(MM-DD)' 또는 '(YYYY-MM-DD)'.",
+      { doc: z.string().optional().describe("부모 문서 ID/urlId/URL. 생략 시 스크럼 부모(OUTLINE_PARENT_DOC_ID)") },
+      async (a) => {
+        try {
+          const parent = a.doc ? outlineDocId(a.doc) : process.env.OUTLINE_PARENT_DOC_ID;
+          if (!parent) return { content: [{ type: "text", text: JSON.stringify({ error: "부모 문서 미지정(doc 인자 또는 OUTLINE_PARENT_DOC_ID 필요)" }) }] };
+          const j = await outlineApi("documents.list", { parentDocumentId: parent, limit: 30 });
+          if (!j) return { content: [{ type: "text", text: JSON.stringify({ error: "Outline 토큰 미설정(OUTLINE_API_TOKEN)" }) }] };
+          const list = (j.data || []).sort((x, y) => new Date(x.createdAt) - new Date(y.createdAt)).map((d) => ({ id: d.id, title: d.title, createdAt: (d.createdAt || "").slice(0, 10), url: d.url }));
+          return { content: [{ type: "text", text: capJson(list) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("query_schedule",
       "중일 '고객사 스케줄 시트'(내부 납품 시트와 다름) 조회. 블록 구조라 일반 query_sheet/read_tab으로는 안 되고 이 도구로만. mode: 'launch'(★특정 회차의 런칭일=주차별 リリース日 + 그 주차 납품예정일. work나 pivo + episode. PIVO ID로 정확매칭하니 가장 신뢰도 높음) · 'delivery_on'(특정 날짜에 납품 예정인 회차 집계, date 필수 예 '6/19') · 'missing'(런칭 임박인데 原本 미수급 회차, monthsAhead 기본1) · 'work'(작품별 주차 스케줄 전체, work 필수). 작품명·고객사 일정·원본 수급·런칭/납품 회차 질문은 여기로. ★'○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일 → mode:launch.",
       { mode: z.enum(["launch", "delivery_on", "missing", "work"]).describe("조회 종류"), date: z.string().optional().describe("delivery_on용 날짜 M/D (예 6/19)"), work: z.string().optional().describe("work/launch용 작품명(한/일/중 무엇이든)"), pivo: z.string().optional().describe("launch용 PIVO ID(있으면 가장 정확). 작품명 대신/병행 사용"), episode: z.string().optional().describe("launch용 회차 번호(예 '289'). 생략 시 주차 전체 반환"), monthsAhead: z.number().optional().describe("missing용 런칭 임박 개월(기본 1)") },
@@ -1595,7 +1609,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__find_thread", "mcp__apm__read_thread",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
