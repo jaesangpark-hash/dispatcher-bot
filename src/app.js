@@ -2473,6 +2473,11 @@ async function checkWeeklyScrum() {
     if (st.last === wk) return;                                  // 이번 주 이미 발송
     const dstr = kst.toISOString().slice(0, 10);
     const dow = ["일", "월", "화", "수", "목", "금", "토"][kst.getUTCDay()];
+    // 회의일(기본 수요일) 기준 — 공지는 월요일에 나가지만 회의록·문구는 회의일 기준. WEEKLY_SCRUM_MEETING_DAY(0=일…3=수)
+    const meetDay = Number(process.env.WEEKLY_SCRUM_MEETING_DAY ?? 3);
+    const mtg = new Date(kst); mtg.setUTCDate(mtg.getUTCDate() + ((meetDay - kst.getUTCDay() + 7) % 7));
+    const mdate = mtg.toISOString().slice(0, 10);
+    const mdow = ["일", "월", "화", "수", "목", "금", "토"][mtg.getUTCDay()];
     // Outline 회의록(마크다운) — 참가자별 섹션. 참가자 = WEEKLY_SCRUM_MEMBERS(쉼표)
     const members = (process.env.WEEKLY_SCRUM_MEMBERS || "").split(",").map((s) => s.trim()).filter(Boolean);
     const section = (nm) => [
@@ -2498,9 +2503,9 @@ async function checkWeeklyScrum() {
       `| --- | --- | --- |`,
       `|  |  |  |`,
     ].join("\n");
-    const title = `자동화 정기 스크럼 — ${dstr}`;
+    const title = `자동화 정기 스크럼 — ${mdate}`;
     const body = [
-      `# 자동화 정기 스크럼 (${dstr} ${dow})`,
+      `# 자동화 정기 스크럼 (${mdate} ${mdow})`,
       ``,
       `## 🎯 목적`,
       `각자 자동화 희망·필요 주제를 리스트업 → 난이도·임팩트로 우선순위 결정 → 순차 개발.`,
@@ -2522,9 +2527,9 @@ async function checkWeeklyScrum() {
     st.last = wk; try { writeFileSync("data/weekly-scrum.json", JSON.stringify(st)); } catch { /* 무시 */ }
     const mentions = process.env.WEEKLY_SCRUM_MENTIONS || "";
     const lines = [
-      `📣 *자동화 정기 스크럼* — ${dstr} (${dow})`,
+      `📣 *자동화 정기 스크럼* — ${mdate}(${mdow}) 회의`,
       mentions,
-      `이번 주 자동화 스크럼이에요. 각자 섹션에 *자동화 중 / 하고 싶은 항목*과 *막힌 부분*을 채워주세요 🙌`,
+      `${mdow}요일 회의 전에 아래 회의록에 각자 *자동화 중 / 하고 싶은 항목*·*막힌 부분*을 미리 채워주세요 🙌`,
       `🎯 주제 리스트업 → 우선순위 → 순차 개발 · 공유/피드백으로 중복작업 방지`,
       docUrl ? `📄 회의록: ${docUrl}` : `_📄 회의록 링크는 Outline 연동(토큰) 후 자동 첨부돼요._`,
     ].filter(Boolean);
