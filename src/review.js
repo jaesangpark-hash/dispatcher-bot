@@ -71,26 +71,36 @@ function buildPairs(arr) {
 }
 
 // 메인: 작품명+회차 → {work, episode, pivo, stage, taskUuid, url, count, pairs} 또는 {error}
-export async function extractEpisode({ work, episode, lang = "ko-ja", stage = null }) {
-  const pv = await pivoForWork(work, lang);
-  if (pv.error) return pv;
-  const uu = await uuidForPivo(pv.pivo);
+export async function extractEpisode({ work, episode, lang = "ko-ja", stage = null, pivo = null }) {
+  // PIVO 직접 지정(또는 work가 순수 숫자)이면 납품시트 이름매칭을 건너뛰고 TOTUS로 바로 해석 — 납품시트 미등록 작품도 검수 가능
+  let usePivo = pivo && String(pivo).trim();
+  if (!usePivo && /^\d{4,}$/.test(String(work || "").trim())) usePivo = String(work).trim();
+  let projectName;
+  if (usePivo) {
+    projectName = null;                                   // uuidForPivo에서 이름 확보
+  } else {
+    const pv = await pivoForWork(work, lang);
+    if (pv.error) return pv;
+    usePivo = pv.pivo; projectName = pv.projectName;
+  }
+  const uu = await uuidForPivo(usePivo);
   if (uu.error) return uu;
+  if (!projectName) projectName = String(uu.name || work || `PV-${usePivo}`).replace(/\[[^\]]*\]\s*/g, "").trim() || `PV-${usePivo}`;
   const byCode = await tasksForEpisode(uu.uuid, episode);
-  if (!Object.keys(byCode).length) return { error: `${pv.projectName} ${episode}화 task 없음 (회차 표기/진행상태 확인)` };
+  if (!Object.keys(byCode).length) return { error: `${projectName} ${episode}화 task 없음 (회차 표기/진행상태 확인)` };
   const order = stage && STAGE_BY_NAME[stage] ? [{ code: STAGE_BY_NAME[stage], name: stage }] : STAGE_ORDER;
   for (const s of order) {
     if (!byCode[s.code]) continue;
     const arr = (await translationText(byCode[s.code]))?.data;
     if (Array.isArray(arr) && arr.length) {
       return {
-        work: pv.projectName, episode: String(episode), pivo: pv.pivo, stage: s.name,
+        work: projectName, episode: String(episode), pivo: usePivo, stage: s.name,
         taskUuid: byCode[s.code], url: EDITOR_URL(byCode[s.code]), count: arr.length, pairs: buildPairs(arr),
       };
     }
   }
   const present = Object.keys(byCode).map((c) => STAGE_ORDER.find((s) => s.code === c)?.name || c).join(", ");
-  return { error: `${pv.projectName} ${episode}화: 텍스트(원문↔번역) 있는 검수단계 없음. 존재 단계: ${present || "없음"} (번역/식자번역검수 미진행 가능)` };
+  return { error: `${projectName} ${episode}화: 텍스트(원문↔번역) 있는 검수단계 없음. 존재 단계: ${present || "없음"} (번역/식자번역검수 미진행 가능)` };
 }
 
 // 브레인이 따를 검수 기준 + 출력 템플릿 (추출 결과 앞에 붙여 반환)

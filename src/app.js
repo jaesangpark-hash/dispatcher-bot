@@ -159,7 +159,7 @@ const DISPATCHER_PROMPT = [
   "- 그 외 운영 시트 → query_sheet (사용 가능한 뷰 목록·필드는 그 도구 설명에 들어있으니 거기 보고 고른다).",
   "query_sheet 효율 규칙(중요): 리스트/현황/기간 질문은 한 번의 호출로 서버측에서 좁혀 가져온다. filterField/filterOp/filterValue(예: 리테이크 미완료=filterField:done, filterOp:neq, filterValue:완료), dateField/dateFrom/dateTo(기간), distinct(중복 제거)를 적극 사용. work 없이 큰 시트를 통째로 가져오거나, 같은 호출을 반복하지 말 것. 한 번에 답이 되도록 필터를 설계해 호출 횟수를 최소화한다.",
   "- TOTUS(작품 진행상황·일정 지연/임박·작업자·번역텍스트·견적) → totus_* 도구. PIVO ID 있으면 totus_quotation으로 projectUuid부터 확보 → 그 uuid로 totus_schedule_summary(일정)·totus_jobs/totus_tasks(작업·상태). 작품명만 있으면 totus_find_project로 uuid. 진행/일정/작업자는 시트보다 TOTUS가 정확. 번역텍스트(totus_translation_text)는 양 많으니 필요한 Task에만.",
-  "- 번역 검수/QA 요청(예: '게임속기연 90 검수', '○○ ○○화 검수해줘') → review_episode(work, episode). 한일이면 lang 생략(ko-ja 기본), 중일이면 zh-ja. 스레드에서 작품명·회차가 보이면 그걸 읽어 호출한다. 도구가 돌려준 [검수 기준]과 pairs로 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성한다(작품/회차/단계 + task URL + 페이지-텍박 + 수정전→후 + 사유). 문제 없으면 '問題なし'. 이 검수표는 그대로 작업자에게 복붙되는 것이니 임의 해설·강조 없이 템플릿만 깔끔히. error가 오면 그 사유를 그대로 전한다.",
+  "- 번역 검수/QA 요청(예: '게임속기연 90 검수', '○○ ○○화 검수해줘') → review_episode(work 또는 pivo, episode). ★맥락에 PIVO ID가 있으면(예 'NNNNNN | [출판사] 작품 / 회차' 리스트나 재상 님이 PIVO를 준 경우) work 대신 **pivo 인자로 넘겨라** — 납품시트에 없는 작품도 TOTUS로 바로 검수된다(납품시트 이름매칭 실패로 '못 찾음' 뜨면 십중팔구 PIVO로 넣어야 하는 경우다). 한일이면 lang 생략(ko-ja 기본), 중일이면 zh-ja(pivo 주면 lang 무관). 스레드에서 작품명·회차·PIVO가 보이면 그걸 읽어 호출한다. 도구가 돌려준 [검수 기준]과 pairs로 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성한다(작품/회차/단계 + task URL + 페이지-텍박 + 수정전→후 + 사유). 문제 없으면 '問題なし'. 이 검수표는 그대로 작업자에게 복붙되는 것이니 임의 해설·강조 없이 템플릿만 깔끔히. error가 오면 그 사유를 그대로 전한다.",
   "★ 검수 결과 전달 규칙: 검수표는 **그냥 네 답변 텍스트로 출력만** 해라 — 시스템이 사용자가 부른 바로 그 자리(스레드/DM)에 자동으로 전달한다. send_message 도구로 직접 보내거나, DM/채널로 따로 발송하거나, 작업자 DB(slack_id/채널)를 조회해 보내려 하지 마라. 'DM으로 보냈다'·'DB에 ID가 없어 못 보냈다' 같은 발송 관련 말도 하지 마라(전달은 시스템 몫). 진행 신호(🔎 추출 완료)도 시스템이 자동으로 띄우니 네가 따로 만들지 마라.",
   "- query_sheet 뷰에 없는 탭을 물으면 → read_tab(탭 이름). 시트 실제 헤더가 곧 필드명이라 사용자가 말한 헤더로 바로 거른다. 표 헤더가 중간 행이면 headerRow 지정. 알려진 6개 시트의 어떤 탭이든 조회 가능.",
   "- 스레드 찾기('○○ 작품 ~~ 스레드 찾아줘', '○○ 관련 논의 어디 있어', 과거 대화/스레드 내용): find_thread(query=작품명+키워드). 등록된 주요 업무 채널들에서 검색해 매칭 스레드를 찾고, 1개로 분명하면 내용(topContent)까지 와서 요약·답+링크. 여러 개면 후보를 보여주고 어느 건지 되묻거나 키워드를 좁힌다(임의 단정 금지). 사용자가 특정 채널을 말하면 channel 인자로. 특정 스레드/링크를 콕 집으면 read_thread. (등록 채널·봇 멤버 범위 내 — 전역 검색 아님)",
@@ -725,17 +725,18 @@ const apmTools = createSdkMcpServer({
       { annotations: { readOnlyHint: true } }
     ),
     tool("review_episode",
-      "웹툰 번역 검수: 작품명+회차만 주면 납품탭에서 PIVO를 찾아 식자번역검수(없으면 번역검수/번역) 텍스트를 추출해 돌려준다. 한일이면 lang 'ko-ja'(기본), 중일이면 'zh-ja'. 검수 요청(예 '게임속기연 90 검수')이면 이 도구를 쓰고, 돌려받은 [검수 기준]대로 pairs를 2패스 검수해 문제 있는 항목만 [출력 템플릿]으로 작성한다. 결과에 error가 있으면 그 메시지를 그대로 사용자에게 전한다. taskUuid 직접 추출(translation_text)은 이 도구를 못 쓸 때만.",
+      "웹툰 번역 검수: 작품명+회차(또는 PIVO ID+회차)로 식자번역검수(없으면 번역검수/번역) 텍스트를 추출해 돌려준다. ★PIVO ID를 알면(맥락에 'NNNNNN | ...' 또는 재상 님이 PIVO를 준 경우) work 대신 pivo에 넣어라 — 그러면 납품시트를 안 거치고 TOTUS로 바로 해석해 납품시트 미등록 작품도 검수된다. 작품명만 있으면 납품탭에서 PIVO를 찾는다(한일 lang 'ko-ja' 기본, 중일 'zh-ja'; pivo를 주면 lang 무관). 돌려받은 [검수 기준]대로 pairs를 2패스 검수해 문제 있는 항목만 [출력 템플릿]으로 작성한다. 결과에 error가 있으면 그 메시지를 그대로 전한다.",
       {
-        work: z.string().describe("작품명(한국어, [출판사] 접두사 없어도 됨)"),
+        work: z.string().optional().describe("작품명(한국어, [출판사] 접두사 없어도 됨). pivo를 주면 생략 가능"),
+        pivo: z.string().optional().describe("PIVO ID(예 196833). 주면 납품시트 안 거치고 TOTUS로 바로 검수 — 맥락에 PIVO가 있으면 이걸 우선 사용"),
         episode: z.string().describe("회차 숫자"),
-        lang: z.enum(["ko-ja", "zh-ja"]).optional().describe("ko-ja=한일(기본), zh-ja=중일"),
+        lang: z.enum(["ko-ja", "zh-ja"]).optional().describe("ko-ja=한일(기본), zh-ja=중일. pivo 지정 시 무관"),
         stage: z.enum(["식자번역검수", "번역검수", "번역"]).optional().describe("검수 대상 단계. 생략 시 텍스트 있는 마지막 단계 자동(식자번역검수>번역검수>번역)"),
       },
       async (a) => {
-        console.log(`[review] 추출 시작: ${a.work} ${a.episode}화 (lang=${a.lang ?? "ko-ja"}${a.stage ? ", " + a.stage : ""})`);
+        console.log(`[review] 추출 시작: ${a.pivo ? "PIVO " + a.pivo : a.work} ${a.episode}화 (lang=${a.lang ?? "ko-ja"}${a.stage ? ", " + a.stage : ""})`);
         try {
-          const r = await extractEpisode({ work: a.work, episode: a.episode, lang: a.lang ?? "ko-ja", stage: a.stage ?? null });
+          const r = await extractEpisode({ work: a.work, episode: a.episode, lang: a.lang ?? "ko-ja", stage: a.stage ?? null, pivo: a.pivo ?? null });
           if (r.error) {
             console.log(`[review] 추출 실패: ${a.work} ${a.episode}화 — ${r.error}`);
             return { content: [{ type: "text", text: JSON.stringify(r) }] };
@@ -754,25 +755,28 @@ const apmTools = createSdkMcpServer({
       "여러 작품을 '순차 검수'할 때 쓴다(예 '위 8작품 하나씩 순차 검수해'). 작품마다 **별도 턴**으로 큐에 넣어, 한 턴=한 작품으로 차례차례 review_episode 검수하게 한다(한 턴에 몰면 타임아웃 나므로 절대 직접 여러 개를 검수하지 말고 이 도구로 큐잉). works=검수할 [{work, episode, lang?}] 목록(사용자/스레드에서 순서대로 파싱). 등록만 하고 즉시 반환하며, 이후 봇이 하나씩 자동으로 검수해 각 결과를 이 자리(스레드/DM)에 올린다.",
       {
         works: z.array(z.object({
-          work: z.string().describe("작품명(한국어)"),
+          work: z.string().optional().describe("작품명(한국어). pivo를 주면 생략 가능"),
+          pivo: z.string().optional().describe("PIVO ID(예 196833). 맥락에 PIVO가 있으면 이걸 넣어라 — 납품시트 안 거치고 TOTUS로 바로 검수"),
           episode: z.string().describe("회차 숫자"),
-          lang: z.enum(["ko-ja", "zh-ja"]).optional().describe("ko-ja=한일, zh-ja=중일"),
+          lang: z.enum(["ko-ja", "zh-ja"]).optional().describe("ko-ja=한일, zh-ja=중일. pivo 지정 시 무관"),
         })).describe("검수할 작품·회차 목록(처리 순서대로)"),
       },
       async ({ works }) => {
         try {
           const ctx = currentCtx;
           if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락을 못 잡음." }) }] };
-          const list = (works || []).filter((w) => w?.work && String(w.episode ?? "").trim());
-          if (!list.length) return { content: [{ type: "text", text: JSON.stringify({ error: "검수할 작품 목록(works)이 비었음. 작품명·회차를 파싱해 넘겨라." }) }] };
+          const list = (works || []).filter((w) => (w?.work || w?.pivo) && String(w.episode ?? "").trim());
+          if (!list.length) return { content: [{ type: "text", text: JSON.stringify({ error: "검수할 작품 목록(works)이 비었음. 작품명(또는 PIVO)·회차를 파싱해 넘겨라." }) }] };
           const reqUser = currentUser;
           list.forEach((w, i) => {
-            const langArg = w.lang ? `, lang="${w.lang}"` : "";
-            const content = `[순차 검수 ${i + 1}/${list.length}] 다음 한 작품만 검수하라(다른 작품은 신경 쓰지 말 것). review_episode(work="${w.work}", episode="${String(w.episode).trim()}"${langArg}) 를 호출하고, 돌려받은 [검수 기준]대로 pairs를 2패스 검수해 문제 있는 항목만 [출력 템플릿]으로 작성하라. 문제 없으면 '${w.work} ${w.episode}화: 問題なし'.`;
+            const label = w.work || `PV-${w.pivo}`;
+            const args = w.pivo ? `pivo="${String(w.pivo).trim()}"` : `work="${w.work}"`;
+            const langArg = w.lang && !w.pivo ? `, lang="${w.lang}"` : "";
+            const content = `[순차 검수 ${i + 1}/${list.length}] 다음 한 작품만 검수하라(다른 작품은 신경 쓰지 말 것). review_episode(${args}, episode="${String(w.episode).trim()}"${langArg}) 를 호출하고, 돌려받은 [검수 기준]대로 pairs를 2패스 검수해 문제 있는 항목만 [출력 템플릿]으로 작성하라. 문제 없으면 '${label} ${w.episode}화: 問題なし'.`;
             queue.push({ content, ctx: { client: ctx.client, channel: ctx.channel, threadTs: ctx.threadTs, ts: ctx.ts, done: false }, user: reqUser });
           });
           if (wake) { const wk = wake; wake = null; wk(); }
-          return { content: [{ type: "text", text: JSON.stringify({ queued: list.length, order: list.map((w) => `${w.work} ${w.episode}`), note: `${list.length}작품을 한 작품씩 차례로 검수하도록 큐에 넣었음. 사용자에겐 '${list.length}작품 순차 검수 시작할게요 — 하나씩 결과 올릴게요'라고만 간단히 알리고, 직접 검수하려 들지 말 것(각 작품은 별도 턴에서 처리됨).` }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ queued: list.length, order: list.map((w) => `${w.work || "PV-" + w.pivo} ${w.episode}`), note: `${list.length}작품을 한 작품씩 차례로 검수하도록 큐에 넣었음. 사용자에겐 '${list.length}작품 순차 검수 시작할게요 — 하나씩 결과 올릴게요'라고만 간단히 알리고, 직접 검수하려 들지 말 것(각 작품은 별도 턴에서 처리됨).` }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
