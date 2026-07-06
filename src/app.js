@@ -2472,12 +2472,62 @@ async function checkWeeklyScrum() {
     let st = {}; try { st = JSON.parse(readFileSync("data/weekly-scrum.json", "utf8")); } catch { /* 첫 실행 */ }
     if (st.last === wk) return;                                  // 이번 주 이미 발송
     const dstr = kst.toISOString().slice(0, 10);
-    const title = `자동화 스크럼 — ${dstr}`;
-    const body = `# 자동화 스크럼 (${dstr})\n\n## 지난 주 한 일\n\n## 이번 주 할 일\n\n## 이슈 · 논의\n`;
+    const dow = ["일", "월", "화", "수", "목", "금", "토"][kst.getUTCDay()];
+    // Outline 회의록(마크다운) — 참가자별 섹션. 참가자 = WEEKLY_SCRUM_MEMBERS(쉼표)
+    const members = (process.env.WEEKLY_SCRUM_MEMBERS || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const section = (nm) => [
+      `## 👤 ${nm || "(이름)"}`,
+      `### 🤖 AI와 나눈 대화 요약`,
+      `_어떤 문제를 물었고 어떻게 풀었는지 (Claude·ChatGPT 등) 자유롭게 붙여넣기_`,
+      ``,
+      `### ✅ 자동화 중인 항목`,
+      `| 항목 | 무엇을 자동화 | 도구(n8n/코드봇/GAS) | 상태 | 비고 |`,
+      `| --- | --- | --- | --- | --- |`,
+      `|  |  |  |  |  |`,
+      ``,
+      `### 💡 자동화 하고 싶은 항목`,
+      `| 하고 싶은 것 | 기대 효과 | 예상 난이도 | 우선도 | 필요한 도움/리소스 |`,
+      `| --- | --- | --- | --- | --- |`,
+      `|  |  |  |  |  |`,
+      ``,
+      `### 📎 관련 정보`,
+      `_코드 · 워크플로우 JSON · 시트 링크 · 스크린샷 · API 메모 등_`,
+      ``,
+      `### 🚧 막힌 부분 / 질문`,
+      `| 자동화 항목 | 상세 내용 | 필요한 도움 |`,
+      `| --- | --- | --- |`,
+      `|  |  |  |`,
+    ].join("\n");
+    const title = `자동화 정기 스크럼 — ${dstr}`;
+    const body = [
+      `# 자동화 정기 스크럼 (${dstr} ${dow})`,
+      ``,
+      `## 🎯 목적`,
+      `각자 자동화 희망·필요 주제를 리스트업 → 난이도·임팩트로 우선순위 결정 → 순차 개발.`,
+      `- AI 도움으로도 안 풀리는 부분 논의`,
+      `- 워크플로우 피드백 (운영 단계 리스크 절감·효율화)`,
+      `- 기획 단계 논의 · 완성 후 확장성 피드백 (타 업무 연계)`,
+      `- 만든 자동화 공유(중복 작업 방지) · 효과 KPI 추적 · 참조 워크플로우 공유 · Q&A`,
+      `- 재팬팀 n8n 플레이그라운드`,
+      ``,
+      `## 📝 작성 방법`,
+      `- 아래 각자 섹션의 '자동화 중 / 하고 싶은 항목' 표를 채운다`,
+      `- 관련 정보(코드·링크·스크린샷·n8n JSON)는 자유롭게 첨부`,
+      ``,
+      `---`,
+      ``,
+      members.length ? members.map(section).join("\n\n---\n\n") : section(""),
+    ].join("\n");
     const docUrl = await createOutlineDoc(title, body);
     st.last = wk; try { writeFileSync("data/weekly-scrum.json", JSON.stringify(st)); } catch { /* 무시 */ }
-    const lines = [`📣 *자동화 스크럼* — ${dstr}`, "이번 주 자동화 스크럼입니다. 아래 문서에 지난 주/이번 주 항목 채워주세요 🙌"];
-    lines.push(docUrl ? `📄 문서: ${docUrl}` : "_📄 스크럼 문서 링크는 Outline 연동 후 자동 첨부됩니다._");
+    const mentions = process.env.WEEKLY_SCRUM_MENTIONS || "";
+    const lines = [
+      `📣 *자동화 정기 스크럼* — ${dstr} (${dow})`,
+      mentions,
+      `이번 주 자동화 스크럼이에요. 각자 섹션에 *자동화 중 / 하고 싶은 항목*과 *막힌 부분*을 채워주세요 🙌`,
+      `🎯 주제 리스트업 → 우선순위 → 순차 개발 · 공유/피드백으로 중복작업 방지`,
+      docUrl ? `📄 회의록: ${docUrl}` : `_📄 회의록 링크는 Outline 연동(토큰) 후 자동 첨부돼요._`,
+    ].filter(Boolean);
     await app.client.chat.postMessage({ channel: SCRUM_CHANNEL, text: lines.join("\n"), ...SENDER, unfurl_links: false });
     console.log(`[scrum] 주간 공지 발송 (${dstr}) doc=${docUrl || "없음"}`);
   } catch (e) { console.error("[scrum] 실패:", e?.message ?? e); }
