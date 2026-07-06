@@ -2442,7 +2442,47 @@ async function checkInitiative() {
     }
   } catch (e) { console.error("[initiative] 실패:", e?.message ?? e); }
 }
-async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); }
+// ── 주간 자동화 스크럼 공지 ─────────────────────────────────
+// 매주 지정 요일·시각(1회): (토큰 있으면) Outline 스크럼 문서 생성 → 링크 붙여 공지 채널 발송.
+// 채널(WEEKLY_SCRUM_CHANNEL) 미설정이면 도먼트(안 뜸). Outline 토큰 오면 링크 자동 포함.
+const SCRUM_CHANNEL = process.env.WEEKLY_SCRUM_CHANNEL || "";
+const SCRUM_DAY = Number(process.env.WEEKLY_SCRUM_DAY ?? 1);     // 0=일 … 1=월(기본)
+const SCRUM_HOUR = Number(process.env.WEEKLY_SCRUM_HOUR ?? 10);  // KST 시
+const OUTLINE_BASE = process.env.OUTLINE_BASE || "https://voithru.getoutline.com";
+async function createOutlineDoc(title, text) {
+  const tok = process.env.OUTLINE_API_TOKEN, coll = process.env.OUTLINE_COLLECTION_ID;
+  if (!tok || !coll) return null;   // 토큰/컬렉션 없으면 문서 생성 스킵(링크 없이 공지)
+  try {
+    const r = await fetch(`${OUTLINE_BASE}/api/documents.create`, {
+      method: "POST", headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ title, text, collectionId: coll, publish: true }),
+    });
+    const j = await r.json();
+    if (j?.data?.url) return j.data.url.startsWith("http") ? j.data.url : `${OUTLINE_BASE}${j.data.url}`;
+    console.error("[scrum] Outline 응답 이상:", JSON.stringify(j).slice(0, 200));
+  } catch (e) { console.error("[scrum] Outline 생성 실패:", e?.message ?? e); }
+  return null;
+}
+async function checkWeeklyScrum() {
+  try {
+    if (!SCRUM_CHANNEL) return;
+    const kst = new Date(Date.now() + 9 * 3600 * 1000);
+    if (kst.getUTCDay() !== SCRUM_DAY || kstHourNow() < SCRUM_HOUR) return;
+    const wk = kstDateOf();
+    let st = {}; try { st = JSON.parse(readFileSync("data/weekly-scrum.json", "utf8")); } catch { /* 첫 실행 */ }
+    if (st.last === wk) return;                                  // 이번 주 이미 발송
+    const dstr = kst.toISOString().slice(0, 10);
+    const title = `자동화 스크럼 — ${dstr}`;
+    const body = `# 자동화 스크럼 (${dstr})\n\n## 지난 주 한 일\n\n## 이번 주 할 일\n\n## 이슈 · 논의\n`;
+    const docUrl = await createOutlineDoc(title, body);
+    st.last = wk; try { writeFileSync("data/weekly-scrum.json", JSON.stringify(st)); } catch { /* 무시 */ }
+    const lines = [`📣 *자동화 스크럼* — ${dstr}`, "이번 주 자동화 스크럼입니다. 아래 문서에 지난 주/이번 주 항목 채워주세요 🙌"];
+    lines.push(docUrl ? `📄 문서: ${docUrl}` : "_📄 스크럼 문서 링크는 Outline 연동 후 자동 첨부됩니다._");
+    await app.client.chat.postMessage({ channel: SCRUM_CHANNEL, text: lines.join("\n"), ...SENDER, unfurl_links: false });
+    console.log(`[scrum] 주간 공지 발송 (${dstr}) doc=${docUrl || "없음"}`);
+  } catch (e) { console.error("[scrum] 실패:", e?.message ?? e); }
+}
+async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); }
 
 (async () => {
   await app.start();
