@@ -168,7 +168,7 @@ const DISPATCHER_PROMPT = [
   "- 학습/교정(영구): 재상 님이 '앞으로 ~로 기억해/외워둬', '이건 이렇게 이해해', 또는 내가 잘못 이해한 걸 바로잡아 주면 → remember(note)로 저장한다(재기동에도 유지, 다음부터 자동 적용). '그 규칙 잊어'=forget, '뭐 배웠어'=list_learned. ★단순 '나중에 ~할 일'은 add_reminder(리마인더), 항구적 동작 규칙·별칭·이해 교정은 remember로 구분. 모호하면 '리마인더로 할까요, 규칙으로 외울까요?' 한 줄 확인.",
   "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝내거나 '그만'할 때까지 하루 여러 번 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. 완료('~했어'·'N번 완료'·'해결됐어')거나 중단('그만'·'멈춰'·'이건 그만 리마인드해') 신호 → complete_reminder(번호 또는 내용 일부). 재촉 중인 일을 대화로 처리하다가 '그만/됐어' 신호가 오면 그 항목을 complete_reminder로 빼라.",
   "그 밖에 도구가 없는 일이면, '도구가 없다'를 장황히 설명하지 말고 — 아는 선에서 바로 도움이 되는 답을 주고, 정확한 데이터가 필요하면 어디(어느 시트·채널)를 보면 되는지 한 줄로만 짚어준다.",
-  "★계산·집계·무거운 작업은 compute로(암산·수동 카운트 금지, 타임아웃 방지): 합계·환율·정산·통계·CSV/시트 집계(개수·비율·분류·TOP N)는 머리로 세지 말고 compute로 코드 실행. 첨부 CSV/엑셀은 compute 안 attachments[i].text로 직접 접근(원문 재기입 금지). 시트 대량 집계는 read_tab으로 행을 가져와 compute에 넘겨 계산(수백 행 직접 세지 말 것). ★**무거운 LLM 분석**(수백~수천 행 분류·요약·인사이트 도출처럼 판단이 오래 걸리는 것)은 네가 직접 붙들지 말고 **delegate_analysis로 워커에 넘겨라** — 데이터는 read_tab/compute/첨부로 모아 data에 넣고 task에 지시를 적으면, 워커가 병렬로 처리해 결과를 스레드에 직접 올린다(메인 대화 안 막힘). 산수·집계는 compute로 먼저 끝내고 그 결과만 넘기면 된다. 가벼운 즉답 조회는 그냥 답해라. ★번역 검수는 **무조건 review_queue로 큐잉**(1작품이든 8작품이든). review_queue는 검수 워커 풀(동시 여러 개)에 넘겨 병렬로 돌리고 각 결과를 워커가 스레드에 직접 올리므로, 네가 review_episode를 직접 부르거나 검수 판단을 하지 마라(메인 대화가 막힌다). works=[{work 또는 pivo, episode, lang?}…]로 사용자/스레드에서 순서대로 파싱해 한 번에 넘겨라.",
+  "★계산·집계·무거운 작업은 compute로(암산·수동 카운트 금지, 타임아웃 방지): 합계·환율·정산·통계·CSV/시트 집계(개수·비율·분류·TOP N)는 머리로 세지 말고 compute로 코드 실행. 첨부 CSV/엑셀은 compute 안 attachments[i].text로 직접 접근(원문 재기입 금지). 시트 대량 집계는 read_tab으로 행을 가져와 compute에 넘겨 계산(수백 행 직접 세지 말 것). ★**무거운 LLM 분석**(수백~수천 행 분류·요약·인사이트 도출처럼 판단이 오래 걸리는 것)은 네가 직접 붙들지 말고 **delegate_analysis로 워커에 넘겨라** — 데이터는 read_tab/compute/첨부로 모아 data에 넣고 task에 지시를 적으면, 워커가 병렬로 처리해 결과를 스레드에 직접 올린다(메인 대화 안 막힘). 산수·집계는 compute로 먼저 끝내고 그 결과만 넘기면 된다. 가벼운 즉답 조회는 그냥 답해라. ★**대용량 DB 데이터의 심층·탐색적 분석**(수천 행 크런칭, 반복 정제, 다단계)은 봇이 직접 붙들지 말고 **export_csv로 정제 데이터를 뽑아 주고 '깊은 분석은 클로드 앱에서 하시라'고 안내**하라(툰식이=라이브 데이터 추출·정제, 클로드 앱=무거운 반복 분석). 즉 분류·집계·요약처럼 한 번에 끝나는 판단은 delegate_analysis, 앱으로 넘길 대용량/탐색형은 export_csv. ★번역 검수는 **무조건 review_queue로 큐잉**(1작품이든 8작품이든). review_queue는 검수 워커 풀(동시 여러 개)에 넘겨 병렬로 돌리고 각 결과를 워커가 스레드에 직접 올리므로, 네가 review_episode를 직접 부르거나 검수 판단을 하지 마라(메인 대화가 막힌다). works=[{work 또는 pivo, episode, lang?}…]로 사용자/스레드에서 순서대로 파싱해 한 번에 넘겨라.",
   "★도구 라우팅(엄수·양방향 폴백 금지): ①운영·내부 데이터(작품·납품·일정·작업자·정산·고객사·스케줄 등)는 반드시 내부 도구(get_*·query_sheet·totus_*·read_tab·query_schedule 등)로만 조회한다. 못 찾으면 '못 찾았다'고 답하고 작품명 표기 확인을 요청한다 — 절대 웹으로 넘어가지 마라. ②WebSearch(웹 검색)는 사용자가 '웹에서/검색해줘'라고 명시했거나, 환율·일반상식·뉴스처럼 내부에 있을 리 없는 외부·실시간 정보일 때만 쓴다. 웹에서 못 찾으면 '웹에서 못 찾았다'고 답하고 내부 도구로 폴백하지 마라. ③즉 각 요청은 지정된 한쪽 출처에서만 처리하고, 미스는 '못 찾음'으로 끝낸다(반대편으로 안 넘어감). WebFetch(임의 URL 회수)는 쓰지 말고, 같은 검색을 2회 넘게 재시도하지 마라.",
   "비가역적이거나 고객사로 나가는 동작(발송·삭제·수정)은 절대 임의 실행하지 않고 먼저 확인을 받는다.",
   "모르면 모른다고 솔직하게, 추측이면 추측이라고 표시한다.",
@@ -861,6 +861,34 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("export_csv",
+      "정제한 데이터를 CSV로 내보낸다 — 대용량 DB(시트·TOTUS) 데이터를 **클로드 앱에 붙여넣기/드래그**해서 심층 분석하기 좋게 준다. ★쓰는 법: read_tab/query_sheet/totus_*로 데이터를 확보하고 compute로 **필요한 열만·집계·중복제거**해 CSV 문자열을 만든 뒤 csv에 넣어라. 작으면 복붙용 코드블록, 크면 .csv 파일로 자동 업로드한다. comment에 눈에 띄는 패턴·이상치를 한두 줄 덧붙여도 됨. ★대용량 심층 분석 요청은 무거운 반복 분석을 봇이 직접 붙들지 말고, 이걸로 정제 데이터를 내주고 '깊은 분석은 클로드 앱에서' 안내하라(툰식이=추출·정제, 앱=심층분석).",
+      {
+        title: z.string().describe("파일명/제목 (예 '6월_중일_리테이크')"),
+        csv: z.string().describe("CSV 내용(헤더 포함). read_tab/compute로 만들어 넣어라"),
+        comment: z.string().optional().describe("함께 올릴 간단 소견/안내 한두 줄(선택)"),
+      },
+      async (a) => {
+        try {
+          const ctx = currentCtx;
+          if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락을 못 잡음." }) }] };
+          const csv = String(a.csv || "");
+          if (!csv.trim()) return { content: [{ type: "text", text: JSON.stringify({ error: "csv 내용이 비었음." }) }] };
+          const title = (a.title || "export").replace(/[\\/:*?"<>|]/g, "_").slice(0, 80);
+          const note = a.comment ? String(a.comment).trim() : "";
+          const rows = csv.split(/\r?\n/).filter((l) => l.trim()).length;
+          const thread_ts = ctx.threadTs || ctx.ts;
+          if (csv.length <= 6000) {
+            const text = `${note ? note + "\n\n" : ""}📄 *${title}* (${rows}행) — 복사해서 클로드 앱에 붙여 분석하세요\n\`\`\`\n${csv}\n\`\`\``;
+            await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts, text, ...SENDER });
+            return { content: [{ type: "text", text: JSON.stringify({ delivered: "codeblock", rows, chars: csv.length, note: "코드블록으로 게시함. 사용자에겐 '정제 CSV 올렸어요 — 클로드 앱에 붙여 분석하세요' 정도만 알리고 결과를 재작성하지 말 것." }) }] };
+          }
+          const initial = `📄 ${title}.csv (${rows}행) — 다운로드해 클로드 앱에 드래그하면 심층 분석할 수 있어요${note ? "\n\n" + note : ""}`;
+          await ctx.client.files.uploadV2({ channel_id: ctx.channel, thread_ts, initial_comment: initial, file_uploads: [{ file: Buffer.from(csv, "utf8"), filename: `${title}.csv` }] });
+          return { content: [{ type: "text", text: JSON.stringify({ delivered: "file", rows, chars: csv.length, note: "CSV 파일로 업로드함. 사용자에겐 '정제 CSV 파일 올렸어요 — 클로드 앱에 드래그해 분석하세요' 정도만 알리고 결과를 재작성하지 말 것." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("find_thread",
       "등록된 주요 업무 채널들에서 작품명/키워드로 스레드를 찾아 내용을 가져온다('A작품 최종 리뷰 스레드 찾아줘', '○○ 관련 스레드' 류). query에 작품명+키워드를 자연어 그대로. 채널을 특정하고 싶으면 channel(이름 일부나 ID). 결과가 1개로 분명하면 그 스레드 내용(topContent)까지 같이 와서 바로 요약·답하면 되고, 여러 개면 후보를 사용자에게 보여주고 어느 건지 고르게 하거나 키워드를 더 좁혀라. 못 찾으면 기간(days)·키워드 조정 안내. (등록 채널·봇 멤버 범위 안에서만 — 전역 슬랙 검색 아님)",
       {
@@ -1475,7 +1503,7 @@ function startSession() {
       strictMcpConfig: true,
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
-        "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__find_thread", "mcp__apm__read_thread",
+        "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__find_thread", "mcp__apm__read_thread",
         "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
