@@ -7,7 +7,8 @@ import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import { lookupDelivery } from "./delivery.js";
 import { gasReady, gasQuery } from "./gas.js";
-import { lookupWork } from "./works.js";
+import { lookupWork, koTitleIndex } from "./works.js";
+import { norm } from "./sheets.js";
 import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
 import { setCell, getCell, setCells, getCells } from "./sheets-write.js";
@@ -1670,6 +1671,38 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   }, STALL_NOTICE_MS);
 }
 
+// ── 워치 채널 자동 링크 ──────────────────────────────────────────
+// 박재상/문의봇이 워치 채널에 남긴 메시지에 '한국어 타이틀 정확일치'가 있으면 프로젝트 링크를 자동 답글.
+// 메시지에 '재수급' 언급이 있으면 원본 링크(driveLink)도 함께. 작품명 없으면 침묵. (읽기 전용·선제 액션)
+const WORK_LINK_WATCH = new Set((process.env.WORK_LINK_WATCH_CHANNELS || "C09B8QHP7D4,C06SUD5AFE1").split(",").map((s) => s.trim()).filter(Boolean));
+const INQUIRY_BOT_ID = process.env.INQUIRY_BOT_ID || "B0AL3E0RNCW";   // 문의봇(inquirybot)
+const RESUPPLY_RE = /재수급|재\s*수급|원본\s*다시|원고\s*다시|다시\s*수급/;
+let SELF_BOT_USER = null;   // 툰식이 자신의 Slack user id(멘션 시 app_mention이 처리하도록 자동링크 스킵)
+async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
+  try {
+    if (!text || processed.has("wl:" + ts)) return;
+    if (SELF_BOT_USER && text.includes(`<@${SELF_BOT_USER}>`)) return;   // 툰식이 멘션이면 app_mention(브레인)이 처리
+    processed.add("wl:" + ts);
+    const idx = await koTitleIndex();
+    const tn = norm(text);
+    const hits = idx.filter((x) => x.koNorm && x.koNorm.length >= 2 && tn.includes(x.koNorm));
+    if (!hits.length) return;                                 // 한국어 타이틀 정확일치 없으면 침묵
+    hits.sort((a, b) => b.koNorm.length - a.koNorm.length);   // 가장 구체적인(긴) 제목
+    const hit = hits[0];
+    let urlLine = "🔗 프로젝트: (TOTUS에서 못 찾음)";
+    try {
+      const fp = await findProject(hit.pivoId || hit.koTitle);
+      const proj = (fp?.data || [])[0];
+      if (proj?.uuid) urlLine = `🔗 프로젝트: https://admin.totus.pro/ko/workProgressManagementDetail/?id=${proj.uuid}`;
+    } catch { /* 조회 실패 시 안내 유지 */ }
+    const wantSrc = RESUPPLY_RE.test(text);
+    const lines = [`📁 *${hit.koTitle}*`, urlLine];
+    if (wantSrc) lines.push(hit.driveLink ? `📦 원본: ${hit.driveLink}` : `📦 원본: 시트에 링크 없음 — ${hit.publisher || "출판사"}에서 원제 「${hit.zhTitle || "?"}」로 검색`);
+    await client.chat.postMessage({ channel, thread_ts: threadTs || ts, text: lines.join("\n"), ...SENDER, unfurl_links: false });
+    console.log(`[worklink] ${hit.koTitle} → 프로젝트${wantSrc ? "+원본" : ""} (ch=${channel})`);
+  } catch (e) { console.error("[worklink] 실패:", e?.message ?? e); }
+}
+
 // ── 부팅 ──────────────────────────────────────────────────────────
 const app = new App({
   token: SLACK_BOT_TOKEN,
@@ -1679,6 +1712,16 @@ const app = new App({
 
 // DM (message.im) — 본인 DM만, 봇/수정 이벤트 제외
 app.message(async ({ message, say, client }) => {
+  // 워치 채널 자동 링크 — 박재상 or 문의봇 메시지에서 작품명 감지 → 프로젝트/원본 링크(선제)
+  if (WORK_LINK_WATCH.has(message.channel)) {
+    const edited = message.subtype && !["file_share", "bot_message"].includes(message.subtype);   // 편집·삭제 제외
+    const fromOwner = message.user === OWNER_ID;
+    const fromInquiry = message.bot_id === INQUIRY_BOT_ID;   // 문의봇만(툰식이 자신 제외)
+    if (!edited && (fromOwner || fromInquiry) && message.text) {
+      await handleWorkLinkWatch({ text: message.text, channel: message.channel, ts: message.ts, threadTs: message.thread_ts, client });
+    }
+    return;   // 워치 채널은 여기서 종료(멘션은 app_mention이 별도 처리)
+  }
   if (message.channel_type !== "im") return;           // DM만 (채널 노이즈 차단)
   // 파일 첨부 메시지는 subtype="file_share"라 통과시켜야 함(설정집 업로드 등). 편집·삭제·봇 메시지만 무시.
   if ((message.subtype && message.subtype !== "file_share") || message.bot_id) return;
@@ -2403,6 +2446,7 @@ async function tick() { await checkScheduled(); await checkNag(); await checkIni
 
 (async () => {
   await app.start();
+  try { const a = await app.client.auth.test(); SELF_BOT_USER = a.user_id; } catch { /* self id 조회 실패 무시 */ }
   if (BRAIN_ON) startSession();   // 엔진을 미리 띄워 워밍(콜드스타트 제거)
   initSince();                    // 토톡 since 복원(없으면 KST 자정)
   refreshJungil().catch((e) => console.error("[totalk] 중일 캐시 초기빌드 실패:", e?.message));   // 중일 작품 uuid 집합 백그라운드 빌드

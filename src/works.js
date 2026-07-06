@@ -66,6 +66,21 @@ export async function lookupWork(queryRaw) {
   return { found: false, query: queryRaw, ...(near.length ? { candidates: cand(near) } : {}) };
 }
 
+// 한국어 타이틀 인덱스(재수급 감지용) — koTitle 정확일치 스캔. 10분 캐시.
+let _koIdx = null, _koIdxAt = 0;
+export async function koTitleIndex() {
+  if (_koIdx && Date.now() - _koIdxAt < 600000) return _koIdx;
+  const rows = (await readRange(MASTER, RANGE)).slice(1);
+  const idx = [];
+  for (const r of rows) {
+    const ko = String(r[2] || "").trim();
+    if (!ko) continue;
+    idx.push({ koTitle: ko, koNorm: norm(ko), pivoId: r[8] || null, driveLink: r[7] || null, publisher: r[6] || null, zhTitle: r[1] || null });
+  }
+  _koIdx = idx; _koIdxAt = Date.now();
+  return idx;
+}
+
 // 다른 시트 검색용: 입력 → 작품의 모든 제목 후보 [한국어, 가제, FIX]
 export async function resolveTitleAliases(queryRaw) {
   const hit = await resolveWorkRow(queryRaw);
