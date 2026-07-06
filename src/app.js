@@ -368,6 +368,8 @@ function retakeBlocks(rkId, p) {
 
 // 큰 JSON 응답이 컨텍스트를 폭발시키지 않게 컷 (TOTUS 등)
 const capJson = (obj) => { const s = JSON.stringify(obj); return s.length > 8000 ? s.slice(0, 8000) + `\n…(전체 ${s.length}자 중 8000자만. 필터/대상 좁혀 재조회)` : s; };
+// Outline 입력 정규화: 문서 URL이면 urlId(마지막 토큰) 추출, UUID/urlId면 그대로
+function outlineDocId(s) { const t = String(s || "").trim(); const m = t.match(/\/doc\/([^/?#]+)/); return m ? m[1].split("-").pop() : t; }
 const totusTool = (fn) => async (a) => { try { return { content: [{ type: "text", text: capJson(await fn(a)) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } };
 
 // JOB Task 조회 시 '식자검수 이후 후공정'(납품검수·PIVO 납품검수·고객검수·최종검수)은 기본 제외 — 식자검수까지만.
@@ -1165,6 +1167,29 @@ const apmTools = createSdkMcpServer({
       { pageId: z.string().describe("노션 페이지 ID") },
       async (a) => { try { return { content: [{ type: "text", text: capJson(await notionReadPage(a.pageId)) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: true } }),
+    tool("outline_search", "Outline 위키(voithru.getoutline.com)에서 문서를 키워드로 검색(읽기). 결과의 id/url로 outline_read 호출. 스크럼 회의록 등 Outline 문서 찾을 때. (Notion과 별개 — Outline 문서는 이 도구로)",
+      { query: z.string().describe("검색 키워드") },
+      async (a) => {
+        try {
+          const j = await outlineApi("documents.search", { query: a.query, limit: 10 });
+          if (!j) return { content: [{ type: "text", text: JSON.stringify({ error: "Outline 토큰 미설정(OUTLINE_API_TOKEN)" }) }] };
+          const hits = (j.data || []).map((h) => ({ id: h.document?.id, title: h.document?.title, url: h.document?.url, context: h.context }));
+          return { content: [{ type: "text", text: capJson(hits) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
+    tool("outline_read", "Outline 위키 문서 본문을 마크다운 텍스트로 읽는다. 문서 ID(UUID)·urlId·문서 URL(voithru.getoutline.com/doc/...) 무엇이든 넣으면 됨. 스크럼 회의록 등 Outline 문서 분석·비교(지난주 vs 이번주 등)에 사용.",
+      { doc: z.string().describe("문서 ID(UUID) / urlId / 문서 URL") },
+      async (a) => {
+        try {
+          const info = await outlineApi("documents.info", { id: outlineDocId(a.doc) });
+          if (!info) return { content: [{ type: "text", text: JSON.stringify({ error: "Outline 토큰 미설정(OUTLINE_API_TOKEN)" }) }] };
+          const d = info.data;
+          if (!d) return { content: [{ type: "text", text: JSON.stringify({ error: "문서를 못 찾음 — ID/URL 또는 접근 권한 확인", raw: JSON.stringify(info).slice(0, 200) }) }] };
+          return { content: [{ type: "text", text: capJson({ title: d.title, url: d.url, updatedAt: d.updatedAt, text: d.text }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("query_schedule",
       "중일 '고객사 스케줄 시트'(내부 납품 시트와 다름) 조회. 블록 구조라 일반 query_sheet/read_tab으로는 안 되고 이 도구로만. mode: 'launch'(★특정 회차의 런칭일=주차별 リリース日 + 그 주차 납품예정일. work나 pivo + episode. PIVO ID로 정확매칭하니 가장 신뢰도 높음) · 'delivery_on'(특정 날짜에 납품 예정인 회차 집계, date 필수 예 '6/19') · 'missing'(런칭 임박인데 原本 미수급 회차, monthsAhead 기본1) · 'work'(작품별 주차 스케줄 전체, work 필수). 작품명·고객사 일정·원본 수급·런칭/납품 회차 질문은 여기로. ★'○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일 → mode:launch.",
       { mode: z.enum(["launch", "delivery_on", "missing", "work"]).describe("조회 종류"), date: z.string().optional().describe("delivery_on용 날짜 M/D (예 6/19)"), work: z.string().optional().describe("work/launch용 작품명(한/일/중 무엇이든)"), pivo: z.string().optional().describe("launch용 PIVO ID(있으면 가장 정확). 작품명 대신/병행 사용"), episode: z.string().optional().describe("launch용 회차 번호(예 '289'). 생략 시 주차 전체 반환"), monthsAhead: z.number().optional().describe("missing용 런칭 임박 개월(기본 1)") },
@@ -1570,7 +1595,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__find_thread", "mcp__apm__read_thread",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
