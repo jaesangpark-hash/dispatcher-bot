@@ -2535,6 +2535,7 @@ async function checkWeeklyScrum() {
     const mtg = new Date(kst); mtg.setUTCDate(mtg.getUTCDate() + ((meetDay - kst.getUTCDay() + 7) % 7));
     const mdate = mtg.toISOString().slice(0, 10);
     const mdow = ["일", "월", "화", "수", "목", "금", "토"][mtg.getUTCDay()];
+    const mdShort = `${mtg.getUTCMonth() + 1}/${mtg.getUTCDate()}`;
     let st = {}; try { st = JSON.parse(readFileSync("data/weekly-scrum.json", "utf8")); } catch { /* 첫 실행 */ }
     if (st.week === mdate) return;                               // 이번 회의 주기 이미 공지
     // 지난주 문서 이어받기(있으면 그 마크다운 그대로 — 링크·첨부 보존), 없으면 빈 템플릿
@@ -2550,9 +2551,7 @@ async function checkWeeklyScrum() {
       `📣 *자동화 정기 스크럼 공지*`,
       ...(mentions ? [mentions] : []),
       ``,
-      `${mdow}요일 회의 전에 아래 회의록에 각자 *자동화 중 / 하고 싶은 항목*·*막힌 부분*을 미리 채워주세요 🙌`,
-      ``,
-      `・ 실시일 : ${mdate}(${mdow})`,
+      `${mdShort}(${mdow}) 회의 전까지 아래 회의록에 한 주간 업데이트 내용을 미리 채워주세요 🙌`,
       ``,
       `🎯 주제 리스트업 → 우선순위 → 순차 개발 · 공유/피드백으로 중복작업 방지`,
       docLine,
