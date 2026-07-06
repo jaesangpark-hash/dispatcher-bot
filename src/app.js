@@ -2545,13 +2545,20 @@ async function checkWeeklyScrum() {
     } catch (e) { console.error("[scrum] 이어받기 실패:", e?.message ?? e); }
     const doc = await createOutlineDoc(`자동화 정기 스크럼 — ${mdate}`, body);
     const mentions = process.env.WEEKLY_SCRUM_MENTIONS || "";
+    const docLine = doc?.url ? `📄 회의록: ${doc.url}` : `_📄 회의록 링크는 Outline 연동(토큰) 후 자동 첨부돼요._`;
     const lines = [
-      `📣 *자동화 정기 스크럼* — ${mdate}(${mdow}) 회의`,
-      mentions,
+      `📣 *자동화 정기 스크럼 공지*`,
+      ...(mentions ? [mentions] : []),
+      ``,
       `${mdow}요일 회의 전에 아래 회의록에 각자 *자동화 중 / 하고 싶은 항목*·*막힌 부분*을 미리 채워주세요 🙌`,
+      ``,
+      `・ 실시일 : ${mdate}(${mdow})`,
+      ``,
       `🎯 주제 리스트업 → 우선순위 → 순차 개발 · 공유/피드백으로 중복작업 방지`,
-      doc?.url ? `📄 회의록: ${doc.url}` : `_📄 회의록 링크는 Outline 연동(토큰) 후 자동 첨부돼요._`,
-    ].filter(Boolean);
+      docLine,
+      ``,
+      `🤖 매주 *수요일 12시*엔 지난 한 주간 무엇이 업데이트됐고 무엇을 확인해야 하는지 툰식이가 자동 분석해서 이 스레드에 정리해드려요.`,
+    ];
     const res = await app.client.chat.postMessage({ channel: SCRUM_CHANNEL, text: lines.join("\n"), ...SENDER, unfurl_links: false });
     st.week = mdate; st.channel = SCRUM_CHANNEL; st.threadTs = res?.ts || null; st.docId = doc?.id || null; st.docUrl = doc?.url || null;
     try { writeFileSync("data/weekly-scrum.json", JSON.stringify(st)); } catch { /* 무시 */ }
