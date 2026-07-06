@@ -2720,16 +2720,21 @@ async function checkWeeklyScrumDiff() {
     const prev = (await outlineChildren()).filter((k) => k.id !== st.docId && !String(k.title || "").includes(mdate)).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
     const prevText = prev ? await outlineDocText(prev.id) : "";
     const prompt = [
-      `[자동화 스크럼 진행 diff] 아래 '지난주'와 '이번주' 회의록을 비교해, 이번 주에 얼마나 진행됐는지 참가자별로 간결히 요약하라.`,
-      `형식: 🆕 신규 / 📈 진행됨(상태·우선도 변화) / ✅ 완료 / 🚧 여전히 막힘(지난주부터 반복이면 강조) / 🔗 중복·연계·이번 주 우선순위 포인트.`,
-      `표 데이터를 의미로 비교하고(문자 비교 아님), 변화 없으면 '변화 없음'이라고만. 슬랙에 그대로 올라가니 군더더기 없이.`,
+      `[자동화 스크럼 진행 diff] 아래 '지난주'와 '이번주' 회의록을 비교해, 이번 주 진행을 참가자별로 요약하라. 표/내용을 *의미로* 비교(문자 비교 아님).`,
+      `출력은 두 부분으로, 사이에 정확히 '===상세===' 한 줄로 구분:`,
+      `[1부 = 슬랙 스레드용 *간략*] 참가자별 딱 1줄(핵심 변화만, 굵게 봇 이름 대신 사람 이름). 실질 변화 없으면 '— 변화 없음'. 군더더기·머리말 없이 불릿만.`,
+      `[2부 = DM용 *상세*] 참가자별로 🆕 신규 / 📈 진행됨(상태·우선도 변화) / ✅ 완료 / 🚧 여전히 막힘(지난주부터 반복이면 강조) / 🔗 중복·연계·주의. 해당 없는 항목은 생략.`,
       ``, `[지난주]`, prevText.slice(0, 9000), ``, `[이번주]`, cur.slice(0, 9000),
     ].join("\n");
-    const summary = await toollessQuery(prompt, { label: "스크럼 diff", channel: SCRUM_CHANNEL });
+    const out = (await toollessQuery(prompt, { label: "스크럼 diff", channel: SCRUM_CHANNEL })) || "";
+    const [brief, detail] = out.includes("===상세===") ? out.split("===상세===") : [out, ""];
     const head = `📊 *회의 전 진행 요약* — ${mdate} 회의${prev ? " (지난 회의 대비)" : ""}`;
-    await app.client.chat.postMessage({ channel: st.channel || SCRUM_CHANNEL, thread_ts: st.threadTs, text: `${head}\n\n${summary || "요약 생성 실패"}`, ...SENDER, unfurl_links: false });
+    // 스레드엔 간략 요약(+상세는 DM 안내)
+    await app.client.chat.postMessage({ channel: st.channel || SCRUM_CHANNEL, thread_ts: st.threadTs, text: `${head}\n\n${brief.trim() || "요약 생성 실패"}${detail.trim() ? `\n\n_상세 diff는 박재상 DM으로 보냈어요._` : ""}`, ...SENDER, unfurl_links: false });
+    // 상세는 박재상 DM
+    if (detail.trim()) await dmOwner(`📊 *스크럼 상세 진행 diff* — ${mdate} 회의 (지난 회의 대비)\n${st.docUrl ? st.docUrl + "\n" : ""}\n${detail.trim()}`);
     st.diffDone = mdate; try { writeFileSync("data/weekly-scrum.json", JSON.stringify(st)); } catch { }
-    console.log(`[scrum-diff] ${mdate} 진행 요약 발송 (thread ${st.threadTs})`);
+    console.log(`[scrum-diff] ${mdate} 진행 요약 발송 (thread ${st.threadTs}, 상세 DM ${detail.trim() ? "O" : "X"})`);
   } catch (e) { console.error("[scrum-diff] 실패:", e?.message ?? e); }
 }
 async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); }
