@@ -2451,11 +2451,14 @@ const SCRUM_HOUR = Number(process.env.WEEKLY_SCRUM_HOUR ?? 10);  // KST 시
 const OUTLINE_BASE = process.env.OUTLINE_BASE || "https://voithru.getoutline.com";
 async function createOutlineDoc(title, text) {
   const tok = process.env.OUTLINE_API_TOKEN, coll = process.env.OUTLINE_COLLECTION_ID;
+  const parent = process.env.OUTLINE_PARENT_DOC_ID;   // 있으면 그 문서 하위로 중첩 생성
   if (!tok || !coll) return null;   // 토큰/컬렉션 없으면 문서 생성 스킵(링크 없이 공지)
   try {
+    const payload = { title, text, collectionId: coll, publish: true };
+    if (parent) payload.parentDocumentId = parent;
     const r = await fetch(`${OUTLINE_BASE}/api/documents.create`, {
       method: "POST", headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ title, text, collectionId: coll, publish: true }),
+      body: JSON.stringify(payload),
     });
     const j = await r.json();
     if (j?.data?.url) return j.data.url.startsWith("http") ? j.data.url : `${OUTLINE_BASE}${j.data.url}`;
