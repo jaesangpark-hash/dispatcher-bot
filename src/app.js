@@ -159,7 +159,7 @@ const DISPATCHER_PROMPT = [
   "- 그 외 운영 시트 → query_sheet (사용 가능한 뷰 목록·필드는 그 도구 설명에 들어있으니 거기 보고 고른다).",
   "query_sheet 효율 규칙(중요): 리스트/현황/기간 질문은 한 번의 호출로 서버측에서 좁혀 가져온다. filterField/filterOp/filterValue(예: 리테이크 미완료=filterField:done, filterOp:neq, filterValue:완료), dateField/dateFrom/dateTo(기간), distinct(중복 제거)를 적극 사용. work 없이 큰 시트를 통째로 가져오거나, 같은 호출을 반복하지 말 것. 한 번에 답이 되도록 필터를 설계해 호출 횟수를 최소화한다.",
   "- TOTUS(작품 진행상황·일정 지연/임박·작업자·번역텍스트·견적) → totus_* 도구. PIVO ID 있으면 totus_quotation으로 projectUuid부터 확보 → 그 uuid로 totus_schedule_summary(일정)·totus_jobs/totus_tasks(작업·상태). 작품명만 있으면 totus_find_project로 uuid. 진행/일정/작업자는 시트보다 TOTUS가 정확. 번역텍스트(totus_translation_text)는 양 많으니 필요한 Task에만.",
-  "- 번역 검수/QA 요청(예: '게임속기연 90 검수', '○○ ○○화 검수해줘') → review_episode(work 또는 pivo, episode). ★맥락에 PIVO ID가 있으면(예 'NNNNNN | [출판사] 작품 / 회차' 리스트나 재상 님이 PIVO를 준 경우) work 대신 **pivo 인자로 넘겨라** — 납품시트에 없는 작품도 TOTUS로 바로 검수된다(납품시트 이름매칭 실패로 '못 찾음' 뜨면 십중팔구 PIVO로 넣어야 하는 경우다). 한일이면 lang 생략(ko-ja 기본), 중일이면 zh-ja(pivo 주면 lang 무관). 스레드에서 작품명·회차·PIVO가 보이면 그걸 읽어 호출한다. 도구가 돌려준 [검수 기준]과 pairs로 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성한다(작품/회차/단계 + task URL + 페이지-텍박 + 수정전→후 + 사유). 문제 없으면 '問題なし'. 이 검수표는 그대로 작업자에게 복붙되는 것이니 임의 해설·강조 없이 템플릿만 깔끔히. error가 오면 그 사유를 그대로 전한다.",
+  "- 번역 검수/QA 요청(예: '게임속기연 90 검수', '○○ ○○화 검수해줘') → ★**review_queue를 써라(1작품이어도!)**. 검수는 무거워서 메인 대화를 막으므로, 워커 풀이 병렬로 돌려 대화를 안 막게 review_queue(works=[{work 또는 pivo, episode, lang?}, …])로 넘긴다. 등록만 하면 워커가 끝나는 대로 결과를 이 스레드에 직접 올리니, 너는 '검수 시작' 한 줄만 알리고 **직접 review_episode를 호출하거나 검수 결과를 만들지 마라**. ★맥락에 PIVO ID가 있으면(예 'NNNNNN | [출판사] 작품 / 회차' 리스트) work 대신 **pivo로 넣어라** — 납품시트에 없는 작품도 TOTUS로 바로 검수된다('납품시트에서 못 찾음'이 뜨면 PIVO로 넣어야 하는 경우다). 한일 lang 생략(ko-ja 기본)·중일 zh-ja(pivo 주면 무관). (review_episode 직접 호출은 워커 풀을 못 쓰는 예외 상황에서만.) 도구가 돌려준 [검수 기준]과 pairs로 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성한다(작품/회차/단계 + task URL + 페이지-텍박 + 수정전→후 + 사유). 문제 없으면 '問題なし'. 이 검수표는 그대로 작업자에게 복붙되는 것이니 임의 해설·강조 없이 템플릿만 깔끔히. error가 오면 그 사유를 그대로 전한다.",
   "★ 검수 결과 전달 규칙: 검수표는 **그냥 네 답변 텍스트로 출력만** 해라 — 시스템이 사용자가 부른 바로 그 자리(스레드/DM)에 자동으로 전달한다. send_message 도구로 직접 보내거나, DM/채널로 따로 발송하거나, 작업자 DB(slack_id/채널)를 조회해 보내려 하지 마라. 'DM으로 보냈다'·'DB에 ID가 없어 못 보냈다' 같은 발송 관련 말도 하지 마라(전달은 시스템 몫). 진행 신호(🔎 추출 완료)도 시스템이 자동으로 띄우니 네가 따로 만들지 마라.",
   "- query_sheet 뷰에 없는 탭을 물으면 → read_tab(탭 이름). 시트 실제 헤더가 곧 필드명이라 사용자가 말한 헤더로 바로 거른다. 표 헤더가 중간 행이면 headerRow 지정. 알려진 6개 시트의 어떤 탭이든 조회 가능.",
   "- 스레드 찾기('○○ 작품 ~~ 스레드 찾아줘', '○○ 관련 논의 어디 있어', 과거 대화/스레드 내용): find_thread(query=작품명+키워드). 등록된 주요 업무 채널들에서 검색해 매칭 스레드를 찾고, 1개로 분명하면 내용(topContent)까지 와서 요약·답+링크. 여러 개면 후보를 보여주고 어느 건지 되묻거나 키워드를 좁힌다(임의 단정 금지). 사용자가 특정 채널을 말하면 channel 인자로. 특정 스레드/링크를 콕 집으면 read_thread. (등록 채널·봇 멤버 범위 내 — 전역 검색 아님)",
@@ -168,7 +168,7 @@ const DISPATCHER_PROMPT = [
   "- 학습/교정(영구): 재상 님이 '앞으로 ~로 기억해/외워둬', '이건 이렇게 이해해', 또는 내가 잘못 이해한 걸 바로잡아 주면 → remember(note)로 저장한다(재기동에도 유지, 다음부터 자동 적용). '그 규칙 잊어'=forget, '뭐 배웠어'=list_learned. ★단순 '나중에 ~할 일'은 add_reminder(리마인더), 항구적 동작 규칙·별칭·이해 교정은 remember로 구분. 모호하면 '리마인더로 할까요, 규칙으로 외울까요?' 한 줄 확인.",
   "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝내거나 '그만'할 때까지 하루 여러 번 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. 완료('~했어'·'N번 완료'·'해결됐어')거나 중단('그만'·'멈춰'·'이건 그만 리마인드해') 신호 → complete_reminder(번호 또는 내용 일부). 재촉 중인 일을 대화로 처리하다가 '그만/됐어' 신호가 오면 그 항목을 complete_reminder로 빼라.",
   "그 밖에 도구가 없는 일이면, '도구가 없다'를 장황히 설명하지 말고 — 아는 선에서 바로 도움이 되는 답을 주고, 정확한 데이터가 필요하면 어디(어느 시트·채널)를 보면 되는지 한 줄로만 짚어준다.",
-  "★계산·집계·무거운 작업은 compute로(암산·수동 카운트 금지, 타임아웃 방지): 합계·환율·정산·통계·CSV/시트 집계(개수·비율·분류·TOP N)는 머리로 세지 말고 compute로 코드 실행. 첨부 CSV/엑셀은 compute 안 attachments[i].text로 직접 접근(원문 재기입 금지). 시트 대량 집계는 read_tab으로 행을 가져와 compute에 넘겨 계산(수백 행 직접 세지 말 것). 번역 검수(review_episode)는 한 번에 한 작품·회차씩만 — 몰아치면 타임아웃. ★검수 요청이 **여러 작품**(예 '위 8작품 하나씩 순차 검수')이면 review_episode를 한 턴에 반복 호출하지 말고(중간에 타임아웃 남) **review_queue(works=[{work,episode,lang?}…])로 한 번에 큐잉**하라 — 그러면 봇이 작품당 별도 턴으로 차례차례 검수해 각 결과를 올린다. 한 작품만이면 review_episode 직접.",
+  "★계산·집계·무거운 작업은 compute로(암산·수동 카운트 금지, 타임아웃 방지): 합계·환율·정산·통계·CSV/시트 집계(개수·비율·분류·TOP N)는 머리로 세지 말고 compute로 코드 실행. 첨부 CSV/엑셀은 compute 안 attachments[i].text로 직접 접근(원문 재기입 금지). 시트 대량 집계는 read_tab으로 행을 가져와 compute에 넘겨 계산(수백 행 직접 세지 말 것). ★번역 검수는 **무조건 review_queue로 큐잉**(1작품이든 8작품이든). review_queue는 검수 워커 풀(동시 여러 개)에 넘겨 병렬로 돌리고 각 결과를 워커가 스레드에 직접 올리므로, 네가 review_episode를 직접 부르거나 검수 판단을 하지 마라(메인 대화가 막힌다). works=[{work 또는 pivo, episode, lang?}…]로 사용자/스레드에서 순서대로 파싱해 한 번에 넘겨라.",
   "★도구 라우팅(엄수·양방향 폴백 금지): ①운영·내부 데이터(작품·납품·일정·작업자·정산·고객사·스케줄 등)는 반드시 내부 도구(get_*·query_sheet·totus_*·read_tab·query_schedule 등)로만 조회한다. 못 찾으면 '못 찾았다'고 답하고 작품명 표기 확인을 요청한다 — 절대 웹으로 넘어가지 마라. ②WebSearch(웹 검색)는 사용자가 '웹에서/검색해줘'라고 명시했거나, 환율·일반상식·뉴스처럼 내부에 있을 리 없는 외부·실시간 정보일 때만 쓴다. 웹에서 못 찾으면 '웹에서 못 찾았다'고 답하고 내부 도구로 폴백하지 마라. ③즉 각 요청은 지정된 한쪽 출처에서만 처리하고, 미스는 '못 찾음'으로 끝낸다(반대편으로 안 넘어감). WebFetch(임의 URL 회수)는 쓰지 말고, 같은 검색을 2회 넘게 재시도하지 마라.",
   "비가역적이거나 고객사로 나가는 동작(발송·삭제·수정)은 절대 임의 실행하지 않고 먼저 확인을 받는다.",
   "모르면 모른다고 솔직하게, 추측이면 추측이라고 표시한다.",
@@ -373,6 +373,57 @@ const totusTool = (fn) => async (a) => { try { return { content: [{ type: "text"
 const POST_SIKJA_OPS = ["납품검수", "고객검수", "최종검수"];   // 이름 부분일치(공백제거). 'PIVO 납품 검수'는 '납품검수'로 걸림
 const isPostSikjaOp = (op) => { const nm = String(op?.태스크?.[0]?.오퍼레이션유형명 || "").replace(/\s/g, ""); return !!nm && POST_SIKJA_OPS.some((e) => nm.includes(e)); };
 const trimJobsAtSikja = (j) => { for (const job of j?.data || []) if (Array.isArray(job.오퍼레이션)) job.오퍼레이션 = job.오퍼레이션.filter((op) => !isPostSikjaOp(op)); return j; };
+
+// ── 검수 워커 풀 ─────────────────────────────────────────────
+// 검수(무거운 2패스 판단)를 메인 브레인과 분리해 여러 워커가 동시 처리한다.
+// 각 워커 = toolless query(ctx·전역상태 안 건드림 → 병렬 안전). 결과는 잡에 캡처된 ctx로 그 스레드에 게시.
+const REVIEW_WORKERS = Number(process.env.REVIEW_WORKERS || 4);
+const REVIEW_JOB_TIMEOUT_MS = 300_000;
+const reviewJobs = [];        // { work, pivo, episode, lang, label, ctx }
+const reviewWaiters = [];     // 대기 중 워커 resolver (잡 1개당 1명 깨움)
+let reviewStarted = false;
+function ensureReviewWorkers() {
+  if (reviewStarted) return;
+  reviewStarted = true;
+  for (let i = 0; i < REVIEW_WORKERS; i++) reviewWorker(i + 1);
+  console.log(`[review-pool] 워커 ${REVIEW_WORKERS}개 기동`);
+}
+function enqueueReview(job) { reviewJobs.push(job); const w = reviewWaiters.shift(); if (w) w(); }
+async function reviewPost(ctx, text) {
+  if (!ctx?.client) return;
+  await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.threadTs || ctx.ts, text, ...SENDER })
+    .catch((e) => console.error("[review-pool] 게시 실패:", e.message));
+}
+async function reviewQA(prompt) {
+  const q = query({ prompt, options: { model: DISPATCHER_MODEL, strictMcpConfig: true, allowedTools: [] } });
+  let buf = "";
+  for await (const m of q) {
+    if (m.type === "assistant") { for (const b of m.message?.content || []) if (b.type === "text" && b.text) buf += b.text; }
+    else if (m.type === "result") return (m.result || buf || "").trim();
+  }
+  return buf.trim();
+}
+async function reviewWorker(id) {
+  while (true) {
+    if (!reviewJobs.length) { await new Promise((r) => reviewWaiters.push(r)); continue; }
+    const job = reviewJobs.shift(); if (!job) continue;
+    try {
+      const r = await extractEpisode({ work: job.work, pivo: job.pivo, episode: job.episode, lang: job.lang || "ko-ja", stage: null });
+      if (r.error) { await reviewPost(job.ctx, `${job.label} ${job.episode}화: ${r.error}`); continue; }
+      await reviewPost(job.ctx, `🔎 ${r.work} ${r.episode}화 — ${r.stage} ${r.count}건 추출, 검수 중… (워커 ${id})`);
+      const prompt = QA_INSTRUCTIONS + "\n\n[추출 결과]\n" + JSON.stringify(r)
+        + "\n\n위 [웹툰 번역 검수 기준]대로 pairs를 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성하라. 문제 없으면 본문에 '問題なし'만.";
+      const out = await Promise.race([
+        reviewQA(prompt),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("검수 판단 타임아웃(>5분)")), REVIEW_JOB_TIMEOUT_MS)),
+      ]);
+      await reviewPost(job.ctx, out || `${r.work} ${r.episode}화: 問題なし`);
+    } catch (e) {
+      console.error(`[review-pool ${id}] 오류:`, e?.message ?? e);
+      await reviewPost(job.ctx, `⚠️ ${job.label} ${job.episode}화 검수 오류: ${e?.message ?? e}`).catch(() => {});
+    }
+  }
+}
 
 // ── 도구(모듈) — 빌드 1: 납품일 조회 (read-only) ───────────────────
 const apmTools = createSdkMcpServer({
@@ -752,7 +803,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("review_queue",
-      "여러 작품을 '순차 검수'할 때 쓴다(예 '위 8작품 하나씩 순차 검수해'). 작품마다 **별도 턴**으로 큐에 넣어, 한 턴=한 작품으로 차례차례 review_episode 검수하게 한다(한 턴에 몰면 타임아웃 나므로 절대 직접 여러 개를 검수하지 말고 이 도구로 큐잉). works=검수할 [{work, episode, lang?}] 목록(사용자/스레드에서 순서대로 파싱). 등록만 하고 즉시 반환하며, 이후 봇이 하나씩 자동으로 검수해 각 결과를 이 자리(스레드/DM)에 올린다.",
+      "번역 검수 요청을 **검수 워커 풀**에 넘긴다(1작품이든 여러 작품이든 검수는 전부 이걸로). 워커 여러 개가 **병렬**로 검수해 끝나는 대로 각 결과를 이 스레드/DM에 직접 올린다 — 등록만 하고 즉시 반환하므로 메인 대화가 안 막힌다(무거운 검수를 브레인 밖으로 분리). works=검수할 [{work 또는 pivo, episode, lang?}] 목록(사용자/스레드에서 순서대로 파싱). 절대 직접 review_episode를 호출해 검수하지 말고 이걸로 큐잉하라.",
       {
         works: z.array(z.object({
           work: z.string().optional().describe("작품명(한국어). pivo를 주면 생략 가능"),
@@ -767,16 +818,14 @@ const apmTools = createSdkMcpServer({
           if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락을 못 잡음." }) }] };
           const list = (works || []).filter((w) => (w?.work || w?.pivo) && String(w.episode ?? "").trim());
           if (!list.length) return { content: [{ type: "text", text: JSON.stringify({ error: "검수할 작품 목록(works)이 비었음. 작품명(또는 PIVO)·회차를 파싱해 넘겨라." }) }] };
-          const reqUser = currentUser;
-          list.forEach((w, i) => {
-            const label = w.work || `PV-${w.pivo}`;
-            const args = w.pivo ? `pivo="${String(w.pivo).trim()}"` : `work="${w.work}"`;
-            const langArg = w.lang && !w.pivo ? `, lang="${w.lang}"` : "";
-            const content = `[순차 검수 ${i + 1}/${list.length}] 다음 한 작품만 검수하라(다른 작품은 신경 쓰지 말 것). review_episode(${args}, episode="${String(w.episode).trim()}"${langArg}) 를 호출하고, 돌려받은 [검수 기준]대로 pairs를 2패스 검수해 문제 있는 항목만 [출력 템플릿]으로 작성하라. 문제 없으면 '${label} ${w.episode}화: 問題なし'.`;
-            queue.push({ content, ctx: { client: ctx.client, channel: ctx.channel, threadTs: ctx.threadTs, ts: ctx.ts, done: false }, user: reqUser });
-          });
-          if (wake) { const wk = wake; wake = null; wk(); }
-          return { content: [{ type: "text", text: JSON.stringify({ queued: list.length, order: list.map((w) => `${w.work || "PV-" + w.pivo} ${w.episode}`), note: `${list.length}작품을 한 작품씩 차례로 검수하도록 큐에 넣었음. 사용자에겐 '${list.length}작품 순차 검수 시작할게요 — 하나씩 결과 올릴게요'라고만 간단히 알리고, 직접 검수하려 들지 말 것(각 작품은 별도 턴에서 처리됨).` }) }] };
+          ensureReviewWorkers();
+          // 검수는 워커 풀(동시 REVIEW_WORKERS개)이 처리 — 메인 브레인은 안 막힘. ctx는 잡에 캡처해 그 스레드로 결과 게시.
+          const jobCtx = { client: ctx.client, channel: ctx.channel, threadTs: ctx.threadTs, ts: ctx.ts };
+          list.forEach((w) => enqueueReview({
+            work: w.work || null, pivo: w.pivo ? String(w.pivo).trim() : null,
+            episode: String(w.episode).trim(), lang: w.lang || "ko-ja", label: w.work || `PV-${w.pivo}`, ctx: jobCtx,
+          }));
+          return { content: [{ type: "text", text: JSON.stringify({ queued: list.length, workers: REVIEW_WORKERS, order: list.map((w) => `${w.work || "PV-" + w.pivo} ${w.episode}`), note: `${list.length}작품을 검수 워커 풀(${REVIEW_WORKERS}개 동시)에 넘겼음 — 병렬로 검수해 끝나는 대로 각 결과를 이 스레드에 워커가 직접 올린다(메인 대화는 안 막힘). 사용자에겐 '${list.length}작품 검수 시작 — 병렬로 돌려서 끝나는 대로 결과 올릴게요'라고만 알리고, 절대 직접 review_episode를 호출하거나 검수하려 들지 말 것.` }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
