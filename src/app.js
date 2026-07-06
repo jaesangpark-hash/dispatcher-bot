@@ -1703,6 +1703,100 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
   } catch (e) { console.error("[worklink] 실패:", e?.message ?? e); }
 }
 
+// ── 리테이크 채널 자동 감지 → 중일 '번역 이슈'면 번역가 발송 초안을 박재상 DM으로(초안-우선/A모드) ──
+// 자동 봇(n8n) 리테이크 메시지만 반응. 한일·식자 이슈는 스킵. 애매하면 박재상에게 질문. 발송은 항상 박재상 확인(버튼).
+const RETAKE_WATCH_CHANNEL = process.env.RETAKE_WATCH_CHANNEL || "C09B8QBEC9L";
+const RETAKE_BOT_ID = process.env.RETAKE_BOT_ID || "B0A2LM7NM6H";   // n8n 자동 리테이크 봇
+const RETAKE_WF_ZH = "noEN9ahfD4Vbyj2V";   // 중일 리테이크 워크플로우
+const RETAKE_WF_KO = "f1NgVwzUMeEb0CHf";   // 한일 리테이크 워크플로우
+
+function parseRetakeMsg(text) {
+  const t = text || "";
+  const lang = (t.match(/(한일|중일)\s*리테이크\s*요청/) || [])[1] || null;
+  const work = (t.match(/[•·]\s*작품명\s*[:：]\s*(.+)/) || [])[1]?.trim() || null;
+  const ep = (t.match(/[•·]\s*리테이크\s*화수\s*[:：]\s*(.+)/) || [])[1]?.trim() || null;
+  const fix = (t.match(/[•·]\s*수정\s*내용\s*[:：]\s*([\s\S]*?)(?=\n[•·]\s*제출\s*희망일|\n[•·]\s*프로젝트\s*URL|$)/) || [])[1]?.trim() || null;
+  return { lang, work, ep, fix, zhWf: t.includes(RETAKE_WF_ZH), koWf: t.includes(RETAKE_WF_KO) };
+}
+
+function logRW(ts, p, decision) {
+  try { appendFileSync("logs/retake-watch.jsonl", JSON.stringify({ at: new Date().toISOString(), ts, work: p.work, ep: p.ep, lang: p.lang, decision }) + "\n"); } catch { /* 무시 */ }
+}
+
+// 번역/식자 분류 (toolless LLM). {type:'번역'|'식자'|'애매', reason}
+async function classifyRetake(fix) {
+  if (!fix) return { type: "애매", reason: "수정내용 비어있음" };
+  const prompt = [
+    "다음은 웹툰 리테이크(수정 요청) 내용이다. '번역' 이슈인지 '식자' 이슈인지 분류하라.",
+    "- 번역: 오역·직역·표현 부자연·대사/문구 수정·오탈자(문자 자체)·말투 등 *번역가*가 고칠 것.",
+    "- 식자: 편집되지 않은 글자·세로/가로쓰기 방향·말풍선 꼬리·효과음 위치·클리핑·글자 편집 등 *식자(레터링)*가 고칠 것.",
+    "둘 다 섞였거나 판단 곤란하면 '애매'. JSON만 출력: {\"type\":\"번역\"|\"식자\"|\"애매\",\"reason\":\"짧게\"}",
+    "", "[리테이크 수정내용]", String(fix).slice(0, 1500),
+  ].join("\n");
+  const out = await toollessQuery(prompt, { label: "리테이크 분류" });
+  try { const j = JSON.parse((out || "").match(/\{[\s\S]*\}/)?.[0] || "{}"); if (["번역", "식자", "애매"].includes(j.type)) return j; } catch { /* 파싱 실패 */ }
+  return { type: "애매", reason: "분류 파싱 실패" };
+}
+
+async function dmOwner(text) {
+  try { const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID }); if (dm.channel?.id) return await app.client.chat.postMessage({ channel: dm.channel.id, text, ...SENDER }); } catch (e) { console.error("[retake-watch] DM 실패:", e?.message ?? e); }
+}
+
+async function handleRetakeWatch({ message, client }) {
+  try {
+    const ts = message.ts;
+    if (processed.has("rw:" + ts)) return;
+    processed.add("rw:" + ts);
+    if (message.bot_id !== RETAKE_BOT_ID) return;              // 자동 봇 메시지만
+    const p = parseRetakeMsg(message.text || "");
+    // 1) 한일/중일 판별 — 본문 명시 or 워크플로우 ID. 한일이면 스킵.
+    const isZh = p.lang === "중일" || (p.zhWf && !p.koWf);
+    const isKo = p.lang === "한일" || (p.koWf && !p.zhWf);
+    if (!p.work) { logRW(ts, p, "skip:작품명없음"); return; }
+    if (isKo && !isZh) { logRW(ts, p, "skip:한일"); return; }
+    // 2) 작품 매칭(중일 마스터) — 정확 1건이 이상적
+    const idx = await koTitleIndex();
+    const wn = norm(p.work);
+    const exact = idx.filter((x) => x.koNorm === wn);
+    const loose = idx.filter((x) => x.koNorm && x.koNorm.length >= 2 && (wn.includes(x.koNorm) || x.koNorm.includes(wn)));
+    const cand = exact.length ? exact : loose;
+    if (!isZh && cand.length === 0) { logRW(ts, p, "skip:한일추정(매칭0)"); return; }   // 중일 명시 없고 매칭도 0 → 한일로 보고 스킵
+    // 3) 번역/식자 분류 — 식자면 스킵(번역가 대상 아님)
+    const cls = await classifyRetake(p.fix || "");
+    if (cls.type === "식자") { logRW(ts, p, "skip:식자"); return; }
+    // 4) 애매(유형 애매 or 작품 매칭 1건 아님) → 박재상에게 질문(초안-우선이라 어차피 박재상에게 감)
+    if (cls.type === "애매" || cand.length !== 1) {
+      const why = [cand.length !== 1 ? `작품 매칭 ${cand.length}건` : "", cls.type === "애매" ? `유형 애매(${cls.reason || ""})` : ""].filter(Boolean).join(" / ");
+      await dmOwner(`🔁 *리테이크 확인 필요* (자동 감지)\n• 작품: *${p.work}* / 화수: ${p.ep || "?"}\n• 사유: ${why}\n• 수정내용: ${(p.fix || "").slice(0, 300)}\n→ 번역가에게 보낼 거면 \`propose_retake\`로 지시해줘 (작품·회차·수정내용).`);
+      logRW(ts, p, `ask:${cls.type}/cand${cand.length}`);
+      return;
+    }
+    // 5) 명확(중일 확정 + 번역 + 매칭 1건) → 번역가 발송 초안을 박재상 DM으로(발송은 버튼)
+    const rk = await buildRetake({ work: p.work, episode: p.ep || "", fix: p.fix || "" });
+    if (!rk.found || !rk.target) {
+      await dmOwner(`🔁 *리테이크 초안 실패* — *${p.work}* ${p.ep || ""}\n• ${!rk.found ? "작품 못 찾음" : "번역가/채널 못 찾음"} → 필요하면 propose_retake로 수동 처리.`);
+      logRW(ts, p, "ask:buildfail");
+      return;
+    }
+    const warn = [];
+    if (rk.missing.editor) warn.push("식자검수 에디터 URL 못 찾음");
+    if (rk.missing.apm) warn.push("APM cc 생략");
+    if (rk.missing.trId) warn.push("번역가 Slack ID 미매핑(멘션 평문)");
+    const rkId = `rk_${++retakeSeq}`;
+    const pp = { target: rk.target, targetKind: rk.targetKind, headerReal: rk.headerReal, headerPreview: rk.headerPreview, body: rk.body, koTitle: rk.koTitle, epText: rk.epText, translator: rk.translator, trId: rk.trId, apmId: rk.apmId, editorKind: rk.editorKind, warn, createdAt: Date.now() };
+    pendingRetakes.set(rkId, pp);
+    try {
+      const dm = await client.conversations.open({ users: DISPATCHER_USER_ID });
+      const posted = await client.chat.postMessage({ channel: dm.channel.id, ...SENDER, text: `자동 감지 리테이크 초안: ${rk.jpTitle} ${rk.epText} → ${rk.translator || "?"}`,
+        blocks: [{ type: "context", elements: [{ type: "mrkdwn", text: `🤖 리테이크 채널에서 자동 감지 — *번역 이슈*로 판단(${cls.reason || ""}). 확인 후 발송하세요.` }] }, ...retakeBlocks(rkId, pp)] });
+      pp.previewChannel = posted.channel; pp.previewTs = posted.ts;
+      pendingRetakes.save();
+    } catch (e) { console.error("[retake-watch] 초안 발송 실패:", e?.message ?? e); }
+    logRW(ts, p, `draft:${rkId}`);
+    console.log(`[retake-watch] 초안 → 박재상 DM: ${p.work} ${p.ep || ""} (${cls.type})`);
+  } catch (e) { console.error("[retake-watch] 실패:", e?.message ?? e); }
+}
+
 // ── 부팅 ──────────────────────────────────────────────────────────
 const app = new App({
   token: SLACK_BOT_TOKEN,
@@ -1712,6 +1806,11 @@ const app = new App({
 
 // DM (message.im) — 본인 DM만, 봇/수정 이벤트 제외
 app.message(async ({ message, say, client }) => {
+  // 리테이크 채널 자동 감지 — 자동 봇 메시지에서 중일·번역 이슈면 번역가 발송 초안을 박재상 DM으로
+  if (message.channel === RETAKE_WATCH_CHANNEL) {
+    if (message.bot_id === RETAKE_BOT_ID && message.text) await handleRetakeWatch({ message, client });
+    return;
+  }
   // 워치 채널 자동 링크 — 박재상 or 문의봇 메시지에서 작품명 감지 → 프로젝트/원본 링크(선제)
   if (WORK_LINK_WATCH.has(message.channel)) {
     const edited = message.subtype && !["file_share", "bot_message"].includes(message.subtype);   // 편집·삭제 제외
