@@ -1995,7 +1995,8 @@ app.event("app_mention", async ({ event, say, client }) => {
 
 // ── 어시스턴트(에이전트) 패널 — 지금 보는 스레드 맥락으로 추천 프롬프트 + 브레인 라우팅 ──
 // 패널이 보고 있는 채널/스레드를 assistantCtx에 기록 → handle()이 '이 스레드' 지시를 해석. 메시지는 handle로(ts중복차단으로 이중응답 없음).
-const assistantCtx = new Map();   // userId → { channel_id, thread_ts, at }
+const assistantCtx = new Map();   // userId → { channel_id, thread_ts, at }  (보고 있는 곳)
+const assistantPanel = new Map(); // userId → { channel_id, thread_ts, at }  (패널 자기 스레드 — 숏컷/응답을 여기로 모음)
 async function assistantPrompts(client, c) {
   const prompts = [];
   try {
@@ -2018,7 +2019,8 @@ const assistant = new Assistant({
       const uid = event.assistant_thread?.user_id;
       if (uid && !ALLOWED_USERS.has(uid)) return;   // 박재상+허용 APM만 인사말·추천버튼(그 외엔 조용)
       if (uid && c.channel_id) assistantCtx.set(uid, { channel_id: c.channel_id, thread_ts: c.thread_ts || null, at: Date.now() });
-      await say({ text: "안녕하세요 재상 님 🙌 지금 보고 있는 곳 기준으로 도와드릴게요. 아래 버튼을 쓰거나 자유롭게 물어보세요.", ...SENDER }).catch(() => {});
+      if (uid && event.assistant_thread?.channel_id) assistantPanel.set(uid, { channel_id: event.assistant_thread.channel_id, thread_ts: event.assistant_thread.thread_ts, at: Date.now() });
+      await say({ text: "안녕하세요 재상 님 🙌 지금 보고 있는 곳 기준으로 도와드릴게요. 아래 버튼을 쓰거나, 스레드 '...' → 툰식이 숏컷으로 시키면 답이 여기로 모여요.", ...SENDER }).catch(() => {});
       const prompts = await assistantPrompts(client, c);
       if (prompts.length) await setSuggestedPrompts({ title: "이런 걸 할 수 있어요", prompts }).catch(() => {});
       await saveThreadContext().catch(() => {});
@@ -2029,6 +2031,7 @@ const assistant = new Assistant({
       const c = event.assistant_thread?.context || {};
       const uid = event.assistant_thread?.user_id;
       if (uid && c.channel_id) assistantCtx.set(uid, { channel_id: c.channel_id, thread_ts: c.thread_ts || null, at: Date.now() });
+      if (uid && event.assistant_thread?.channel_id) assistantPanel.set(uid, { channel_id: event.assistant_thread.channel_id, thread_ts: event.assistant_thread.thread_ts, at: Date.now() });
       await saveThreadContext().catch(() => {});
     } catch (e) { console.error("[assistant] ctxChanged:", e?.message ?? e); }
   },
@@ -2074,15 +2077,18 @@ app.view("toonsik_thread_modal", async ({ ack, body, view, client }) => {
     if (!ALLOWED_USERS.has(user)) return;
     const { channel, threadTs } = JSON.parse(view.private_metadata || "{}");
     const cmd = (view.state.values?.cmd?.v?.value || "").trim() || "이 스레드를 짧게 요약하고, 지금 필요한 액션이 있으면 추천해줘";
-    const dm = await client.conversations.open({ users: user });
-    const dmCh = dm.channel?.id;
-    if (!dmCh) return;
+    // 응답은 어시스턴트 패널(하나의 대화)로 모은다 — 패널을 최근 열었으면 그 스레드로, 아니면 툰식이 DM 최상위로
+    const panel = assistantPanel.get(user);
+    let targetCh, targetThread;
+    if (panel?.channel_id && Date.now() - panel.at < 6 * 3600 * 1000) { targetCh = panel.channel_id; targetThread = panel.thread_ts; }
+    else { const dm = await client.conversations.open({ users: user }); targetCh = dm.channel?.id; targetThread = undefined; }
+    if (!targetCh) return;
     const tc = await fetchThreadContext(client, channel, threadTs).catch(() => ({ text: "", attFiles: [] }));
     const nowStr = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "full", timeStyle: "short" });
     const llmText = `[현재 시각(KST): ${nowStr}] [요청자: ${USER_NAMES[user] || "사용자"}] [메시지 숏컷 — 아래 스레드를 대상으로 명령. 이 맥락을 그 스레드로 삼아 처리하라]\n[대상 스레드 맥락 (${channel})]\n${(tc.text || "(스레드 내용을 못 읽음 — 봇이 그 채널 멤버인지 확인)").slice(0, 4000)}\n\n[요청]\n${cmd}`;
-    const ph = await client.chat.postMessage({ channel: dmCh, text: `🧵 숏컷 처리 중… (${cmd.slice(0, 30)})`, ...SENDER });
-    if (!BRAIN_ON) { await client.chat.postMessage({ channel: dmCh, text: `🔌 브레인 오프(에코):\n> ${cmd}`, ...SENDER }); return; }
-    const entry = { client, channel: dmCh, threadTs: undefined, ts: ph?.ts, placeholderTs: ph?.ts, startedAt: Date.now(), done: false };
+    const ph = await client.chat.postMessage({ channel: targetCh, thread_ts: targetThread, text: `🧵 숏컷 처리 중… (${cmd.slice(0, 30)})`, ...SENDER });
+    if (!BRAIN_ON) { await client.chat.postMessage({ channel: targetCh, thread_ts: targetThread, text: `🔌 브레인 오프(에코):\n> ${cmd}`, ...SENDER }); return; }
+    const entry = { client, channel: targetCh, threadTs: targetThread, ts: ph?.ts, placeholderTs: ph?.ts, startedAt: Date.now(), done: false };
     queue.push({ content: llmText, ctx: entry, attachTexts: [], fileRefs: [], user });
     if (wake) { const w = wake; wake = null; w(); }
   } catch (e) { console.error("[shortcut] modal submit:", e?.message ?? e); }
