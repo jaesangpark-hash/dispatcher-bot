@@ -2053,11 +2053,13 @@ app.shortcut("toonsik_thread", async ({ shortcut, ack, client }) => {
     if (!ALLOWED_USERS.has(shortcut.user?.id)) return;
     const channel = shortcut.channel?.id;
     const threadTs = shortcut.message?.thread_ts || shortcut.message?.ts || shortcut.message_ts;
+    const msgText = String(shortcut.message?.text || "").slice(0, 1800);   // 채널 못 읽을 때 폴백(슬랙이 payload로 줌)
+    console.log(`[shortcut] toonsik_thread ch=${channel} thread=${threadTs} textLen=${msgText.length}`);
     await client.views.open({
       trigger_id: shortcut.trigger_id,
       view: {
         type: "modal", callback_id: "toonsik_thread_modal",
-        private_metadata: JSON.stringify({ channel, threadTs }),
+        private_metadata: JSON.stringify({ channel, threadTs, msgText }),
         title: { type: "plain_text", text: "툰식이에게 시키기" },
         submit: { type: "plain_text", text: "실행" }, close: { type: "plain_text", text: "닫기" },
         blocks: [
@@ -2075,7 +2077,7 @@ app.view("toonsik_thread_modal", async ({ ack, body, view, client }) => {
   try {
     const user = body.user?.id;
     if (!ALLOWED_USERS.has(user)) return;
-    const { channel, threadTs } = JSON.parse(view.private_metadata || "{}");
+    const { channel, threadTs, msgText } = JSON.parse(view.private_metadata || "{}");
     const cmd = (view.state.values?.cmd?.v?.value || "").trim() || "이 스레드를 짧게 요약하고, 지금 필요한 액션이 있으면 추천해줘";
     // 응답은 어시스턴트 패널(하나의 대화)로 모은다 — 패널을 최근 열었으면 그 스레드로, 아니면 툰식이 DM 최상위로
     const panel = assistantPanel.get(user);
@@ -2083,9 +2085,12 @@ app.view("toonsik_thread_modal", async ({ ack, body, view, client }) => {
     if (panel?.channel_id && Date.now() - panel.at < 6 * 3600 * 1000) { targetCh = panel.channel_id; targetThread = panel.thread_ts; }
     else { const dm = await client.conversations.open({ users: user }); targetCh = dm.channel?.id; targetThread = undefined; }
     if (!targetCh) return;
-    const tc = await fetchThreadContext(client, channel, threadTs).catch(() => ({ text: "", attFiles: [] }));
+    // 스레드 읽기 시도 → 실패하면 공개채널 입장 후 재시도 → 그래도 안 되면 클릭한 메시지 텍스트(payload) 폴백
+    let tc = await fetchThreadContext(client, channel, threadTs).catch(() => ({ text: "", attFiles: [] }));
+    if (!tc.text) { try { await client.conversations.join({ channel }); tc = await fetchThreadContext(client, channel, threadTs); } catch { /* join 스코프 없거나 비공개 → 폴백 */ } }
+    const ctxText = (tc.text && tc.text.trim()) ? tc.text : (msgText || "(스레드 내용을 못 읽음 — 봇이 그 채널 멤버가 아닐 수 있음)");
     const nowStr = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "full", timeStyle: "short" });
-    const llmText = `[현재 시각(KST): ${nowStr}] [요청자: ${USER_NAMES[user] || "사용자"}] [메시지 숏컷 — 아래 스레드를 대상으로 명령. 이 맥락을 그 스레드로 삼아 처리하라]\n[대상 스레드 맥락 (${channel})]\n${(tc.text || "(스레드 내용을 못 읽음 — 봇이 그 채널 멤버인지 확인)").slice(0, 4000)}\n\n[요청]\n${cmd}`;
+    const llmText = `[현재 시각(KST): ${nowStr}] [요청자: ${USER_NAMES[user] || "사용자"}] [메시지 숏컷 — 아래 스레드/메시지를 대상으로 명령. 이 맥락을 그 대상으로 삼아 처리하라. 링크/추가 조회 요구하지 말고 이걸로 처리]\n[대상 맥락 (${channel})]\n${ctxText.slice(0, 4000)}\n\n[요청]\n${cmd}`;
     const ph = await client.chat.postMessage({ channel: targetCh, thread_ts: targetThread, text: `🧵 숏컷 처리 중… (${cmd.slice(0, 30)})`, ...SENDER });
     if (!BRAIN_ON) { await client.chat.postMessage({ channel: targetCh, thread_ts: targetThread, text: `🔌 브레인 오프(에코):\n> ${cmd}`, ...SENDER }); return; }
     const entry = { client, channel: targetCh, threadTs: targetThread, ts: ph?.ts, placeholderTs: ph?.ts, startedAt: Date.now(), done: false };
