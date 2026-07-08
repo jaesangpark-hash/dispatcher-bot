@@ -1740,7 +1740,54 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
     if (wantSrc) lines.push(hit.driveLink ? `📦 원본: ${hit.driveLink}` : `📦 원본: 시트에 링크 없음 — ${hit.publisher || "출판사"}에서 원제 「${hit.zhTitle || "?"}」로 검색`);
     await client.chat.postMessage({ channel, thread_ts: threadTs || ts, text: lines.join("\n"), ...SENDER, unfurl_links: false });
     console.log(`[worklink] ${hit.koTitle} → 프로젝트${wantSrc ? "+원본" : ""} (ch=${channel})`);
+    // 문의봇 구조화 재수급 요청이면 → 고객사 보낼 일본어 재수급 초안(복붙용)도 자동 첨부
+    if (/재수급\s*사유\s*[:：]/.test(text)) {
+      try {
+        const draft = await buildResupplyDraft(text);
+        if (draft) { await client.chat.postMessage({ channel, thread_ts: threadTs || ts, text: draft, ...SENDER, unfurl_links: false }); console.log(`[resupply-draft] ${hit.koTitle} 고객사 초안 발송`); }
+      } catch (e) { console.error("[resupply-draft] 실패:", e?.message ?? e); }
+    }
   } catch (e) { console.error("[worklink] 실패:", e?.message ?? e); }
+}
+
+// 문의봇 재수급 요청 → 고객사(중국 출판사)에 복붙할 일본어 초안(필드 나열식). 발송 X, 텍스트만.
+function fmtPages(s) {
+  const nums = String(s || "").match(/\d+/g)?.map(Number) || [];
+  if (nums.length >= 2 && nums.every((n, i) => i === 0 || n === nums[i - 1] + 1)) return `${nums[0]}〜${nums[nums.length - 1]}`;
+  return nums.length ? nums.join("・") : String(s || "").trim();
+}
+async function buildResupplyDraft(text) {
+  // 필드는 ' - ' 또는 줄바꿈으로 구분됨 → 조각내고 '키 : 값'에서 값만 추출
+  const parts = String(text || "").split(/\s-\s|\n/).map((s) => s.replace(/^[\s\-・•*]+/, "").trim()).filter(Boolean);
+  const seg = (re) => { const p = parts.find((s) => re.test(s) && /[:：]/.test(s)); return p ? p.replace(/^[^:：]*[:：]\s*/, "").trim() : null; };
+  const work = seg(/작품\s*명/);
+  const episode = seg(/회\s*차/);
+  const pages = seg(/페이지/);
+  const reason = seg(/재수급\s*사유|수정\s*사유|사\s*유/);
+  if (!work || !reason) return null;
+  const w = await lookupWork(work);
+  if (!w.found) return null;
+  const jp = w.fixTitle || w.jaTitle || w.koTitle || work;
+  const zh = w.zhTitle || "?";
+  const prompt = [
+    "다음 한국어 '재수급 사유'를, 중국 출판사(고객사)에 보낼 일본어 요청 문장 *한 줄*로 바꿔라.",
+    "형식: '{상태 설명}のため、再手配いただければ幸いです。' — 정중체, 주어진 사유만(지어내기·과장 금지).",
+    "예: '73화 1-3p 이미지가 초고와 같음' → '下書きのような画像のため、再手配いただければ幸いです。'",
+    "일본어 문장 한 줄만 출력(따옴표·머리말 없이).",
+    "", "[사유]", reason,
+  ].join("\n");
+  let ja = (await toollessQuery(prompt, { label: "재수급 사유 일역" }) || "").trim().replace(/^["'「]|["'」]$/g, "");
+  if (!ja) ja = `${reason}（要確認）`;
+  const epPage = [episode ? episode.replace(/\s*화\s*$/, "") + "話" : null, pages ? fmtPages(pages) + "p" : null].filter(Boolean).join(" ");
+  return [
+    "📝 *고객사 재수급 요청* (복붙용)",
+    "```",
+    `・日本語タイトル：${jp}`,
+    `・中国語タイトル：${zh}`,
+    `・話数／ページ：${epPage}`,
+    `・理由：${ja}`,
+    "```",
+  ].join("\n");
 }
 
 // ── 리테이크 채널 자동 감지 → 중일 '번역 이슈'면 번역가 발송 초안을 박재상 DM으로(초안-우선/A모드) ──
