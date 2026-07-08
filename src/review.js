@@ -41,7 +41,8 @@ async function uuidForPivo(pivo) {
 // 회차 → 단계코드별 taskUuid
 async function tasksForEpisode(projectUuid, episode) {
   const byCode = {};
-  const add = (job) => { for (const op of job.오퍼레이션 || []) for (const t of op.태스크 || []) if (!byCode[t.오퍼레이션유형]) byCode[t.오퍼레이션유형] = t.uuid; };
+  let jobInfo = null;
+  const add = (job) => { if (!jobInfo) jobInfo = { index: job.순서 ?? null, name: job.JOB명 ?? null }; for (const op of job.오퍼레이션 || []) for (const t of op.태스크 || []) if (!byCode[t.오퍼레이션유형]) byCode[t.오퍼레이션유형] = t.uuid; };
   const j = await projectJobs(projectUuid, episode);
   for (const job of j?.data || []) add(job);
   // 폴백: episode 필터 0건(구작 source-group false) → 전체 jobs에서 JOB명 회차 매칭
@@ -52,7 +53,7 @@ async function tasksForEpisode(projectUuid, episode) {
     const job = (all?.data || []).find((x) => re.test((x.JOB명 || "").trim()));
     if (job) add(job);
   }
-  return byCode;
+  return { byCode, jobIndex: jobInfo?.index ?? null, jobName: jobInfo?.name ?? null };
 }
 
 // 파일내순서 0/감소 시 페이지++ (빈 박스로 0이 빠져도 견고). 텍박=파일내순서+1 (1-based, 빈박스 자리 보존)
@@ -86,7 +87,7 @@ export async function extractEpisode({ work, episode, lang = "ko-ja", stage = nu
   const uu = await uuidForPivo(usePivo);
   if (uu.error) return uu;
   if (!projectName) projectName = String(uu.name || work || `PV-${usePivo}`).replace(/\[[^\]]*\]\s*/g, "").trim() || `PV-${usePivo}`;
-  const byCode = await tasksForEpisode(uu.uuid, episode);
+  const { byCode } = await tasksForEpisode(uu.uuid, episode);
   if (!Object.keys(byCode).length) return { error: `${projectName} ${episode}화 task 없음 (회차 표기/진행상태 확인)` };
   const order = stage && STAGE_BY_NAME[stage] ? [{ code: STAGE_BY_NAME[stage], name: stage }] : STAGE_ORDER;
   for (const s of order) {
@@ -146,7 +147,8 @@ export async function extractEpisodeRange({ pivo = null, projectName = null, fro
   if (!Number.isFinite(fromN) || !Number.isFinite(toN) || fromN > toN) return { error: `잘못된 회차 범위: ${from}~${to}` };
   if (toN - fromN + 1 > 100) return { error: `범위가 너무 큼(${toN - fromN + 1}화). 100화 이하로 나눠 요청.` };
   const order = stage && STAGE_BY_NAME[stage] ? [{ code: STAGE_BY_NAME[stage], name: stage }] : STAGE_ORDER;
-  const rows = [["회차", "단계", "텍박", "원문", "번역문"]];
+  // 스키마(사용자 지정): project_uuid, project_name(정제명), job_index, job_name, file_name, text_box_order, text(일본어 번역문)
+  const rows = [["project_uuid", "project_name", "job_index", "job_name", "file_name", "text_box_order", "text"]];
   const episodes = [];
   const missing = [];
   const startedAt = Date.now();
@@ -154,7 +156,7 @@ export async function extractEpisodeRange({ pivo = null, projectName = null, fro
   for (; ep <= toN; ep++) {
     // 시간 예산 초과 시 여기서 중단 — 이 회차(ep)는 미처리로 남기고 nextFrom으로 이어받게 한다(최소 1화는 처리)
     if (budgetMs && ep > fromN && Date.now() - startedAt > budgetMs) break;
-    const byCode = await tasksForEpisode(proj.uuid, String(ep));
+    const { byCode, jobIndex, jobName } = await tasksForEpisode(proj.uuid, String(ep));
     if (!Object.keys(byCode).length) { missing.push({ episode: ep, reason: "task 없음" }); continue; }
     let picked = null;
     for (const s of order) {
@@ -163,9 +165,10 @@ export async function extractEpisodeRange({ pivo = null, projectName = null, fro
       if (Array.isArray(arr) && arr.length) { picked = { stage: s.name, arr }; break; }
     }
     if (!picked) { missing.push({ episode: ep, reason: "텍스트 있는 단계 없음" }); continue; }
-    const pairs = buildPairs(picked.arr);
-    for (const p of pairs) rows.push([String(ep), picked.stage, p.pb, p.src, p.tgt]);
-    episodes.push({ episode: ep, stage: picked.stage, count: pairs.length });
+    for (const x of picked.arr) {
+      rows.push([proj.uuid, proj.name, jobIndex ?? "", jobName ?? "", x.파일명 ?? "", x.파일내순서 ?? "", String(x.번역문 ?? "").replace(/[\r\n]+/g, "\\n")]);
+    }
+    episodes.push({ episode: ep, stage: picked.stage, count: picked.arr.length });
   }
   const stopped = ep <= toN;   // 예산으로 중단됨(ep가 아직 남음)
   const csv = rows.map((r) => r.map(csvField).join(",")).join("\n");
