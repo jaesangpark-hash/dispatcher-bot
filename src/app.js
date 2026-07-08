@@ -2042,6 +2042,52 @@ const assistant = new Assistant({
 });
 if (process.env.ASSISTANT_UI === "1") { app.assistant(assistant); console.log("[assistant] 에이전트 패널 ON"); }
 
+// ── 메시지 숏컷 — 보고 있는 스레드의 '...' 메뉴에서 툰식이 소환(thread_ts 정확 전달). 링크 불필요 ──
+// 슬랙 앱 설정: Interactivity & Shortcuts → Create New Shortcut → On messages, callback_id = toonsik_thread
+app.shortcut("toonsik_thread", async ({ shortcut, ack, client }) => {
+  await ack();
+  try {
+    if (!ALLOWED_USERS.has(shortcut.user?.id)) return;
+    const channel = shortcut.channel?.id;
+    const threadTs = shortcut.message?.thread_ts || shortcut.message?.ts || shortcut.message_ts;
+    await client.views.open({
+      trigger_id: shortcut.trigger_id,
+      view: {
+        type: "modal", callback_id: "toonsik_thread_modal",
+        private_metadata: JSON.stringify({ channel, threadTs }),
+        title: { type: "plain_text", text: "툰식이에게 시키기" },
+        submit: { type: "plain_text", text: "실행" }, close: { type: "plain_text", text: "닫기" },
+        blocks: [
+          { type: "input", block_id: "cmd", optional: true,
+            label: { type: "plain_text", text: "이 스레드로 뭘 할까요?" },
+            element: { type: "plain_text_input", action_id: "v", multiline: true, placeholder: { type: "plain_text", text: "예: 요약해줘 / 필요한 액션 추천 / 이 재수급 고객사 초안 만들어줘" } } },
+          { type: "context", elements: [{ type: "mrkdwn", text: "비워두면 요약+액션 추천. 답은 툰식이 DM으로 와요." }] },
+        ],
+      },
+    });
+  } catch (e) { console.error("[shortcut] toonsik_thread:", e?.message ?? e); }
+});
+app.view("toonsik_thread_modal", async ({ ack, body, view, client }) => {
+  await ack();
+  try {
+    const user = body.user?.id;
+    if (!ALLOWED_USERS.has(user)) return;
+    const { channel, threadTs } = JSON.parse(view.private_metadata || "{}");
+    const cmd = (view.state.values?.cmd?.v?.value || "").trim() || "이 스레드를 짧게 요약하고, 지금 필요한 액션이 있으면 추천해줘";
+    const dm = await client.conversations.open({ users: user });
+    const dmCh = dm.channel?.id;
+    if (!dmCh) return;
+    const tc = await fetchThreadContext(client, channel, threadTs).catch(() => ({ text: "", attFiles: [] }));
+    const nowStr = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "full", timeStyle: "short" });
+    const llmText = `[현재 시각(KST): ${nowStr}] [요청자: ${USER_NAMES[user] || "사용자"}] [메시지 숏컷 — 아래 스레드를 대상으로 명령. 이 맥락을 그 스레드로 삼아 처리하라]\n[대상 스레드 맥락 (${channel})]\n${(tc.text || "(스레드 내용을 못 읽음 — 봇이 그 채널 멤버인지 확인)").slice(0, 4000)}\n\n[요청]\n${cmd}`;
+    const ph = await client.chat.postMessage({ channel: dmCh, text: `🧵 숏컷 처리 중… (${cmd.slice(0, 30)})`, ...SENDER });
+    if (!BRAIN_ON) { await client.chat.postMessage({ channel: dmCh, text: `🔌 브레인 오프(에코):\n> ${cmd}`, ...SENDER }); return; }
+    const entry = { client, channel: dmCh, threadTs: undefined, ts: ph?.ts, placeholderTs: ph?.ts, startedAt: Date.now(), done: false };
+    queue.push({ content: llmText, ctx: entry, attachTexts: [], fileRefs: [], user });
+    if (wake) { const w = wake; wake = null; w(); }
+  } catch (e) { console.error("[shortcut] modal submit:", e?.message ?? e); }
+});
+
 // ── 게이트형 쓰기: 확인/취소 버튼 (실제 쓰기는 LLM 밖, 여기서만) ──────
 app.action("delivery_edit_confirm", async ({ ack, body, client }) => {
   await ack();
