@@ -1,6 +1,6 @@
 import "dotenv/config";
 import pkg from "@slack/bolt";
-const { App } = pkg;
+const { App, Assistant } = pkg;
 import { pollOnce, initSince, refreshJungil } from "./totalk.js";
 import { runInitiative, dueDailyInitiative } from "./initiative.js";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
@@ -1734,6 +1734,16 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   // 현재 시각 주입 — '월요일 10시' 같은 상대 시각 리마인더를 브레인이 정확히 계산하도록
   const nowStr = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "full", timeStyle: "short" });
   llmText = `[현재 시각(KST): ${nowStr}] [요청자: ${USER_NAMES[user] || "사용자"}] [채널: ${channel}]\n${llmText}`;
+  // 어시스턴트 패널: 재상 님이 '지금 보고 있는 채널/스레드' 맥락을 주입(패널 최근 열림·DM일 때만) — '이 스레드/이거' 지시 해석용
+  const _av = assistantCtx.get(user);
+  if (_av && channel.startsWith("D") && Date.now() - _av.at < 15 * 60 * 1000) {
+    try {
+      let vt = "";
+      if (_av.thread_ts) { const rr = await client.conversations.replies({ channel: _av.channel_id, ts: _av.thread_ts, limit: 30 }); vt = (rr.messages || []).map((m) => m.text || "").join("\n"); }
+      else { const rr = await client.conversations.history({ channel: _av.channel_id, limit: 15 }); vt = (rr.messages || []).reverse().map((m) => m.text || "").join("\n"); }
+      if (vt.trim()) llmText = `[지금 재상 님이 보고 있는 곳(${_av.channel_id})의 최근 대화 — 요청이 '이 스레드/이거/여기'를 가리키면 이걸 대상으로 삼아라]\n${vt.slice(0, 3000)}\n\n${llmText}`;
+    } catch { /* 조회 실패 무시 */ }
+  }
   const chPol = CHANNEL_POLICY[channel];   // 채널별 행동 지침(임시) — 있으면 최우선 규칙으로 주입
   if (chPol) llmText = `[이 채널 규칙(최우선): ${chPol}]\n${llmText}`;
   console.log(`[handle] 수신 (ch=${channel}, inThread=${inThread}, 첨부=${attFiles.length}): ${String(text || "").slice(0, 80).replace(/\n/g, " ")}`);
@@ -1978,6 +1988,54 @@ app.event("app_mention", async ({ event, say, client }) => {
     user: event.user, client, say, files: event.files,
   });
 });
+
+// ── 어시스턴트(에이전트) 패널 — 지금 보는 스레드 맥락으로 추천 프롬프트 + 브레인 라우팅 ──
+// 패널이 보고 있는 채널/스레드를 assistantCtx에 기록 → handle()이 '이 스레드' 지시를 해석. 메시지는 handle로(ts중복차단으로 이중응답 없음).
+const assistantCtx = new Map();   // userId → { channel_id, thread_ts, at }
+async function assistantPrompts(client, c) {
+  const prompts = [];
+  try {
+    let text = "";
+    if (c?.thread_ts) { const r = await client.conversations.replies({ channel: c.channel_id, ts: c.thread_ts, limit: 20 }); text = (r.messages || []).map((m) => m.text || "").join("\n"); }
+    else if (c?.channel_id) { const r = await client.conversations.history({ channel: c.channel_id, limit: 12 }); text = (r.messages || []).map((m) => m.text || "").join("\n"); }
+    if (/재수급\s*사유\s*[:：]/.test(text)) prompts.push({ title: "고객사 재수급 초안 만들기", message: "지금 보고 있는 재수급 요청을 고객사용 일본어 초안으로 만들어줘" });
+    if (/리테이크\s*화수|리테이크\s*요청|리테이크\s*내용/.test(text)) prompts.push({ title: "번역가에게 리테이크 전달", message: "지금 보고 있는 리테이크를 번역가에게 전달할 일본어 초안 만들어줘" });
+    const idx = await koTitleIndex(); const tn = norm(text);
+    const hit = idx.filter((x) => x.koNorm && x.koNorm.length >= 2 && tn.includes(x.koNorm)).sort((a, b) => b.koNorm.length - a.koNorm.length)[0];
+    if (hit) prompts.push({ title: `${hit.koTitle} 프로젝트·납품일`, message: `${hit.koTitle} 프로젝트 링크랑 최신 납품일 알려줘` });
+    prompts.push({ title: "이 대화 요약", message: "지금 보고 있는 스레드/대화를 짧게 요약해줘" });
+  } catch { /* 무시 */ }
+  return prompts.slice(0, 4);
+}
+const assistant = new Assistant({
+  threadStarted: async ({ event, say, setSuggestedPrompts, saveThreadContext, client }) => {
+    try {
+      const c = event.assistant_thread?.context || {};
+      const uid = event.assistant_thread?.user_id;
+      if (uid && c.channel_id) assistantCtx.set(uid, { channel_id: c.channel_id, thread_ts: c.thread_ts || null, at: Date.now() });
+      await say({ text: "안녕하세요 재상 님 🙌 지금 보고 있는 곳 기준으로 도와드릴게요. 아래 버튼을 쓰거나 자유롭게 물어보세요.", ...SENDER }).catch(() => {});
+      const prompts = await assistantPrompts(client, c);
+      if (prompts.length) await setSuggestedPrompts({ title: "이런 걸 할 수 있어요", prompts }).catch(() => {});
+      await saveThreadContext().catch(() => {});
+    } catch (e) { console.error("[assistant] threadStarted:", e?.message ?? e); }
+  },
+  threadContextChanged: async ({ event, saveThreadContext }) => {
+    try {
+      const c = event.assistant_thread?.context || {};
+      const uid = event.assistant_thread?.user_id;
+      if (uid && c.channel_id) assistantCtx.set(uid, { channel_id: c.channel_id, thread_ts: c.thread_ts || null, at: Date.now() });
+      await saveThreadContext().catch(() => {});
+    } catch (e) { console.error("[assistant] ctxChanged:", e?.message ?? e); }
+  },
+  userMessage: async ({ message, say, setStatus, client }) => {
+    try {
+      if (message.subtype || !message.text || !ALLOWED_USERS.has(message.user)) return;
+      await setStatus("생각 중…").catch(() => {});
+      await handle({ text: message.text, channel: message.channel, ts: message.ts, threadTs: message.thread_ts, inThread: false, user: message.user, client, say });
+    } catch (e) { console.error("[assistant] userMessage:", e?.message ?? e); }
+  },
+});
+if (process.env.ASSISTANT_UI === "1") { app.assistant(assistant); console.log("[assistant] 에이전트 패널 ON"); }
 
 // ── 게이트형 쓰기: 확인/취소 버튼 (실제 쓰기는 LLM 밖, 여기서만) ──────
 app.action("delivery_edit_confirm", async ({ ack, body, client }) => {
