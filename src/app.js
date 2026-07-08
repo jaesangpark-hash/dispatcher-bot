@@ -18,7 +18,7 @@ import { buildRetake } from "./retake.js";
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups } from "./totus.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
-import { extractEpisode, QA_INSTRUCTIONS } from "./review.js";
+import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
@@ -445,6 +445,7 @@ async function checkDailyReport() {
 // 판단하고 결과 문자열을 반환하면 워커가 잡에 캡처된 ctx 스레드로 게시한다.
 const WORKER_COUNT = Number(process.env.WORKER_COUNT || process.env.REVIEW_WORKERS || 4);
 const JOB_TIMEOUT_MS = 300_000;
+const TEXT_EXPORT_BUDGET_MS = 200_000;   // 텍스트 추출 잡 1회 예산(워커 타임아웃 300s보다 짧게) — 초과 시 남은 화는 자동 이어받기
 const jobs = [];
 const jobWaiters = [];        // 대기 중 워커 resolver (잡 1개당 1명 깨움)
 let workersStarted = false;
@@ -499,6 +500,35 @@ function makeReviewJob({ work, pivo, episode, lang, label, ctx }) {
       + "\n\n위 [웹툰 번역 검수 기준]대로 pairs를 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성하라. 문제 없으면 본문에 '問題なし'만.";
     return (await toollessQuery(prompt, { label: `검수 ${label} ${episode}화`, channel: ctx.channel })) || `${r.work} ${r.episode}화: 問題なし`;
   } };
+}
+// 텍스트 추출(범위) 잡 — 화별 추출, 예산(200s) 초과 시 그때까지 것 누적해두고 남은 화부터 자동 이어받기(resume).
+// 다 되면 누적 CSV 한 번에 업로드. 화별 오류/누락은 건너뛰고 '누락'으로 기록 → 조용히 죽지 않는다.
+function makeTextExportJob({ pivo, projectName, from, to, stage, label, ctx, accCsv = null, origFrom = null, accMissing = [] }) {
+  const of = origFrom ?? from;
+  return { label: `${label} ${of}-${to}화 텍스트추출`, ctx, run: async () => {
+    const r = await extractEpisodeRange({ pivo, projectName, from, to, stage, budgetMs: TEXT_EXPORT_BUDGET_MS });
+    if (r.error) {
+      if (accCsv) { await uploadTextCsv(ctx, { work: label, pivo, of, to, csv: accCsv, missing: accMissing }); return `${label}: 이어받기 중 오류(${r.error}) — 그때까지 추출분만 업로드했어요`; }
+      return `${label} ${from}~${to}화 텍스트 추출 실패: ${r.error}` + (r.candidates ? `\n후보: ${r.candidates.join(" / ")}` : "");
+    }
+    const body = accCsv ? r.csv.split("\n").slice(1).join("\n") : r.csv;       // 이어받기 청크는 헤더 제거
+    const acc = accCsv ? (body ? accCsv + "\n" + body : accCsv) : r.csv;
+    const missing = [...accMissing, ...r.missing];
+    if (!r.done && r.nextFrom && r.nextFrom <= parseInt(to, 10)) {              // 남음 → 진행 알림 + 자동 이어받기
+      await workerPost(ctx, `⏳ ${r.work} ${of}~${to}화 텍스트 추출 중… ${r.nextFrom - 1}화까지 완료, 이어서 진행할게요`);
+      enqueueJob(makeTextExportJob({ pivo, projectName, from: String(r.nextFrom), to, stage, label: r.work || label, ctx, accCsv: acc, origFrom: of, accMissing: missing }));
+      return null;
+    }
+    await uploadTextCsv(ctx, { work: r.work || label, pivo: r.pivo || pivo, of, to, csv: acc, missing });   // 완료 → 최종 업로드
+    return null;
+  } };
+}
+async function uploadTextCsv(ctx, { work, pivo, of, to, csv, missing }) {
+  const rows = Math.max(0, String(csv || "").split("\n").length - 1);
+  if (!rows) { await workerPost(ctx, `⚠️ ${work} ${of}~${to}화: 추출된 텍스트가 없어요${missing.length ? ` (누락 ${missing.length}화)` : ""}`); return; }
+  const title = `PIVO_${pivo || "?"}_${of}-${to}화_텍스트`.replace(/[\\/:*?"<>|]/g, "_");
+  const missingNote = missing.length ? `\n누락 ${missing.length}화: ${missing.map((m) => `${m.episode}(${m.reason})`).join(", ")}` : "";
+  await ctx.client.files.uploadV2({ channel_id: ctx.channel, thread_ts: ctx.threadTs || ctx.ts, initial_comment: `📄 ${work} ${of}~${to}화 텍스트 (${rows}행)${missingNote}`, file_uploads: [{ file: Buffer.from(csv, "utf8"), filename: `${title}.csv` }] });
 }
 
 // ── 도구(모듈) — 빌드 1: 납품일 조회 (read-only) ───────────────────
@@ -955,6 +985,28 @@ const apmTools = createSdkMcpServer({
           const initial = `📄 ${title}.csv (${rows}행) — 다운로드해 클로드 앱에 드래그하면 심층 분석할 수 있어요${note ? "\n\n" + note : ""}`;
           await ctx.client.files.uploadV2({ channel_id: ctx.channel, thread_ts, initial_comment: initial, file_uploads: [{ file: Buffer.from(csv, "utf8"), filename: `${title}.csv` }] });
           return { content: [{ type: "text", text: JSON.stringify({ delivered: "file", rows, chars: csv.length, note: "CSV 파일로 업로드함. 사용자에겐 '정제 CSV 파일 올렸어요 — 클로드 앱에 드래그해 분석하세요' 정도만 알리고 결과를 재작성하지 말 것." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
+    tool("export_translation_text_range",
+      "회차 범위(예 1~20화)의 번역 텍스트(원문↔번역)를 QA 판단 없이 그대로 CSV로 뽑아 파일 업로드한다('텍스트 뽑아줘/추출해줘' 류. 검수·판단이 필요하면 이게 아니라 review_episode/review_queue). ★작품 식별은 PIVO ID(권장, 가장 확실) 또는 TOTUS 프로젝트명과 완전일치하는 표기만 쓴다 — 납품시트 fuzzy(부분일치) 매칭 안 함. 완전일치 안 되면 error+candidates로 후보를 돌려주니 그대로 사용자에게 보여주고 되물어라(임의로 하나 고르지 말 것). 회차별로 텍스트 있는 마지막 단계(식자번역검수>번역검수>번역)를 자동 선택하며, stage로 특정 단계 고정 가능(그 단계 텍스트 없는 회차는 누락 처리). 무거운 작업이라 워커 풀에 넘기고 즉시 반환 — 완료되면 CSV 파일이 이 스레드에 직접 올라간다. 최대 100화.",
+      {
+        pivo: z.string().optional().describe("PIVO ID(예 185738). 있으면 이걸 우선 사용 — 가장 확실하고 빠름"),
+        projectName: z.string().optional().describe("TOTUS 프로젝트명과 완전일치하는 표기(대괄호 태그 포함 원문 또는 태그 제거한 정제 제목 둘 다 가능). 부분일치/유사매칭은 안 됨. pivo 있으면 생략 가능"),
+        from: z.string().describe("시작 회차(숫자)"),
+        to: z.string().describe("끝 회차(숫자). 1화만 필요하면 from과 동일하게"),
+        stage: z.enum(["식자번역검수", "번역검수", "번역"]).optional().describe("고정할 단계. 생략 시 회차별 자동(텍스트 있는 마지막 단계)"),
+      },
+      async (a) => {
+        try {
+          const ctx = currentCtx;
+          if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락을 못 잡음." }) }] };
+          if (!a.pivo && !a.projectName) return { content: [{ type: "text", text: JSON.stringify({ error: "pivo 또는 projectName 중 하나는 필요함." }) }] };
+          ensureWorkers();
+          const jobCtx = { client: ctx.client, channel: ctx.channel, threadTs: ctx.threadTs, ts: ctx.ts };
+          const label = a.projectName || `PV-${a.pivo}`;
+          enqueueJob(makeTextExportJob({ pivo: a.pivo || null, projectName: a.projectName || null, from: a.from, to: a.to, stage: a.stage || null, label, ctx: jobCtx }));
+          return { content: [{ type: "text", text: JSON.stringify({ queued: true, label, from: a.from, to: a.to, note: `'${label}' ${a.from}~${a.to}화 텍스트 추출을 워커 풀에 넘겼음 — 끝나면 CSV 파일이 이 스레드에 직접 올라간다. 사용자에겐 '추출 시작' 한 줄만 알리고 직접 텍스트를 재작성하거나 pairs를 나열하지 말 것.` }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
@@ -1609,7 +1661,7 @@ function startSession() {
       strictMcpConfig: true,
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
-        "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__find_thread", "mcp__apm__read_thread",
+        "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread",
         "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__compute",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",

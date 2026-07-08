@@ -1,7 +1,7 @@
 // 웹툰 번역 검수: 작품명+회차 → 납품탭에서 PIVO → projectUuid → 검수단계 task → 원문/번역 추출.
 // 검수(판단)는 브레인이 QA_INSTRUCTIONS 기준으로 수행. 이 모듈은 텍스트 추출까지만(결정적).
 import { readTab } from "./sheets-registry.js";
-import { projectByPivo, projectJobs, translationText } from "./totus.js";
+import { findProject, projectByPivo, projectJobs, translationText } from "./totus.js";
 
 const TAB = { "ko-ja": "납품관리시트_Japan(한일 V5)", "zh-ja": "납품관리시트_Japan(중일 V5)" };
 // 텍스트가 나오는 단계 우선순위: 식자번역검수 > 번역검수 > 번역 (식자·식자검수는 이미지/리포트라 텍스트 없음)
@@ -101,6 +101,75 @@ export async function extractEpisode({ work, episode, lang = "ko-ja", stage = nu
   }
   const present = Object.keys(byCode).map((c) => STAGE_ORDER.find((s) => s.code === c)?.name || c).join(", ");
   return { error: `${projectName} ${episode}화: 텍스트(원문↔번역) 있는 검수단계 없음. 존재 단계: ${present || "없음"} (번역/식자번역검수 미진행 가능)` };
+}
+
+// 대괄호 태그([PRJ-…] [PV-…] [고객사] 등) 전부 제거한 정제명
+function cleanName(s) { return String(s || "").replace(/\[[^\]]*\]\s*/g, "").trim(); }
+
+function csvField(v) {
+  const s = String(v ?? "");
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// PIVO ID 또는 TOTUS 프로젝트명 "완전일치"로만 프로젝트 해석 — 납품시트 안 거침, fuzzy(contains) 매칭 없음.
+// projectName은 원문(대괄호 태그 포함) 또는 정제명 둘 다 완전일치로 인정.
+export async function resolveProjectExact({ pivo, projectName }) {
+  if (pivo && String(pivo).trim()) {
+    const uu = await uuidForPivo(String(pivo).trim());
+    if (uu.error) return uu;
+    return { uuid: uu.uuid, pivo: String(pivo).trim(), name: cleanName(uu.name) || `PV-${pivo}` };
+  }
+  const q = String(projectName || "").trim();
+  if (!q) return { error: "pivo 또는 projectName 중 하나는 필요함" };
+  const r = await findProject(q).catch((e) => ({ _err: e?.message }));
+  const list = Array.isArray(r?.data) ? r.data : [];
+  if (!list.length) return { error: `TOTUS에서 '${q}' 검색 결과 없음(오타/미등록 확인)` };
+  const norm = (s) => String(s ?? "").trim();
+  const rawName = (p) => norm(p["프로젝트"] ?? p.name);
+  const exact = list.filter((p) => rawName(p) === q || cleanName(rawName(p)) === q);
+  if (exact.length === 1) {
+    const p = exact[0];
+    const pv = String(p._detail?.pivoId ?? p["PIVO"] ?? "").trim();
+    return { uuid: p.uuid, pivo: pv, name: cleanName(rawName(p)) };
+  }
+  const candidates = (exact.length > 1 ? exact : list).slice(0, 8).map((p) => rawName(p));
+  if (exact.length > 1) return { error: `'${q}'와 완전일치가 ${exact.length}건 — PIVO ID로 지정 필요`, candidates };
+  return { error: `'${q}'와 완전일치하는 TOTUS 프로젝트명 없음(부분일치 ${list.length}건 존재). 완전한 프로젝트명 또는 PIVO ID로 지정 필요`, candidates };
+}
+
+// 회차 범위(from~to) 원문/번역 텍스트를 CSV(회차,단계,텍박,원문,번역문)로 추출. 단계는 회차별 자동(식자번역검수>번역검수>번역) 또는 stage로 고정.
+// QA 판단 없이 순수 추출만 — 결정적.
+export async function extractEpisodeRange({ pivo = null, projectName = null, from, to, stage = null, budgetMs = null }) {
+  const proj = await resolveProjectExact({ pivo, projectName });
+  if (proj.error) return proj;
+  const fromN = parseInt(from, 10), toN = parseInt(to, 10);
+  if (!Number.isFinite(fromN) || !Number.isFinite(toN) || fromN > toN) return { error: `잘못된 회차 범위: ${from}~${to}` };
+  if (toN - fromN + 1 > 100) return { error: `범위가 너무 큼(${toN - fromN + 1}화). 100화 이하로 나눠 요청.` };
+  const order = stage && STAGE_BY_NAME[stage] ? [{ code: STAGE_BY_NAME[stage], name: stage }] : STAGE_ORDER;
+  const rows = [["회차", "단계", "텍박", "원문", "번역문"]];
+  const episodes = [];
+  const missing = [];
+  const startedAt = Date.now();
+  let ep = fromN;
+  for (; ep <= toN; ep++) {
+    // 시간 예산 초과 시 여기서 중단 — 이 회차(ep)는 미처리로 남기고 nextFrom으로 이어받게 한다(최소 1화는 처리)
+    if (budgetMs && ep > fromN && Date.now() - startedAt > budgetMs) break;
+    const byCode = await tasksForEpisode(proj.uuid, String(ep));
+    if (!Object.keys(byCode).length) { missing.push({ episode: ep, reason: "task 없음" }); continue; }
+    let picked = null;
+    for (const s of order) {
+      if (!byCode[s.code]) continue;
+      const arr = (await translationText(byCode[s.code]))?.data;
+      if (Array.isArray(arr) && arr.length) { picked = { stage: s.name, arr }; break; }
+    }
+    if (!picked) { missing.push({ episode: ep, reason: "텍스트 있는 단계 없음" }); continue; }
+    const pairs = buildPairs(picked.arr);
+    for (const p of pairs) rows.push([String(ep), picked.stage, p.pb, p.src, p.tgt]);
+    episodes.push({ episode: ep, stage: picked.stage, count: pairs.length });
+  }
+  const stopped = ep <= toN;   // 예산으로 중단됨(ep가 아직 남음)
+  const csv = rows.map((r) => r.map(csvField).join(",")).join("\n");
+  return { work: proj.name, pivo: proj.pivo, from: fromN, to: toN, episodes, missing, totalRows: rows.length - 1, csv, done: !stopped, nextFrom: stopped ? ep : null };
 }
 
 // 브레인이 따를 검수 기준 + 출력 템플릿 (추출 결과 앞에 붙여 반환)
