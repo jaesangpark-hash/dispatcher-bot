@@ -1950,6 +1950,57 @@ async function handleRetakeWatch({ message, client }) {
   } catch (e) { console.error("[retake-watch] 실패:", e?.message ?? e); }
 }
 
+// ── 수급 안내(설정집/타이틀 로고) 자동 감지 → 배정 작업자 + 채널 링크(+설정집이면 프로젝트 링크) 스레드 답글 ──
+const SUPPLY_NOTICE_CHANNEL = process.env.SUPPLY_NOTICE_CHANNEL || "C09B8QLR5FG";
+const SUPPLY_BOTS = { "B0B77NK250T": "FIX 설정집", "B0B103Z57T9": "타이틀 로고" };   // 도착 안내 봇 → 종류
+const WORKER_DB_SHEET = "1lvHDrNCiBplWlfIdAgI2iYNPAFWGrHYlqxjjebnFpE8";              // 작업자 DB!A:F (A이름 C slack D channel)
+const SUPPLY_ROLES = [["번역", "번역 skip"], ["번역검수", "번역검수 skip"], ["식자", "식자 skip"], ["식번검", "식번검 skip"], ["식자검수", "식자검수 skip"]];
+function blockText(m) {
+  const parts = []; const walk = (o) => { if (!o) return; if (Array.isArray(o)) return o.forEach(walk); if (typeof o === "object") { if (typeof o.text === "string") parts.push(o.text); else if (o.text) walk(o.text); for (const k in o) if (!["text", "type", "verbatim", "block_id", "emoji", "style"].includes(k)) walk(o[k]); } };
+  walk(m.blocks); return (m.text ? m.text + "\n" : "") + parts.join("\n");
+}
+let _wdb = null, _wdbAt = 0;
+async function workerChannelMap() {
+  if (_wdb && Date.now() - _wdbAt < 600000) return _wdb;
+  const rows = (await readRangeRO(WORKER_DB_SHEET, "작업자 DB!A:F")).slice(1);
+  const map = new Map();
+  for (const r of rows) { const nm = String(r[0] || "").trim(); if (nm) map.set(norm(nm), { name: nm, slackId: String(r[2] || "").trim(), channel: String(r[3] || "").trim() }); }
+  _wdb = map; _wdbAt = Date.now(); return map;
+}
+async function handleSupplyNotice({ message, client }) {
+  try {
+    const ts = message.ts;
+    if (processed.has("sn:" + ts)) return; processed.add("sn:" + ts);
+    const text = blockText(message);
+    const kind = SUPPLY_BOTS[message.bot_id] || (/설정집.{0,6}도착\s*안내/.test(text) ? "FIX 설정집" : /타이틀.{0,6}도착\s*안내/.test(text) ? "타이틀 로고" : null);
+    if (!kind) return;
+    const work = (text.match(/타이틀\s*[:：]\s*(.+)/) || [])[1]?.trim();
+    if (!work) { console.log("[supply] 작품명 못 찾음"); return; }
+    let row = null;
+    for (const op of ["eq", "contains"]) {
+      try { const t = await readTab({ sheet: "ops", tab: "배정 현황", where: { field: "한국어타이틀", op, value: work }, limit: 1 }); if (t.rows[0]) { row = t.rows[0]; break; } } catch { /* 무시 */ }
+    }
+    const lines = [];
+    if (row) {
+      const wmap = await workerChannelMap();
+      for (const [role, skipF] of SUPPLY_ROLES) {
+        const nm = String(row[role] || "").trim();
+        if (!nm || String(row[skipF] || "").toUpperCase() === "TRUE") continue;
+        const w = wmap.get(norm(nm));
+        lines.push(`• ${role}: ${nm} ${w?.channel ? `<#${w.channel}>` : "_(채널 미등록)_"}`);
+      }
+    }
+    let projLine = "";
+    if (kind === "FIX 설정집") {
+      try { const fp = await findProject(row?.pivo_id || work); const proj = (fp?.data || [])[0]; if (proj?.uuid) projLine = `\n🔗 프로젝트: https://admin.totus.pro/ko/workProgressManagementDetail/?id=${proj.uuid}`; } catch { /* 무시 */ }
+    }
+    const head = `📋 *${work}* — ${kind} 도착 · 배정 작업자`;
+    const body = lines.length ? lines.join("\n") : "_배정 현황에서 작업자를 못 찾았어요 (한국어타이틀 표기 확인)_";
+    await client.chat.postMessage({ channel: message.channel, thread_ts: ts, text: `${head}\n${body}${projLine}`, ...SENDER, unfurl_links: false });
+    console.log(`[supply] ${kind} ${work} → 작업자 ${lines.length}명`);
+  } catch (e) { console.error("[supply] 실패:", e?.message ?? e); }
+}
+
 // ── 부팅 ──────────────────────────────────────────────────────────
 const app = new App({
   token: SLACK_BOT_TOKEN,
@@ -1959,6 +2010,11 @@ const app = new App({
 
 // DM (message.im) — 본인 DM만, 봇/수정 이벤트 제외
 app.message(async ({ message, say, client }) => {
+  // 수급 안내 채널 — 설정집/타이틀 로고 도착 안내면 배정 작업자+채널 링크 답글
+  if (message.channel === SUPPLY_NOTICE_CHANNEL && (SUPPLY_BOTS[message.bot_id] || /도착\s*안내/.test(message.text || ""))) {
+    await handleSupplyNotice({ message, client });
+    return;
+  }
   // 리테이크 채널 자동 감지 — 자동 봇 메시지에서 중일·번역 이슈면 번역가 발송 초안을 박재상 DM으로
   if (message.channel === RETAKE_WATCH_CHANNEL) {
     if (message.bot_id === RETAKE_BOT_ID && message.text) await handleRetakeWatch({ message, client });
