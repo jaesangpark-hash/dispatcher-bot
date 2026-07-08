@@ -2012,6 +2012,7 @@ const assistant = new Assistant({
     try {
       const c = event.assistant_thread?.context || {};
       const uid = event.assistant_thread?.user_id;
+      if (uid && !ALLOWED_USERS.has(uid)) return;   // 박재상+허용 APM만 인사말·추천버튼(그 외엔 조용)
       if (uid && c.channel_id) assistantCtx.set(uid, { channel_id: c.channel_id, thread_ts: c.thread_ts || null, at: Date.now() });
       await say({ text: "안녕하세요 재상 님 🙌 지금 보고 있는 곳 기준으로 도와드릴게요. 아래 버튼을 쓰거나 자유롭게 물어보세요.", ...SENDER }).catch(() => {});
       const prompts = await assistantPrompts(client, c);
