@@ -1738,10 +1738,14 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   const _av = assistantCtx.get(user);
   if (_av && channel.startsWith("D") && Date.now() - _av.at < 15 * 60 * 1000) {
     try {
-      let vt = "";
-      if (_av.thread_ts) { const rr = await client.conversations.replies({ channel: _av.channel_id, ts: _av.thread_ts, limit: 30 }); vt = (rr.messages || []).map((m) => m.text || "").join("\n"); }
-      else { const rr = await client.conversations.history({ channel: _av.channel_id, limit: 15 }); vt = (rr.messages || []).reverse().map((m) => m.text || "").join("\n"); }
-      if (vt.trim()) llmText = `[지금 재상 님이 보고 있는 곳(${_av.channel_id})의 최근 대화 — 요청이 '이 스레드/이거/여기'를 가리키면 이걸 대상으로 삼아라]\n${vt.slice(0, 3000)}\n\n${llmText}`;
+      // 슬랙은 '보고 있는 채널'만 주고 '특정 스레드'는 안 준다 → 채널 최근 메시지 + 최근 스레드 답글까지 펼쳐 수집(best-effort)
+      const hist = await client.conversations.history({ channel: _av.channel_id, limit: 15 });
+      const msgs = (hist.messages || []).reverse();
+      let vt = msgs.map((m) => m.text || "").join("\n");
+      for (const pm of msgs.filter((m) => (m.reply_count || 0) > 0).slice(-2)) {
+        try { const rr = await client.conversations.replies({ channel: _av.channel_id, ts: pm.ts, limit: 30 }); vt += `\n\n[스레드 답글]\n${(rr.messages || []).map((m) => m.text || "").join("\n")}`; } catch { /* 스레드 조회 실패 무시 */ }
+      }
+      if (vt.trim()) llmText = `[지금 재상 님이 보고 있는 채널(${_av.channel_id})의 최근 대화 — ★슬랙 한계로 '특정 스레드'는 못 집는다. 이 맥락으로 답하되, 정확한 스레드가 필요하면 '그 스레드 링크를 붙여주세요'라고 안내하라(그럼 read_thread로 정확히 읽음)]\n${vt.slice(0, 3500)}\n\n${llmText}`;
     } catch { /* 조회 실패 무시 */ }
   }
   const chPol = CHANNEL_POLICY[channel];   // 채널별 행동 지침(임시) — 있으면 최우선 규칙으로 주입
@@ -2003,7 +2007,7 @@ async function assistantPrompts(client, c) {
     const idx = await koTitleIndex(); const tn = norm(text);
     const hit = idx.filter((x) => x.koNorm && x.koNorm.length >= 2 && tn.includes(x.koNorm)).sort((a, b) => b.koNorm.length - a.koNorm.length)[0];
     if (hit) prompts.push({ title: `${hit.koTitle} 프로젝트·납품일`, message: `${hit.koTitle} 프로젝트 링크랑 최신 납품일 알려줘` });
-    prompts.push({ title: "이 대화 요약", message: "지금 보고 있는 스레드/대화를 짧게 요약해줘" });
+    prompts.push({ title: "이 채널 최근 상황 요약", message: "지금 보고 있는 채널의 최근 대화를 짧게 요약해줘 (특정 스레드가 필요하면 물어봐)" });
   } catch { /* 무시 */ }
   return prompts.slice(0, 4);
 }
