@@ -1955,6 +1955,8 @@ const SUPPLY_NOTICE_CHANNEL = process.env.SUPPLY_NOTICE_CHANNEL || "C09B8QLR5FG"
 const SUPPLY_BOTS = { "B0B77NK250T": "FIX 설정집", "B0B103Z57T9": "타이틀 로고" };   // 도착 안내 봇 → 종류
 const WORKER_DB_SHEET = "1lvHDrNCiBplWlfIdAgI2iYNPAFWGrHYlqxjjebnFpE8";              // 작업자 DB!A:F (A이름 C slack D channel)
 const SUPPLY_ROLES = [["번역", "번역 skip"], ["번역검수", "번역검수 skip"], ["식자", "식자 skip"], ["식번검", "식번검 skip"], ["식자검수", "식자검수 skip"]];
+// 타이틀 로고는 식자 작업 관련만(식자·식자검수), 설정집은 전 역할
+const ROLES_BY_KIND = { "타이틀 로고": [["식자", "식자 skip"], ["식자검수", "식자검수 skip"]] };
 function blockText(m) {
   const parts = []; const walk = (o) => { if (!o) return; if (Array.isArray(o)) return o.forEach(walk); if (typeof o === "object") { if (typeof o.text === "string") parts.push(o.text); else if (o.text) walk(o.text); for (const k in o) if (!["text", "type", "verbatim", "block_id", "emoji", "style"].includes(k)) walk(o[k]); } };
   walk(m.blocks); return (m.text ? m.text + "\n" : "") + parts.join("\n");
@@ -1983,7 +1985,7 @@ async function handleSupplyNotice({ message, client }) {
     const lines = [];
     if (row) {
       const wmap = await workerChannelMap();
-      for (const [role, skipF] of SUPPLY_ROLES) {
+      for (const [role, skipF] of (ROLES_BY_KIND[kind] || SUPPLY_ROLES)) {
         const nm = String(row[role] || "").trim();
         if (!nm || String(row[skipF] || "").toUpperCase() === "TRUE") continue;
         const w = wmap.get(norm(nm));
