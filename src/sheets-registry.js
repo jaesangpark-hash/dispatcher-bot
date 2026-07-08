@@ -196,11 +196,15 @@ async function tabsOf(sheetId) {
 export async function readTab({ sheet = null, tab, headerRow = 1, where = null, dateRange = null, distinct = null, limit = 50 } = {}) {
   if (!tab) throw new Error("tab(탭 이름) 필요");
   const want = norm(tab);
-  let sheetId = sheet && SHEETS[sheet] ? SHEETS[sheet] : null;
+  // sheet: 등록 별칭(ops 등) 또는 스프레드시트 URL/ID 직접 허용 — URL이면 ID 추출(SA 접근 가능하면 어떤 시트든 읽음)
+  const extractId = (s) => { const m = String(s || "").match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/); if (m) return m[1]; return /^[a-zA-Z0-9_-]{30,}$/.test(String(s || "").trim()) ? String(s).trim() : null; };
+  let sheetId = sheet && SHEETS[sheet] ? SHEETS[sheet] : (sheet ? extractId(sheet) : null);
   let resolvedTab = tab;
   if (sheetId) {
     const tabs = await tabsOf(sheetId);
-    resolvedTab = tabs.find((t) => norm(t) === want) || tabs.find((t) => norm(t).includes(want) || want.includes(norm(t))) || tab;
+    const hit = tabs.find((t) => norm(t) === want) || tabs.find((t) => norm(t).includes(want) || want.includes(norm(t)));
+    if (!hit) throw new Error(`탭 '${tab}' 없음. 이 시트의 탭: ${tabs.join(", ")}`);
+    resolvedTab = hit;
   } else {
     for (const id of Object.values(SHEETS)) {
       const tabs = await tabsOf(id);

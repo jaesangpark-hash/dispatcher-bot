@@ -1189,10 +1189,10 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("read_tab",
-      "query_sheet 뷰에 없는 임의 탭을 탭 이름으로 직접 조회한다(read-only). 시트의 *실제 헤더*를 필드명으로 쓰므로 한글/일본어 헤더 그대로 필터·기간조회 가능. sheet 생략 시 알려진 시트들(delivery/ops/worker/retake/schedule/kp_eval)에서 탭명 자동검색. 헤더가 1행이 아니면 headerRow 지정(예 作業記録=4). 같은 데이터를 query_sheet 뷰로 조회할 수 있으면 그걸 우선 쓰고, 뷰에 없는 탭일 때 이걸 쓴다.",
+      "query_sheet 뷰에 없는 임의 탭을 탭 이름으로 직접 조회한다(read-only). 시트의 *실제 헤더*를 필드명으로 쓰므로 한글/일본어 헤더 그대로 필터·기간조회 가능. sheet 생략 시 알려진 시트들(delivery/ops/worker/retake/schedule/kp_eval)에서 탭명 자동검색. ★사용자가 시트 URL/ID를 주면 그걸 sheet에 그대로 넣어라(SA가 접근 가능한 시트면 등록 안 돼 있어도 읽는다). 탭명은 띄어쓰기 무시 매칭('원고 수급'='원고수급'). 못 찾으면 그 시트의 탭 목록을 에러로 돌려주니 사용자에게 보여주고 고르게 하라. 헤더가 1행이 아니면 headerRow 지정(예 作業記録=4). 같은 데이터를 query_sheet 뷰로 조회할 수 있으면 그걸 우선.",
       {
-        tab: z.string().describe("탭 이름(부분일치 OK)"),
-        sheet: z.string().optional().describe("스프레드시트 별칭 delivery/ops/worker/retake/schedule/kp_eval (생략 시 자동검색)"),
+        tab: z.string().describe("탭 이름(부분일치·띄어쓰기 무시)"),
+        sheet: z.string().optional().describe("별칭(delivery/ops/worker/retake/schedule/kp_eval) *또는* 스프레드시트 URL/ID 그대로. 생략 시 등록 시트 자동검색"),
         headerRow: z.number().optional().describe("헤더 행번호(기본 1). 표가 중간부터면 그 행 번호"),
         filterField: z.string().optional().describe("거를 헤더 이름 — 시트 실제 헤더 그대로"),
         filterOp: z.enum(["empty", "notEmpty", "eq", "neq", "contains"]).optional(),
