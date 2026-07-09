@@ -129,31 +129,60 @@ function matchBlockByTitles(blocks, titles) {
   return blocks.find((b) => { const nb = normT(b.title); return nb && nts.some((t) => nb.includes(t) || t.includes(nb)); }) || null;
 }
 
-// ★특정 회차의 런칭일(주차별 リリース日) 조회. PIVO(또는 제목)→타이틀리스트→블록→회차가 속한 주차.
-// 반환: 그 회차의 launch(주차 リリース日) + deliveryDate(그 주차 納品予定日, 납품일 재설정에 유용) + 주차정보. episode 미지정이면 블록 주차 전체.
-export async function episodeLaunch({ work, pivo, episode } = {}) {
-  const key = pivo != null && String(pivo).trim() ? String(pivo).trim() : work;
-  const resolvedPivo = await resolvePivo(key);
-  if (!resolvedPivo) return { found: false, msg: `'${key}'로 PIVO ID를 못 찾음(출판사 마스터·타이틀리스트 모두 미스). 작품명 표기나 PIVO ID 확인 필요.` };
-  const { byPivo } = await titleListIndex();
-  const tl = byPivo.get(resolvedPivo);
-  if (!tl) return { found: false, pivo: resolvedPivo, msg: `PIVO ${resolvedPivo}가 고객사 타이틀리스트에 없음.` };
+// 블록 해석 — ①블록 제목 직접 매칭(블록 제목엔 正式+仮이 다 들어 있어 가장 강함, PIVO 실패해도 잡힘)
+//            → ②PIVO 경로(타이틀리스트) 폴백. 둘 다 실패면 block:null.
+async function resolveBlock({ work, pivo } = {}) {
   const blocks = await getBlocks();
-  const b = matchBlockByTitles(blocks, tl.titles);
-  if (!b) return { found: false, pivo: resolvedPivo, title: tl.seika || tl.ka, initialLaunch: tl.launch, msg: `타이틀리스트엔 있으나(제목 ${tl.seika || tl.ka}) 스케줄 시트 블록을 못 찾음 — 스케줄 미등록이거나 완결.` };
+  const q = String((pivo != null && String(pivo).trim() ? pivo : work) ?? "").trim();
+  if (q && !/^\d+$/.test(q)) {                       // ① 제목 직접 매칭(숫자 PIVO 아닐 때)
+    const nq = normT(q);
+    if (nq) {
+      const direct = blocks.find((b) => { const nb = normT(b.title); return nb && (nb.includes(nq) || nq.includes(nb)); });
+      if (direct) return { block: direct, blocks, pivo: null, tl: null, via: "title" };
+    }
+  }
+  const resolvedPivo = await resolvePivo(q);           // ② PIVO 경로
+  if (resolvedPivo) {
+    const { byPivo } = await titleListIndex();
+    const tl = byPivo.get(resolvedPivo);
+    if (tl) { const b = matchBlockByTitles(blocks, tl.titles); if (b) return { block: b, blocks, pivo: resolvedPivo, tl, via: "pivo" }; }
+    return { block: null, blocks, pivo: resolvedPivo, tl: tl || null, via: "pivo" };
+  }
+  return { block: null, blocks, pivo: null, tl: null, via: null };
+}
 
-  const base = { found: true, pivo: resolvedPivo, title: b.title, seika: tl.seika, ka: tl.ka, initialLaunch: tl.launch };
+// ★특정 회차의 런칭일(주차별 リリース日) 조회. 회차 매칭 기준 = 話数(런칭 회차).
+// 반환: 그 회차의 launch(주차 リリース日) + deliveryDate(그 주차 納品予定日) + 주차정보. episode 미지정이면 블록 주차 전체.
+export async function episodeLaunch({ work, pivo, episode } = {}) {
+  const { block: b, pivo: rp, tl } = await resolveBlock({ work, pivo });
+  if (!b) { const key = pivo != null && String(pivo).trim() ? pivo : work; return { found: false, pivo: rp || null, msg: `'${key}'를 스케줄 시트 블록에서 못 찾음(제목 표기나 PIVO ID 확인 필요).` }; }
+  const base = { found: true, pivo: rp || null, title: b.title, seika: tl?.seika, ka: tl?.ka, initialLaunch: tl?.launch };
   const ep = episode != null && String(episode).trim() !== "" ? parseInt(episode, 10) : null;
   if (ep == null || isNaN(ep)) {
-    // 회차 미지정 → 주차별 런칭/납품 전체
     return { ...base, weeks: b.weeks.map((w) => ({ week: w.week, launch: w.launch, episodes: w.episodes, deliveryDate: w.deliveryDate, deliveryEps: w.deliveryEps })) };
   }
-  // 회차가 속한 주차 찾기: 話数(episodes) 범위에 ep 포함
   const wk = b.weeks.find((w) => parseEpisodes(w.episodes).includes(ep));
   if (!wk) {
-    return { ...base, episode: ep, foundEpisode: false, msg: `${ep}화가 어느 주차에도 없음(스케줄 범위 밖이거나 미기재). 주차별 회차: ` + b.weeks.filter((w) => w.episodes).map((w) => `${w.episodes}(런칭 ${w.launch})`).join(", "), weeks: b.weeks.map((w) => ({ week: w.week, launch: w.launch, episodes: w.episodes, deliveryDate: w.deliveryDate })) };
+    return { ...base, episode: ep, foundEpisode: false, msg: `${ep}화가 어느 주차 話数(런칭 회차)에도 없음. 주차별 회차: ` + b.weeks.filter((w) => w.episodes).map((w) => `${w.episodes}(런칭 ${w.launch})`).join(", "), weeks: b.weeks.map((w) => ({ week: w.week, launch: w.launch, episodes: w.episodes, deliveryDate: w.deliveryDate })) };
   }
   return { ...base, episode: ep, foundEpisode: true, launch: wk.launch, deliveryDate: wk.deliveryDate, week: wk.week, episodesInWeek: wk.episodes, deliveryEpsInWeek: wk.deliveryEps };
+}
+
+// ★특정 회차의 '납품 기재 여부' 확인 — 기준 = 納品話数(납품 회차) + 納品予定日.
+// 납품 리스트가 고객사 스케줄 시트에 반영됐는지 검증할 때 쓴다(런칭 회차 話数가 아니라 납품 회차 기준).
+export async function episodeDelivery({ work, pivo, episode } = {}) {
+  const { block: b, pivo: rp } = await resolveBlock({ work, pivo });
+  if (!b) { const key = pivo != null && String(pivo).trim() ? pivo : work; return { found: false, pivo: rp || null, msg: `'${key}'를 스케줄 시트 블록에서 못 찾음(제목 표기나 PIVO ID 확인 필요).` }; }
+  const allDeliv = b.weeks.flatMap((w) => parseEpisodes(w.deliveryEps));
+  const maxDeliv = allDeliv.length ? Math.max(...allDeliv) : null;
+  const ep = episode != null && String(episode).trim() !== "" ? parseInt(episode, 10) : null;
+  if (ep == null || isNaN(ep)) {
+    return { found: true, pivo: rp || null, title: b.title, maxDeliveryEp: maxDeliv, weeks: b.weeks.filter((w) => w.deliveryEps).map((w) => ({ week: w.week, deliveryEps: w.deliveryEps, deliveryDate: w.deliveryDate })) };
+  }
+  const dw = b.weeks.find((w) => parseEpisodes(w.deliveryEps).includes(ep));
+  if (dw) return { found: true, pivo: rp || null, title: b.title, episode: ep, listedForDelivery: true, deliveryDate: dw.deliveryDate, deliveryEps: dw.deliveryEps, week: dw.week };
+  const lw = b.weeks.find((w) => parseEpisodes(w.episodes).includes(ep));
+  return { found: true, pivo: rp || null, title: b.title, episode: ep, listedForDelivery: false, maxDeliveryEp: maxDeliv, inLaunchOnly: !!lw, msg: `${ep}화가 納品話数(납품 회차)에 미기재 — 현재 납품 회차 최대 ${maxDeliv ?? "없음"}${lw ? " (話数(런칭)엔 있음)" : ""}.` };
 }
 
 // 원본 미수급 (런칭 N개월 이내인데 原本 미수급) — n8n 포팅. 기준일 today(KST), threshold=+monthsAhead
