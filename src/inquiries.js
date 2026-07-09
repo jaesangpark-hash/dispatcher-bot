@@ -92,7 +92,7 @@ export async function findUnresolved(workQuery, episodeQuery) {
       if (!((nWork && (nWork.includes(wq) || wq.includes(nWork))) || (nKo && (nKo.includes(wq) || wq.includes(nKo))))) continue;
       const summary = String(r[4] ?? "");
       if (epq && !summary.includes(epq)) continue;
-      out.push({ source: "문의", work: koWork || work, type: String(r[3] ?? "").trim(), summary: clip(r[4], 60), action: clip(r[5], 40), requester: String(r[7] ?? "").trim(), link: String(r[6] ?? "").trim() });
+      out.push({ source: "문의", work: work || koWork, type: String(r[3] ?? "").trim(), summary: clip(r[4], 60), action: clip(r[5], 40), requester: String(r[7] ?? "").trim(), link: String(r[6] ?? "").trim() });
     }
   } catch (e) { console.error("[inquiry] 문의봇 매칭 실패:", e?.message ?? e); }
 
