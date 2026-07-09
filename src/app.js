@@ -151,7 +151,7 @@ const DISPATCHER_PROMPT = [
   "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
   "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, apm, [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 담당 APM 이름만 받아라(번역/식자는 사용자가 주면 반영, 없으면 기본값). 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. 게이트(버튼)—'게시했다' 단정 금지. APM 이름이 안 나오면 누구 담당인지 한 줄 되묻기.",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
-  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 후 TOTUS 프로젝트명 가제→FIX 변경 제안 + 1-3화 번역검수 자동 모니터 등록은 봇이 자동으로 이어서 하니, propose_totus_project·register_translation_monitor를 따로 부르지 말 것(수동 등록 요청 때만 register). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
+  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 후 봇이 자동으로 이어서 처리하는 것: ①TOTUS 프로젝트명 가제→FIX 변경 ②출판사 드라이브 링크 시트 한국어 타이틀·APM 채움 ③납품 시트(중일 V5)에 초도 회차만큼 행(1~N화) 생성 — 이 세 가지는 확정 버튼('✅ 프로젝트명+시트 반영') 한 번으로 봇이 직접 쓴다. ④1-3화 번역검수 자동 모니터 등록. 그러니 propose_totus_project·register_translation_monitor를 따로 부르지 말 것(수동 등록 요청 때만 register). ★중요: '내부 시트(한국어 타이틀·납품 행)는 도구로 못 바꾼다/직접 채워야 한다'고 답하지 마라 — 위 버튼 체인으로 봇이 실제로 쓴다(버튼을 안 누르면 안 될 뿐). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★토톡(ToTalk) 개념·발송 규칙: 토톡은 TOTUS 에디터 안의 코멘트/멘션 기능이다. '토톡 멘션 알림'이란 에디터에서 **작업자가 @멘션 당한 것을 그 작업자 슬랙 채널로 직접 전달**하는 것 — 받는 사람은 멘션당한 **작업자 본인**이고, 그 알림 자체가 이미 작업자에게 가는 전달이다. PM(박재상)이 '확인 후 전달'하는 중간 단계가 아니다. check_totalk_mentions는 조회/초안 전용(발송 안 함). ★재상 님이 특정 토톡 알림을 '보내줘/전달해줘' 하면 아래 템플릿 **그대로**(라벨·순서 유지) 보내라. 절대 '@박재상 확인 후 작업자에게 전달' 같은 PM 전달 프레임을 붙이지 말고, 작성자(발송자)도 노출하지 말 것. 담당자=작품 담당 APM @멘션(서주원/정태영/박재상 맵), 본문 앞에 멘션당한 작업자 @멘션, 수신일시=멘션 생성일시. 템플릿: 📩 *Totalk 알림* / 작품명 : {프로젝트명(대괄호태그 제거)} / 담당자 : @{APM} / 본문 : @{작업자} {본문} / 수신일시 : {멘션 생성일시}.",
   "★PIVO ID 상식: 프로젝트명·메시지·견적요청 본문의 **`[PV-숫자]`(보통 6자리)에서 그 숫자가 PIVO ID**다. 도구에 PIVO를 넘길 땐 'PV-' 접두를 떼고 **숫자만** 넘겨라('PV-201454'→'201454'). 그리고 PIVO로 견적/프로젝트를 못 찾으면 거기서 멈추지 말고 **일본어 가제나 중국어 원제로도 조회**해본다(견적 by-pivo·totus_find_project 둘 다 이름검색이 됨).",
   "★용어 구분(엄수·문맥으로 판단): **'납품일'**(='예정' 글자 없음) → 무조건 **내부 납품 시트 get_delivery_date**. **'납품예정일'/'납품 예정일'/'TOTUS 납품예정일'**(예정 명시) → **TOTUS totus_delivery_date**. 즉 '예정'이 안 붙으면 시트가 기본이다 — 그냥 '납품일 조회'에 totus_delivery_date를 쓰지 마라(혼동 금지). 애매하면 시트(get_delivery_date) 우선. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — '납품예정일'이라 단정 금지.",
@@ -261,6 +261,11 @@ function fmtKDate(s) {
   const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
   if (isNaN(d)) return `${+m[2]}/${+m[3]}`;
   return `${+m[2]}/${+m[3]}(${KO_WD[d.getUTCDay()]})`;
+}
+// 임의 날짜 문자열 → 'YYYY-MM-DD' (납품 시트 G열 형식). 못 읽으면 "".
+function toYMD(s) {
+  const m = String(s ?? "").match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  return m ? `${m[1]}-${String(+m[2]).padStart(2, "0")}-${String(+m[3]).padStart(2, "0")}` : "";
 }
 // 번역 개시 요청 메시지 본문(고정 포맷). preview=true면 APM 멘션을 핑 안 가게 코드로 표기.
 function buildTransStartText(p, preview = false) {
@@ -1311,12 +1316,13 @@ const apmTools = createSdkMcpServer({
             hit = hits[0];
           }
           const pivo = hit.pivoId;
-          let firstDelivery = first_delivery_date?.trim() || "", firstEpisode = first_episode?.trim() || "", koFromQuote = "";
+          let firstDelivery = first_delivery_date?.trim() || "", firstEpisode = first_episode?.trim() || "", koFromQuote = "", firstDeliveryRaw = "";
           if (pivo) {
             try {
               const q = await quotationByPivo(pivo);
               const d = Array.isArray(q?.data) ? q.data[0] : null;
               if (d) {
+                firstDeliveryRaw = d["초도작업_납품목표일"] || "";   // 납품 시트 G열(YMD)용 원시 날짜
                 if (!firstDelivery) firstDelivery = fmtKDate(d["초도작업_납품목표일"]);
                 if (!firstEpisode) firstEpisode = String(d["초도작업_총작업량표시"] || d["초도작업_총작업량"] || "").replace(/화$/, "").trim();
                 koFromQuote = d["pivoOriginalTitle"] || "";
@@ -1334,6 +1340,7 @@ const apmTools = createSdkMcpServer({
             apmId: apm_user_id?.trim() || hit.apmId || null,
             koTitle: ko_title?.trim() || koFromQuote || "(미정 — 수정에서 입력)",
             firstDelivery: firstDelivery || "(미확인 — 수정에서 입력)",
+            firstDeliveryRaw,
             firstEpisode: firstEpisode || "(미확인)",
             revisionNote: revision_note?.trim() || "",
             reviewStart: review_start_date?.trim() || reviewStartMD(11),
@@ -2272,6 +2279,13 @@ app.action("proj_confirm", async ({ ack, body, client }) => {
         appendFileSync("logs/totus-proj.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "publisher_sheet", pivo: p.sheet.pivo, apm: p.sheet.apmName, ko: p.sheet.koTitle, result: sr }) + "\n");
       } catch (e) { sheetMsg = `\n⚠️ 출판사 시트 반영 실패: ${e?.message ?? e}`; }
     }
+    if (p.sheet?.delivery) {   // 번역개시 체인: 납품 시트에 초도 회차(1~N) 행 생성
+      try {
+        const dr = await appendDeliveryRows(p.sheet.delivery);
+        sheetMsg += dr.ok ? `\n📦 납품 시트 ${dr.fromRow}행부터 1~${dr.count}화 ${dr.count}개 생성` : `\n⚠️ 납품 시트 미반영: ${dr.msg}`;
+        appendFileSync("logs/totus-proj.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "delivery_rows", pivo: p.sheet.pivo, result: dr }) + "\n");
+      } catch (e) { sheetMsg += `\n⚠️ 납품 시트 반영 실패: ${e?.message ?? e}`; }
+    }
     if (!failed.length) await reply(`✅ TOTUS 변경 완료 — ${p.projectName || p.projectUuid}: ${done.map(desc).join(" + ")}${sheetMsg}`);
     else await reply(`⚠️ 일부 실패 — 성공: ${done.map(desc).join(", ") || "없음"} / 실패: ${failed.map((f) => desc(f.ch)).join(", ")}. 실패분만 다시 시도해줘.${sheetMsg}`);
   } catch (e) { await reply(`❌ 변경 실패: ${e?.message ?? e}`); }
@@ -2513,6 +2527,28 @@ async function updatePublisherSheet(pivo, apmName, koTitle) {
   return { ok: true, row: rowNum };
 }
 
+// 납품관리시트_Japan(중일 V5)에 초도 회차만큼 행(1~N화) 추가. 공용 prod 시트라 게이트 통과 후에만 호출.
+// 열: A 고객사 · B 프로젝트명 · C 담당PM · D 담당APM · E Job명(회차) · F 주문정보 · G jp_end_date(YMD).
+// 마지막 데이터 행을 바닥에서부터 찾아 그 아래에 append(중간 빈 블록에 안 끼게).
+async function appendDeliveryRows({ publisher, work, pm, apm, order, deliveryYMD, episodes }) {
+  const DID = "1QWCtU1GnCT2BQZvuF_N-8MnpgiyqIDTcM0x6hdCi8mQ";
+  const TAB = "납품관리시트_Japan(중일 V5)";
+  const n = parseInt(String(episodes), 10);
+  if (!Number.isFinite(n) || n < 1 || n > 200) return { ok: false, msg: `초도 회차 수가 이상함(${episodes})` };
+  const rows = (await readRangeRO(DID, `${TAB}!A1:G5000`)) || [];
+  let last = 0;
+  for (let i = 0; i < rows.length; i++) { if ((rows[i] || []).some((c) => String(c ?? "").trim() !== "")) last = i + 1; }
+  const start = last + 1;   // 마지막 데이터 행 다음
+  const updates = [];
+  for (let ep = 1; ep <= n; ep++) {
+    const r = start + ep - 1;
+    const cells = { A: publisher, B: work, C: pm, D: apm, E: String(ep), F: order, G: deliveryYMD };
+    for (const [col, val] of Object.entries(cells)) if (val) updates.push({ a1: `${TAB}!${col}${r}`, value: val });
+  }
+  await setCells(DID, updates);
+  return { ok: true, count: n, fromRow: start };
+}
+
 // ── 번역 개시 요청 확인/취소/수정 (스레드 답글 발송은 LLM 밖, 여기서만) ──
 app.action("transstart_confirm", async ({ ack, body, client }) => {
   await ack();
@@ -2556,14 +2592,22 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
         const d = Array.isArray(q?.data) ? q.data[0] : null;
         if (d?.projectUuid && ja && ko && !ko.startsWith("(미정")) {
           const newName = `[PV-${p.pivo}] [Piccoma중일] ${ja}(${ko})`;
-          const apmName = USER_NAMES[p.apmId] || "";   // 출판사 시트 A열(APM 이름)용
+          const apmName = USER_NAMES[p.apmId] || "";   // 출판사/납품 시트 APM 이름용
           const pjId = `proj_${++totusProjSeq}`;
-          // sheet: 확정 시 TOTUS 이름 변경 후 출판사 시트 A(APM)·C(한국어)도 같이 채움
-          pendingTotusProj.set(pjId, { projectUuid: d.projectUuid, projectName: d.projectName || "", steps: [{ name: newName }], label: `이름 → *${newName}*`, sheet: { pivo: p.pivo, apmName, koTitle: ko }, createdAt: Date.now() });
+          // 납품 시트(중일 V5) 초도 회차 행 생성용 — 회차 수·초도납품일(YMD)이 확인될 때만.
+          const epN = parseInt(String(p.firstEpisode).replace(/[^\d]/g, ""), 10);
+          const deliveryYMD = toYMD(p.firstDeliveryRaw || p.firstDelivery);
+          const delivery = (Number.isFinite(epN) && epN >= 1 && epN <= 200 && deliveryYMD)
+            ? { publisher: "카카오픽코마", work: ko, pm: "박재상", apm: apmName, order: "ZH-CN2JA", deliveryYMD, episodes: epN } : null;
+          // sheet: 확정 시 TOTUS 이름 변경 → 출판사 시트 A(APM)·C(한국어) → 납품 시트 초도행까지.
+          pendingTotusProj.set(pjId, { projectUuid: d.projectUuid, projectName: d.projectName || "", steps: [{ name: newName }], label: `이름 → *${newName}*`, sheet: { pivo: p.pivo, apmName, koTitle: ko, delivery }, createdAt: Date.now() });
+          const delvLine = delivery
+            ? `\n• 납품 시트: *1~${epN}화* ${epN}개 행 생성 (고객사 카카오픽코마 · PM 박재상${apmName ? ` · APM ${apmName}` : ""} · 납품일 ${deliveryYMD})`
+            : "\n• 납품 시트: (초도 회차/납품일 미확인 — 행 생성 생략)";
           await client.chat.postMessage({
-            channel: chan, thread_ts: thread, ...SENDER, text: "TOTUS 프로젝트명 + 출판사 시트 변경 제안",
+            channel: chan, thread_ts: thread, ...SENDER, text: "TOTUS 프로젝트명 + 시트 반영 제안",
             blocks: [
-              { type: "section", text: { type: "mrkdwn", text: `🛠 이어서 *TOTUS 프로젝트명* + *출판사 시트*도 FIX로 반영할까요?\n• 프로젝트명: \`${newName}\`\n• 출판사 시트: 한국어 *${ko}*${apmName ? ` · 담당 APM *${apmName}*` : " · (APM 미상 — A열 생략)"}` } },
+              { type: "section", text: { type: "mrkdwn", text: `🛠 이어서 *TOTUS 프로젝트명* + *출판사 시트* + *납품 시트*도 FIX로 반영할까요?\n• 프로젝트명: \`${newName}\`\n• 출판사 시트: 한국어 *${ko}*${apmName ? ` · 담당 APM *${apmName}*` : " · (APM 미상 — A열 생략)"}${delvLine}` } },
               { type: "actions", elements: [
                 { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 프로젝트명+시트 반영" }, value: pjId, action_id: "proj_confirm" },
                 { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: pjId, action_id: "proj_cancel" },
