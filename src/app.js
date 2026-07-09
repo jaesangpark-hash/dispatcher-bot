@@ -1945,11 +1945,17 @@ async function handleInquiryInterpret({ message, client }) {
     ].join("\n");
     const interp = await toollessVisionQuery([{ type: "text", text: prompt }, ...att.blocks], { label: `원문해석 ${work}`, channel: message.channel });
     if (!interp) return;
-    // ④ 해당 회차 원본 PSD 링크(페이지 파싱은 애매해 회차 전체 — 파일명에 페이지 보임)
+    // ④ 원본 PSD 링크 — 문의에 '해당 페이지'가 명시됐을 때만 그 페이지만(전체 화 덤프 금지, 불필요 케이스는 스킵).
+    // 회차 필드 '27-3,6p화'→ep27 p3,6 / '61-5화'→ep61 p5 / '145화'→페이지 없음(스킵).
     let psdLine = "";
     try {
-      const ep1 = (epRaw.match(/\d+/) || [])[0];
-      if (ep1) { const sf = await sourceFilesFor(work, ep1, null); if (sf.found && sf.slackLinks) psdLine = `📦 *원본 ${ep1}화* (${sf.파일수}): ${sf.slackLinks}`; }
+      const dash = String(epRaw).split("-");
+      const ep1 = (dash[0].match(/\d+/) || [])[0];
+      const pages = dash[1] ? (dash[1].match(/\d+/g) || []).join(",") : "";
+      if (ep1 && pages) {
+        const sf = await sourceFilesFor(work, ep1, pages);
+        if (sf.found && sf.slackLinks) psdLine = `📦 *원본 ${ep1}화 ${pages}p* (${sf.파일수}): ${sf.slackLinks}`;
+      }
     } catch { /* 원본 링크 실패는 무시 */ }
     const lines = interp.split("\n");
     const head = (lines[0] || "").slice(0, 240);
