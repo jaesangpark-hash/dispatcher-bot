@@ -480,6 +480,21 @@ async function toollessQuery(prompt, meta = {}) {
   }
   return buf.trim();
 }
+// 멀티모달(이미지 포함) 일회성 toolless 질의. content=[{type:"text"...},{type:"image"...}]. 원문 이미지 해석용.
+async function toollessVisionQuery(content, meta = {}) {
+  async function* once() { yield { type: "user", message: { role: "user", content } }; }
+  const q = query({ prompt: once(), options: { model: DISPATCHER_MODEL, strictMcpConfig: true, allowedTools: [] } });
+  let buf = "";
+  for await (const m of q) {
+    if (m.type === "assistant") { for (const b of m.message?.content || []) if (b.type === "text" && b.text) buf += b.text; }
+    else if (m.type === "result") {
+      const out = (m.result || buf || "").trim();
+      logUsage({ kind: "worker", label: meta.label || null, channel: meta.channel || null, chars: out.length, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null });
+      return out;
+    }
+  }
+  return buf.trim();
+}
 async function jobWorker(id) {
   while (true) {
     if (!jobs.length) { await new Promise((r) => jobWaiters.push(r)); continue; }
@@ -865,24 +880,9 @@ const apmTools = createSdkMcpServer({
       { work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"), episode: z.string().describe("회차 숫자(콤마로 복수 가능: 1,2,3)"), page: z.string().optional().describe("특정 페이지만(파일명 끝 번호). 콤마 복수 가능 '2' 또는 '3,4'. 생략 시 회차 전체 파일") },
       async ({ work, episode, page }) => {
         try {
-          const fp = await findProject(work);
-          const proj = (fp?.data || [])[0];
-          if (!proj?.uuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음.` }) }] };
-          const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
-          const r = await deliverySourceGroups(proj.uuid, String(episode));
-          const groups = r?.data || [];
-          if (!groups.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, msg: `${episode}화 원본(소스) 파일을 못 찾음. 회차 표기 확인 필요.` }) }] };
-          const pageOf = (name) => { const m = String(name).replace(/\.[^.]+$/, "").match(/\d+/g); return m ? parseInt(m[m.length - 1], 10) : null; };
-          let out = groups.flatMap((g) => (g.파일목록 || []).map((f) => ({ episode: g.에피소드, page: pageOf(f.파일이름), file: f.파일이름, ext: f.확장자, url: f.다운로드URL })));
-          const all = out;
-          if (page != null && String(page).trim() !== "") {
-            const want = String(page).split(/[,\s]+/).map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
-            out = all.filter((f) => want.includes(f.page));
-            if (!out.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, episode, msg: `${episode}화에서 페이지 ${page} 파일을 못 찾음.`, 전체파일: all.map((f) => `${f.file}(p${f.page})`) }) }] };
-          }
-          // 미리 마스킹된 슬랙 하이퍼링크 한 줄(브레인이 그대로 붙이면 30줄 덤프 방지). 라벨=파일명(페이지 정보 보임).
-          const slackLinks = out.map((f) => `<${f.url}|${f.file}>`).join(" · ");
-          return { content: [{ type: "text", text: capJson({ work: projName, episode, page: page || "전체", 파일수: out.length, slackLinks, files: out, note: "★출력은 slackLinks 문자열을 그대로 한 줄로 붙여라(각 파일이 파일명 라벨의 클릭 링크). raw url을 파일마다 나열하지 말 것. 다운로드URL은 서명 직접 링크(로그인 불필요·일정 시간 후 만료)." }) }] };
+          const r = await sourceFilesFor(work, episode, page);
+          if (!r.found) return { content: [{ type: "text", text: JSON.stringify(r) }] };
+          return { content: [{ type: "text", text: capJson({ ...r, note: "★출력은 slackLinks 문자열을 그대로 한 줄로 붙여라(각 파일이 파일명 라벨의 클릭 링크). raw url을 파일마다 나열하지 말 것. 다운로드URL은 서명 직접 링크(로그인 불필요·일정 시간 후 만료)." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -1872,6 +1872,89 @@ async function buildResupplyDraft(text) {
   ].join("\n");
 }
 
+// 작품·회차(+페이지)의 원본 소스 파일 → { slackLinks(마스킹 링크 한 줄), files, ... }. get_source_files 도구·문의 원문 해석 공용.
+async function sourceFilesFor(work, episode, page) {
+  const fp = await findProject(work);
+  const proj = (fp?.data || [])[0];
+  if (!proj?.uuid) return { found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음.` };
+  const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
+  const r = await deliverySourceGroups(proj.uuid, String(episode));
+  const groups = r?.data || [];
+  if (!groups.length) return { found: false, work: projName, msg: `${episode}화 원본(소스) 파일을 못 찾음. 회차 표기 확인 필요.` };
+  const pageOf = (name) => { const m = String(name).replace(/\.[^.]+$/, "").match(/\d+/g); return m ? parseInt(m[m.length - 1], 10) : null; };
+  const all = groups.flatMap((g) => (g.파일목록 || []).map((f) => ({ episode: g.에피소드, page: pageOf(f.파일이름), file: f.파일이름, ext: f.확장자, url: f.다운로드URL })));
+  let out = all;
+  if (page != null && String(page).trim() !== "") {
+    const want = String(page).split(/[,\s]+/).map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
+    out = all.filter((f) => want.includes(f.page));
+    if (!out.length) return { found: false, work: projName, episode, msg: `${episode}화에서 페이지 ${page} 파일을 못 찾음.`, 전체파일: all.map((f) => `${f.file}(p${f.page})`) };
+  }
+  const slackLinks = out.map((f) => `<${f.url}|${f.file}>`).join(" · ");
+  return { found: true, work: projName, episode, page: page || "전체", 파일수: out.length, slackLinks, files: out };
+}
+
+// ── 문의봇 '작업 관련 문의' 원문 자동 해석 ─────────────────────────
+// 문의봇이 준 '원문 링크'(작업자 원본 스레드)를 읽어, 작업자가 올린 원문 이미지(중국어)를 비전으로 해석해
+// 문의 스레드에 '핵심 1줄 + 접히는 코드블록'으로 답글. 이미지 있을 때만. (수정&리테이크=A는 스킵)
+const INQUIRY_ORIG_LINK_RE = /https?:\/\/[a-z0-9.-]*slack\.com\/archives\/[^\s|>）)]+/i;
+async function handleInquiryInterpret({ message, client }) {
+  try {
+    const ts = message.ts;
+    if (processed.has("iq:" + ts)) return;
+    const text = blockText(message);
+    const linkM = text.match(/원문\s*링크[\s\S]{0,40}?(https?:\/\/[a-z0-9.-]*slack\.com\/archives\/[^\s|>）)]+)/i) || text.match(INQUIRY_ORIG_LINK_RE);
+    if (!linkM) return;                                   // 원문 링크 없는 문의봇 메시지(부모·프로젝트 등)는 무시
+    processed.add("iq:" + ts);
+    const pl = parseSlackLink(linkM[1] || linkM[0]);
+    if (!pl?.channel || !pl?.ts) return;
+    // 부모(문의 원본)에서 문의 유형·작품·회차·내용
+    const parentTs = message.thread_ts || ts;
+    let parentText = "";
+    try { const rr = await client.conversations.replies({ channel: message.channel, ts: parentTs, limit: 1 }); parentText = blockText((rr.messages || [])[0] || {}); } catch { /* 부모 못 읽으면 진행 */ }
+    const inqType = (parentText.match(/\*문의 유형\*\s*\n?\s*([^\n*]+)/) || [])[1]?.trim() || "";
+    if (/수정\s*&?(?:amp;)?\s*리테이크/.test(inqType)) return;   // A(승인만) 스킵
+    if (inqType && !/작업\s*관련\s*문의/.test(inqType)) return;   // 지금은 '작업 관련 문의'만
+    const work = (parentText.match(/\*작품명\*\s*\n?\s*([^\n*]+)/) || [])[1]?.trim() || "";
+    const epRaw = (parentText.match(/\*회차\*\s*\n?\s*([^\n*]+)/) || [])[1]?.trim() || "";
+    const inqContent = (parentText.match(/\*문의\s*내용\*\s*\n?\s*([\s\S]*?)(?::zap:|\n\s*:[a-z_]+:|$)/) || [])[1]?.trim() || "";
+    // 원문 스레드 읽기 → 작업자가 올린 이미지 수집
+    let rep;
+    try { rep = await client.conversations.replies({ channel: pl.channel, ts: pl.ts, limit: 20 }); } catch { return; }
+    let imgs = [];
+    for (const m of (rep.messages || [])) {   // 첫 이미지 메시지(=작업자 원문 게시)만 — 뒤 back-and-forth 참고이미지 제외
+      const mi = (m.files || []).filter((f) => (f.mimetype || "").startsWith("image/")).map((f) => ({ url: f.url_private_download || f.url_private, mimetype: f.mimetype, filetype: f.filetype, name: f.name }));
+      if (mi.length) { imgs = mi.slice(0, 6); break; }
+    }
+    if (!imgs.length) return;                             // ★이미지 있을 때만(원문 OCR이 의미 있을 때)
+    const att = await toAttachmentBlocks(imgs, 6);
+    if (!att.blocks.length) return;
+    const prompt = [
+      "너는 중일(중국어 원작→일본어) 웹툰 로컬라이징 PM의 보조야. 아래 이미지는 작업자가 올린 '원문(중국어 웹툰 컷)'이고, 그에 대한 작업자 문의가 있어.",
+      "이미지 속 중국어 원문을 읽어 한국어로 해석하고, 문의 쟁점과 대조해 정리해라. 특히 수치·고유명사·대사가 문의(번역문)와 어긋나는지 짚어라.",
+      "판단(승인/수정 여부)은 하지 말고 '원문이 실제로 뭐라는지' 사실만 제공. 인사말·군더더기 금지.",
+      "출력 형식(엄수): 1줄차=핵심 한 줄(쟁점 판정에 필요한 원문 사실). 그 뒤 줄들=원문(중국어)→한국어 해석을 항목별로.",
+      "", `[작품] ${work} ${epRaw}`.trim(), "[문의 내용]", inqContent || "(별도 텍스트 없음 — 이미지 위주)",
+    ].join("\n");
+    const interp = await toollessVisionQuery([{ type: "text", text: prompt }, ...att.blocks], { label: `원문해석 ${work}`, channel: message.channel });
+    if (!interp) return;
+    // ④ 해당 회차 원본 PSD 링크(페이지 파싱은 애매해 회차 전체 — 파일명에 페이지 보임)
+    let psdLine = "";
+    try {
+      const ep1 = (epRaw.match(/\d+/) || [])[0];
+      if (ep1) { const sf = await sourceFilesFor(work, ep1, null); if (sf.found && sf.slackLinks) psdLine = `📦 *원본 ${ep1}화* (${sf.파일수}): ${sf.slackLinks}`; }
+    } catch { /* 원본 링크 실패는 무시 */ }
+    const lines = interp.split("\n");
+    const head = (lines[0] || "").slice(0, 240);
+    const detail = lines.slice(1).join("\n").trim();
+    const out = [`🀄 *원문 해석* (자동)`, head]
+      .concat(detail ? ["```", detail.slice(0, 2800), "```"] : [])
+      .concat(psdLine ? [psdLine] : [])
+      .join("\n");
+    await client.chat.postMessage({ channel: message.channel, thread_ts: parentTs, text: out, ...SENDER, unfurl_links: false });
+    console.log(`[inquiry-interpret] ${work} ${epRaw} 원문 해석 발송 (이미지 ${imgs.length}, PSD ${psdLine ? "O" : "X"})`);
+  } catch (e) { console.error("[inquiry-interpret] 실패:", e?.message ?? e); }
+}
+
 // ── 리테이크 채널 자동 감지 → 중일 '번역 이슈'면 번역가 발송 초안을 박재상 DM으로(초안-우선/A모드) ──
 // 자동 봇(n8n) 리테이크 메시지만 반응. 한일·식자 이슈는 스킵. 애매하면 박재상에게 질문. 발송은 항상 박재상 확인(버튼).
 const RETAKE_WATCH_CHANNEL = process.env.RETAKE_WATCH_CHANNEL || "C09B8QBEC9L";
@@ -2046,6 +2129,8 @@ app.message(async ({ message, say, client }) => {
     if (!edited && (fromOwner || fromInquiry) && message.text) {
       await handleWorkLinkWatch({ text: message.text, channel: message.channel, ts: message.ts, threadTs: message.thread_ts, client });
     }
+    // 문의봇 '작업 관련 문의'의 원문 링크 메시지면 → 원문(이미지) 자동 해석 답글(내부에서 유형·이미지 게이트)
+    if (!edited && fromInquiry) await handleInquiryInterpret({ message, client });
     return;   // 워치 채널은 여기서 종료(멘션은 app_mention이 별도 처리)
   }
   if (message.channel_type !== "im") return;           // DM만 (채널 노이즈 차단)
