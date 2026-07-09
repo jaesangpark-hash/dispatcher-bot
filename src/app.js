@@ -158,7 +158,7 @@ const DISPATCHER_PROMPT = [
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수). ★단 출판사가 bilibili comics(哔哩哔哩漫画)나 kuaikan(快看漫画)이면 긴 검색 안내는 생략하되 **플랫폼명 + 중국어 원제(zhTitle)** 를 함께 짧게 준다(원제로 검색하므로 필수). 예: '비리비리예요 — 원제: 「{zhTitle}」' / '콰이칸이에요 — 원제: 「{zhTitle}」'.",
   "- TOTUS 링크 요청: 작품 '프로젝트/작업진행 페이지 링크' = get_project_url(작품) (작품 단위, 회차 불필요). 특정 회차·오퍼레이션의 '에디터 링크' = get_editor_url(작품, 회차, 오퍼레이션명) (상태 무관 최신 task 기준).",
-  "- 원본/원고/소스 'PSD·파일 다운로드' 요청 → get_source_files(작품, 회차[, page]). 특정 페이지만(예 '48화 2페이지', '3,4페이지')이면 page 인자에 번호를 넣는다. 돌려받은 **파일명 + 다운로드 링크만 그대로 안내**한다(봇이 파일을 직접 받거나 슬랙에 올리지 말 것 — 대용량이라 링크로만). 링크는 cf.totus.pro 서명 URL이라 클릭하면 바로 받힌다(로그인 불필요·일정 시간 후 만료).",
+  "- 원본/원고/소스 'PSD·파일 다운로드' 요청 → get_source_files(작품, 회차[, page]). 특정 페이지만(예 '48화 2페이지', '3,4페이지')이면 page 인자에 번호를 넣는다. ★출력은 각 파일을 **슬랙 마스킹 하이퍼링크 `<다운로드URL|파일명>`** 로 만들어 **한 줄(또는 몇 줄)에 `·`로 이어** 압축한다 — raw URL을 파일마다 한 줄씩 나열하지 마라(30줄씩 길어짐). 라벨은 파일명 그대로(페이지 정보 보이게, 예 `48-2.psd`). 예: `📦 원본: <url1|48-1.psd> · <url2|48-2.psd> · <url3|49-1.psd>`. (봇이 파일을 직접 받거나 슬랙에 올리지 말 것 — 대용량이라 링크로만.) 링크는 cf.totus.pro 서명 URL이라 클릭하면 바로 받힌다(로그인 불필요·일정 시간 후 만료).",
   "- 그 외 운영 시트 → query_sheet (사용 가능한 뷰 목록·필드는 그 도구 설명에 들어있으니 거기 보고 고른다).",
   "query_sheet 효율 규칙(중요): 리스트/현황/기간 질문은 한 번의 호출로 서버측에서 좁혀 가져온다. filterField/filterOp/filterValue(예: 리테이크 미완료=filterField:done, filterOp:neq, filterValue:완료), dateField/dateFrom/dateTo(기간), distinct(중복 제거)를 적극 사용. work 없이 큰 시트를 통째로 가져오거나, 같은 호출을 반복하지 말 것. 한 번에 답이 되도록 필터를 설계해 호출 횟수를 최소화한다.",
   "- TOTUS(작품 진행상황·일정 지연/임박·작업자·번역텍스트·견적) → totus_* 도구. PIVO ID 있으면 totus_quotation으로 projectUuid부터 확보 → 그 uuid로 totus_schedule_summary(일정)·totus_jobs/totus_tasks(작업·상태). 작품명만 있으면 totus_find_project로 uuid. 진행/일정/작업자는 시트보다 TOTUS가 정확. 번역텍스트(totus_translation_text)는 양 많으니 필요한 Task에만.",
@@ -880,7 +880,9 @@ const apmTools = createSdkMcpServer({
             out = all.filter((f) => want.includes(f.page));
             if (!out.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, episode, msg: `${episode}화에서 페이지 ${page} 파일을 못 찾음.`, 전체파일: all.map((f) => `${f.file}(p${f.page})`) }) }] };
           }
-          return { content: [{ type: "text", text: capJson({ work: projName, episode, page: page || "전체", 파일수: out.length, files: out, note: "다운로드URL은 서명된 직접 링크(로그인 불필요, 일정 시간 후 만료). 사용자에게 파일명과 링크를 그대로 안내." }) }] };
+          // 미리 마스킹된 슬랙 하이퍼링크 한 줄(브레인이 그대로 붙이면 30줄 덤프 방지). 라벨=파일명(페이지 정보 보임).
+          const slackLinks = out.map((f) => `<${f.url}|${f.file}>`).join(" · ");
+          return { content: [{ type: "text", text: capJson({ work: projName, episode, page: page || "전체", 파일수: out.length, slackLinks, files: out, note: "★출력은 slackLinks 문자열을 그대로 한 줄로 붙여라(각 파일이 파일명 라벨의 클릭 링크). raw url을 파일마다 나열하지 말 것. 다운로드URL은 서명 직접 링크(로그인 불필요·일정 시간 후 만료)." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
