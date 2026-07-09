@@ -2101,9 +2101,14 @@ const assistant = new Assistant({
   },
   userMessage: async ({ message, say, setStatus, client }) => {
     try {
-      if (message.subtype || !message.text || !ALLOWED_USERS.has(message.user)) return;
+      // 파일 업로드는 subtype="file_share"라 그냥 subtype 컷하면 설정집 첨부가 통째로 무시된다.
+      // → file_share는 통과시키고 files를 handle로 넘긴다(텍스트도 첨부도 없을 때만 컷).
+      const hasFiles = Array.isArray(message.files) && message.files.length > 0;
+      if ((message.subtype && message.subtype !== "file_share") || message.bot_id) return;
+      if ((!message.text || !message.text.trim()) && !hasFiles) return;
+      if (!ALLOWED_USERS.has(message.user)) return;
       await setStatus("생각 중…").catch(() => {});
-      await handle({ text: message.text, channel: message.channel, ts: message.ts, threadTs: message.thread_ts, inThread: false, user: message.user, client, say });
+      await handle({ text: message.text, channel: message.channel, ts: message.ts, threadTs: message.thread_ts, inThread: false, user: message.user, client, say, files: message.files });
     } catch (e) { console.error("[assistant] userMessage:", e?.message ?? e); }
   },
 });
