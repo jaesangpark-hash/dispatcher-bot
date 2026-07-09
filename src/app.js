@@ -1629,8 +1629,13 @@ async function toAttachmentBlocks(files, cap = 6) {
     seen.add(url);
     const mt = (f.mimetype || "").toLowerCase(), ft = (f.filetype || "").toLowerCase(), name = f.name || "file";
     try {
-      // 설정집 xlsx·PSD 등은 수십 MB라 전역 30s로는 abort된다 → 파일 다운로드만 120s로.
-      const r = await fetch(url, { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }, signal: AbortSignal.timeout(120000) });
+      // 설정집 xlsx·PSD 등은 수십 MB라 전역 30s로는 abort → 파일 다운로드는 60s×2회 재시도(과부하 순간 커넥션 멈춤 대비).
+      let r = null, dlErr = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try { r = await fetch(url, { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }, signal: AbortSignal.timeout(60000) }); break; }
+        catch (e) { dlErr = e; console.error(`[file] ${name} 다운로드 시도 ${attempt} 실패: ${e?.message ?? e}`); }
+      }
+      if (!r) { console.error(`[file] ${name} 다운로드 최종 실패(재시도 소진): ${dlErr?.message ?? dlErr}`); continue; }
       if (!r.ok) { console.error(`[file] ${name} 다운로드 ${r.status} (files:read 스코프/멤버십 확인)`); continue; }
       const buf = Buffer.from(await r.arrayBuffer());
       if (mt.startsWith("image/")) {                                   // 이미지
@@ -1889,8 +1894,10 @@ async function sourceFilesFor(work, episode, page) {
     out = all.filter((f) => want.includes(f.page));
     if (!out.length) return { found: false, work: projName, episode, msg: `${episode}화에서 페이지 ${page} 파일을 못 찾음.`, 전체파일: all.map((f) => `${f.file}(p${f.page})`) };
   }
-  const slackLinks = out.map((f) => `<${f.url}|${f.file}>`).join(" · ");
-  return { found: true, work: projName, episode, page: page || "전체", 파일수: out.length, slackLinks, files: out };
+  // ★서명 URL에 개행/공백이 섞여 오면 <url|라벨> 마스킹이 깨진다(그 링크만 raw로 튐) → URL 공백 전부 제거.
+  const clean = (u) => String(u || "").replace(/\s+/g, "");
+  const slackLinks = out.map((f) => `<${clean(f.url)}|${f.file}>`).join(" · ");
+  return { found: true, work: projName, episode, page: page || "전체", 파일수: out.length, slackLinks, files: out.map((f) => ({ ...f, url: clean(f.url) })) };
 }
 
 // ── 문의봇 '작업 관련 문의' 원문 자동 해석 ─────────────────────────
@@ -1930,9 +1937,10 @@ async function handleInquiryInterpret({ message, client }) {
     if (!att.blocks.length) return;
     const prompt = [
       "너는 중일(중국어 원작→일본어) 웹툰 로컬라이징 PM의 보조야. 아래 이미지는 작업자가 올린 '원문(중국어 웹툰 컷)'이고, 그에 대한 작업자 문의가 있어.",
-      "이미지 속 중국어 원문을 읽어 한국어로 해석하고, 문의 쟁점과 대조해 정리해라. 특히 수치·고유명사·대사가 문의(번역문)와 어긋나는지 짚어라.",
-      "판단(승인/수정 여부)은 하지 말고 '원문이 실제로 뭐라는지' 사실만 제공. 인사말·군더더기 금지.",
-      "출력 형식(엄수): 1줄차=핵심 한 줄(쟁점 판정에 필요한 원문 사실). 그 뒤 줄들=원문(중국어)→한국어 해석을 항목별로.",
+      "이미지 속 중국어 원문을 **이미지마다** 빠짐없이 읽어 한국어로 옮기고, 문의(번역문)와의 수치·고유명사·대사 차이만 사실로 나열해라.",
+      "★절대 판단·추론 금지: '모순이다/아니다', '설계 의도다', '이게 맞다', '수정하면 된다' 같은 결론이나 추측을 내지 마라. 원문이 실제로 뭐라 적혀 있는지와 번역문과의 차이(사실)만 제공한다 — 판정은 재상 님이 한다.",
+      "인사말·군더더기 금지. 이미지가 여러 장이면 각 이미지를 [이미지1]/[이미지2]로 구분해 모두 옮겨라(누락 금지).",
+      "출력 형식(엄수): 1줄차=핵심 한 줄(원문 사실 요약, 판단 아님). 그 뒤 줄들=이미지별 원문(중국어)→한국어 + 번역문과의 차이점.",
       "", `[작품] ${work} ${epRaw}`.trim(), "[문의 내용]", inqContent || "(별도 텍스트 없음 — 이미지 위주)",
     ].join("\n");
     const interp = await toollessVisionQuery([{ type: "text", text: prompt }, ...att.blocks], { label: `원문해석 ${work}`, channel: message.channel });
