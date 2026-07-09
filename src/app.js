@@ -1945,18 +1945,21 @@ async function handleInquiryInterpret({ message, client }) {
     ].join("\n");
     const interp = await toollessVisionQuery([{ type: "text", text: prompt }, ...att.blocks], { label: `원문해석 ${work}`, channel: message.channel });
     if (!interp) return;
-    // ④ 원본 PSD 링크 — 문의에 '해당 페이지'가 명시됐을 때만 그 페이지만(전체 화 덤프 금지, 불필요 케이스는 스킵).
+    // ④ 원본 PSD 링크 — 기본 OFF(env INQUIRY_ATTACH_PSD=1로 켬). 대부분 불필요 + 복수회차 표기 오파싱 위험이라 끔.
+    // 필요하면 재상 님이 'N화 M페이지 원본 줘'로 즉시 요청(get_source_files, 마스킹 링크). 켤 땐 복수회차 파싱 보강 필요.
     // 회차 필드 '27-3,6p화'→ep27 p3,6 / '61-5화'→ep61 p5 / '145화'→페이지 없음(스킵).
     let psdLine = "";
-    try {
-      const dash = String(epRaw).split("-");
-      const ep1 = (dash[0].match(/\d+/) || [])[0];
-      const pages = dash[1] ? (dash[1].match(/\d+/g) || []).join(",") : "";
-      if (ep1 && pages) {
-        const sf = await sourceFilesFor(work, ep1, pages);
-        if (sf.found && sf.slackLinks) psdLine = `📦 *원본 ${ep1}화 ${pages}p* (${sf.파일수}): ${sf.slackLinks}`;
-      }
-    } catch { /* 원본 링크 실패는 무시 */ }
+    if (process.env.INQUIRY_ATTACH_PSD === "1") {
+      try {
+        const dash = String(epRaw).split("-");
+        const ep1 = (dash[0].match(/\d+/) || [])[0];
+        const pages = dash[1] ? (dash[1].match(/\d+/g) || []).join(",") : "";
+        if (ep1 && pages) {
+          const sf = await sourceFilesFor(work, ep1, pages);
+          if (sf.found && sf.slackLinks) psdLine = `📦 *원본 ${ep1}화 ${pages}p* (${sf.파일수}): ${sf.slackLinks}`;
+        }
+      } catch { /* 원본 링크 실패는 무시 */ }
+    }
     const lines = interp.split("\n");
     const head = (lines[0] || "").slice(0, 240);
     const detail = lines.slice(1).join("\n").trim();
