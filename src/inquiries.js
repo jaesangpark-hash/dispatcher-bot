@@ -1,6 +1,6 @@
 // 문의봇 기록 시트(재수급봇·문의봇 탭)에서 "인입일 + N일 경과 & 완료 미체크"인 미해결 건을 스캔.
 // 시트는 봇 SA 권한으로 읽기 전용 조회(무손상). 완료 체크박스가 채워지면 자동으로 목록에서 빠짐(별도 "그만" 불필요).
-import { readRange } from "./sheets.js";
+import { readRange, norm } from "./sheets.js";
 
 const OPS_ID = process.env.INQUIRY_SHEET_ID || "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
 
@@ -55,5 +55,46 @@ export async function overdueInquiries(days = 2) {
   } catch (e) { console.error("[inquiry] 문의봇 읽기 실패:", e?.message ?? e); }
 
   out.sort((a, b) => b.daysOver - a.daysOver);   // 오래 묵은 것부터
+  return out;
+}
+
+// 고객사→문의봇 하향 릴레이용: 작품(+회차)로 미해결(완료 미체크) 문의/재수급 건을 찾아 원 스레드를 되짚는다.
+// 재수급은 화수(D)·FIX타이틀(H,일본어)로 좁혀 정확매칭, 문의봇은 회차 전용 컬럼이 없어 요약(E) 텍스트로 확인.
+export async function findUnresolved(workQuery, episodeQuery) {
+  const wq = norm(workQuery);
+  const epq = episodeQuery ? String(episodeQuery).trim() : null;
+  const out = [];
+  if (!wq) return out;
+
+  try {
+    const rs = (await readRange(OPS_ID, "재수급봇!A2:L")) || [];
+    for (const r of rs) {
+      const work = String(r[2] ?? "").trim();
+      const fixTitle = String(r[7] ?? "").trim();
+      if (!work && !fixTitle) continue;
+      if (isDone(r[11])) continue;
+      const nWork = norm(work), nFix = norm(fixTitle);
+      if (!((nWork && (nWork.includes(wq) || wq.includes(nWork))) || (nFix && (nFix.includes(wq) || wq.includes(nFix))))) continue;
+      const episode = String(r[3] ?? "").trim();
+      if (epq && !episode.includes(epq)) continue;
+      out.push({ source: "재수급", work: work || fixTitle, fixTitle, episode, reason: clip(r[4], 60), requester: String(r[0] ?? "").trim(), apm: String(r[1] ?? "").trim(), link: String(r[6] ?? "").trim() });
+    }
+  } catch (e) { console.error("[inquiry] 재수급봇 매칭 실패:", e?.message ?? e); }
+
+  try {
+    const iq = (await readRange(OPS_ID, "문의봇!A2:I")) || [];
+    for (const r of iq) {
+      const work = String(r[1] ?? "").trim();
+      const koWork = String(r[2] ?? "").trim();
+      if (!work && !koWork) continue;
+      if (isDone(r[8])) continue;
+      const nWork = norm(work), nKo = norm(koWork);
+      if (!((nWork && (nWork.includes(wq) || wq.includes(nWork))) || (nKo && (nKo.includes(wq) || wq.includes(nKo))))) continue;
+      const summary = String(r[4] ?? "");
+      if (epq && !summary.includes(epq)) continue;
+      out.push({ source: "문의", work: koWork || work, type: String(r[3] ?? "").trim(), summary: clip(r[4], 60), action: clip(r[5], 40), requester: String(r[7] ?? "").trim(), link: String(r[6] ?? "").trim() });
+    }
+  } catch (e) { console.error("[inquiry] 문의봇 매칭 실패:", e?.message ?? e); }
+
   return out;
 }
