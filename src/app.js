@@ -165,6 +165,7 @@ const DISPATCHER_PROMPT = [
   "- 번역 검수/QA 요청(예: '게임속기연 90 검수', '○○ ○○화 검수해줘') → ★**review_queue를 써라(1작품이어도!)**. 검수는 무거워서 메인 대화를 막으므로, 워커 풀이 병렬로 돌려 대화를 안 막게 review_queue(works=[{work 또는 pivo, episode, lang?}, …])로 넘긴다. 등록만 하면 워커가 끝나는 대로 결과를 이 스레드에 직접 올리니, 너는 '검수 시작' 한 줄만 알리고 **직접 review_episode를 호출하거나 검수 결과를 만들지 마라**. ★맥락에 PIVO ID가 있으면(예 'NNNNNN | [출판사] 작품 / 회차' 리스트) work 대신 **pivo로 넣어라** — 납품시트에 없는 작품도 TOTUS로 바로 검수된다('납품시트에서 못 찾음'이 뜨면 PIVO로 넣어야 하는 경우다). ★works 파싱 범위(엄수): 스레드가 사람별 섹션('*박재상 5건*' 등)으로 묶여 있고 '내/박재상 밑에 적힌 것/내 섹션 순차 검수해'라고 하면, works는 **그 이름 헤더 바로 아래 줄들의 PIVO/회차만** 그대로 담아라 — APM·담당 필드로 재조회하거나 다른 섹션·전체 스레드의 작품을 긁지 마라(줄 '리스트의 분류=정답' 규칙과 동일). 한일 lang 생략(ko-ja 기본)·중일 zh-ja(pivo 주면 무관). (review_episode 직접 호출은 워커 풀을 못 쓰는 예외 상황에서만.) 도구가 돌려준 [검수 기준]과 pairs로 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성한다(작품/회차/단계 + task URL + 페이지-텍박 + 수정전→후 + 사유). 문제 없으면 '問題なし'. 이 검수표는 그대로 작업자에게 복붙되는 것이니 임의 해설·강조 없이 템플릿만 깔끔히. error가 오면 그 사유를 그대로 전한다.",
   "★ 검수 결과 전달 규칙: 검수표는 **그냥 네 답변 텍스트로 출력만** 해라 — 시스템이 사용자가 부른 바로 그 자리(스레드/DM)에 자동으로 전달한다. send_message 도구로 직접 보내거나, DM/채널로 따로 발송하거나, 작업자 DB(slack_id/채널)를 조회해 보내려 하지 마라. 'DM으로 보냈다'·'DB에 ID가 없어 못 보냈다' 같은 발송 관련 말도 하지 마라(전달은 시스템 몫). 진행 신호(🔎 추출 완료)도 시스템이 자동으로 띄우니 네가 따로 만들지 마라.",
   "- query_sheet 뷰에 없는 탭을 물으면 → read_tab(탭 이름). 시트 실제 헤더가 곧 필드명이라 사용자가 말한 헤더로 바로 거른다. 표 헤더가 중간 행이면 headerRow 지정. 알려진 6개 시트의 어떤 탭이든 조회 가능.",
+  "★번역/식자 방침 문의 → translation_guide로 가이드 참조: 작업자 문의(또는 재상 님 질문)가 '번역 방침·표기 규칙·용어·후리가나·기호(가운데점/괄호 등)·식자 표기' 등 **가이드로 판정할 내용**이면, 추측하지 말고 translation_guide(kind:'translation')로 중일 번역 가이드 2종을 읽어 **해당 조항을 인용**해 답하라(가이드에 없으면 '가이드에 명시 없음'이라 하고 임의 규칙을 지어내지 마라). 단순 원문/수치 확인은 여기 해당 없음. ★설정집 작성 가이드(kind:'setjip')는 **재상 님이 '설정집'을 명시적으로 언급**할 때만 조회하고, 작업자 번역 방침 문의엔 쓰지 마라.",
   "- 스레드 찾기('○○ 작품 ~~ 스레드 찾아줘', '○○ 관련 논의 어디 있어', 과거 대화/스레드 내용): find_thread(query=작품명+키워드). 등록된 주요 업무 채널들에서 검색해 매칭 스레드를 찾고, 1개로 분명하면 내용(topContent)까지 와서 요약·답+링크. 여러 개면 후보를 보여주고 어느 건지 되묻거나 키워드를 좁힌다(임의 단정 금지). 사용자가 특정 채널을 말하면 channel 인자로. 특정 스레드/링크를 콕 집으면 read_thread. (등록 채널·봇 멤버 범위 내 — 전역 검색 아님)",
   "- '고객사 스케줄 시트'(중일, =내부 납품 시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. '○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일=mode:launch(work나 pivo + episode), ★'이 납품(회차)이 스케줄 시트에 기재/반영됐나' 검증=**mode:delivery_check**(納品話数+納品予定日 기준, listedForDelivery로 판단 — 話数(런칭)로 보는 launch로 판단하면 오답이니 절대 launch로 납품 기재 여부를 판정하지 마라), 'N/일 납품 회차 카운트'=mode:delivery_on+date, '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. 여러 작품+회차를 한꺼번에 검증하면 각 항목마다 delivery_check를 돌려 결과를 모아 답한다. 블록 제목(正式+仮) 직접매칭이라 일본어 제목만으로도 잘 잡힌다. ID 묻지 말 것(이 도구가 그 시트임).",
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
@@ -1220,6 +1221,22 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("translation_guide",
+      "중일(중국어→일본어) 웹툰 번역·표기 방침 가이드 원문을 읽어온다. 작업자 문의나 재상 님 질문이 '번역 방침·표기 규칙·용어·후리가나·기호(가운데점 등)·식자 표기' 등 가이드로 판정할 내용이면 이 도구로 가이드를 읽고 **해당 조항을 인용**해 답하라(임의 규칙 지어내기 금지). kind='translation'(기본)=번역 가이드 2종(WEBマンガ 翻訳ガイドライン 中国語→日本語 + Piccoma 中日クライアント ガ이드). kind='setjip'=설정집 작성 가이드 — ★이건 재상 님이 '설정집'을 명시적으로 언급할 때만 조회(작업자 번역 방침 문의엔 쓰지 마라).",
+      { kind: z.enum(["translation", "setjip"]).optional().describe("translation=번역 가이드 2종(기본), setjip=설정집 작성 가이드(재상 님이 설정집 언급 시만)") },
+      async ({ kind }) => {
+        try {
+          const read = (f) => { try { return readFileSync(`guides/${f}`, "utf8"); } catch { return ""; } };
+          if (kind === "setjip") {
+            const t = read("setjip-creation.md");
+            return { content: [{ type: "text", text: t ? `[설정집 작성 가이드 — 해당 조항 인용해 답, 임의 규칙 금지]\n\n${t}` : JSON.stringify({ error: "설정집 가이드 파일(guides/setjip-creation.md) 없음" }) }] };
+          }
+          const a = read("translation-webmanga.md"), b = read("translation-piccoma-client.md");
+          if (!a && !b) return { content: [{ type: "text", text: JSON.stringify({ error: "번역 가이드 파일(guides/translation-*.md) 없음" }) }] };
+          return { content: [{ type: "text", text: `[중일 번역 가이드 2종 — 해당 조항 인용해 답, 임의 규칙 금지]\n\n=== [가이드1] WEBマンガ 翻訳ガイドライン（中国語→日本語） ===\n${a}\n\n=== [가이드2] Piccoma 中日クライアント ガイド ===\n${b}` }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("notion_search", "노션에서 페이지/DB를 키워드로 검색(읽기). 통합에 공유된 것만 보임. 결과의 id로 notion_read_page 호출.",
       { query: z.string().describe("검색 키워드") },
       async (a) => { try { return { content: [{ type: "text", text: capJson(await notionSearch(a.query)) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
@@ -1680,7 +1697,7 @@ function startSession() {
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread",
         "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
-        "mcp__apm__query_schedule", "mcp__apm__compute",
+        "mcp__apm__query_schedule", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
         "mcp__apm__check_totalk_mentions",
