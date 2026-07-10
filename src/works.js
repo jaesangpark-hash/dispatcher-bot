@@ -2,6 +2,7 @@
 // 컬럼: A=APM B=중국어 C=한국어 D=일본어가제 E=FIX일본어 G=출판사 H=드라이브 I=PIVO ID
 // 한 작품이 C/D/E 세 갈래라, 입력이 셋 중 무엇이든 찾는다. 매칭: PIVO/정확 → 토큰(단어 다 포함) → 부분(연속).
 import { readRange, norm } from "./sheets.js";
+import { setCell } from "./sheets-write.js";
 
 const MASTER = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
 const RANGE = "출판사 드라이브 링크!A:I";
@@ -79,6 +80,26 @@ export async function koTitleIndex() {
   }
   _koIdx = idx; _koIdxAt = Date.now();
   return idx;
+}
+
+// F열(비고) — 작품별 특이사항(작업 시·납품 시 매번 챙겨야 하는 내용). 채워진 행만 반환.
+export async function listWorkNotes() {
+  const rows = (await readRange(MASTER, RANGE)).slice(1);
+  return rows.filter((r) => String(r[5] ?? "").trim()).map((r) => ({
+    apm: r[0] || null, zhTitle: r[1] || null, koTitle: r[2] || null, jaTitle: r[3] || null, fixTitle: r[4] || null,
+    note: String(r[5]).trim(), pivoId: r[8] || null,
+  }));
+}
+
+// 작품 F열(비고)에 특이사항을 기록. 후보 1건일 때만 즉시 반영, 여러 건이면 ambiguous 반환(재상 님에게 되묻기).
+export async function setWorkNote(queryRaw, note) {
+  const rows = (await readRange(MASTER, RANGE)).slice(1);
+  const hits = matchRows(rows, queryRaw);
+  if (!hits.length) return { ok: false, msg: `'${queryRaw}' 작품을 출판사 드라이브 링크 시트에서 못 찾음.` };
+  if (hits.length > 1) return { ok: false, ambiguous: true, msg: `작품 후보가 여러 개(${hits.length}건).`, candidates: hits.slice(0, 6).map((r) => ({ koTitle: r[2], jaTitle: r[3], pivoId: r[8] })) };
+  const rowNum = rows.indexOf(hits[0]) + 2;   // header(1행) 제외하고 슬라이스했으니 +2
+  await setCell(MASTER, `${RANGE.split("!")[0]}!F${rowNum}`, note);
+  return { ok: true, workName: hits[0][2] || hits[0][3] || String(queryRaw) };
 }
 
 // 다른 시트 검색용: 입력 → 작품의 모든 제목 후보 [한국어, 가제, FIX]

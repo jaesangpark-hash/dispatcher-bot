@@ -7,7 +7,7 @@ import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import { lookupDelivery } from "./delivery.js";
 import { gasReady, gasQuery } from "./gas.js";
-import { lookupWork, koTitleIndex } from "./works.js";
+import { lookupWork, koTitleIndex, listWorkNotes, setWorkNote } from "./works.js";
 import { norm } from "./sheets.js";
 import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
@@ -153,6 +153,7 @@ const DISPATCHER_PROMPT = [
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
   "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 후 봇이 자동으로 이어서 처리하는 것: ①TOTUS 프로젝트명 가제→FIX 변경 ②출판사 드라이브 링크 시트 한국어 타이틀·APM 채움 ③납품 시트(중일 V5)에 초도 회차만큼 행(1~N화) 생성 — 이 세 가지는 확정 버튼('✅ 프로젝트명+시트 반영') 한 번으로 봇이 직접 쓴다. ④1-3화 번역검수 자동 모니터 등록. 그러니 propose_totus_project·register_translation_monitor를 따로 부르지 말 것(수동 등록 요청 때만 register). ★중요: '내부 시트(한국어 타이틀·납품 행)는 도구로 못 바꾼다/직접 채워야 한다'고 답하지 마라 — 위 버튼 체인으로 봇이 실제로 쓴다(버튼을 안 누르면 안 될 뿐). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★고객사 → APM 릴레이(재상 님이 고객사 메시지를 붙이며 'APM에게 전달/릴레이해줘'류로 요청할 때): 고객사 채널엔 툰식이가 못 들어가서, 재상 님이 고객사 메시지(보통 **일본어**)를 붙여주면 툰식이가 APM에게 대신 전달하는 흐름이다. ①작품 식별(메시지의 일/중 타이틀 → get_work_info로 **한국어 작품명·담당 APM** 확인) ②요청 유형 파악(원본 교체 / 식자본 선납품 / 번역 JPG 공유 등) → **재상 님 대화체 톤**으로 APM 릴레이 초안을 만들어 send_message로 발송 제안(target=재팬_요청 `C09B8QHP7D4`, 본문 맨 앞 `<@담당APM>` + 끝에 `cc <@U04463JR4HH>`). ★톤(엄수): 굵은 제목·불릿·정형 필드 금지, 자연스러운 대화체. 예 — `<@APM>` 줄 / `<작품> N화 {요청}이 필요합니다.` / `{맥락 한 줄}, …부탁 드립니다.` / `{마감/확인} 가능할까요?`. 링크는 슬랙 마스킹 `<url|라벨>`(생 URL 나열 금지). ★원본 교체 요청이면 원본 링크(고객사가 준 baidu 등)+프로젝트 링크(get_project_url)를 `<url|원본 링크> / <url|프로젝트 링크>`로, 식자·식자검수 담당(작업자 DB)도 함께. 그 외 유형은 요청 내용만 담백하게. 담당 APM이 애매하면 한 줄 되묻기. 게이트(버튼)—'보냈다' 단정 금지.",
+  "★작품 특이사항(비고) 등록·리마인드: '이 작품 특이사항으로 ~ 적어둬/기억해둬'류 요청은 propose_work_note(work, note)로 출판사 드라이브 링크 시트 비고란에 즉시 기록(확인 버튼 없이 바로 반영). 저장해두면 그 작품 납품일마다 자동으로 스캔되어, 관련 스레드를 찾아 리마인드하는 시스템 트리거 턴이 생성된다. ★[시스템 트리거 — 재상 님이 보낸 메시지 아님]으로 시작하는 메시지를 받으면, 이건 그 자동 스캔이 만든 요청이다 — 재상 님이 직접 말한 것처럼 착각하지 말고, 지시대로 find_thread로 그 작품의 관련 스레드를 찾아 특이사항을 리마인드하는 답글을 send_message로(게이트 정상 적용) 보내라. 못 찾으면 지어내지 말고 이 DM에 그렇게 알려라.",
   "★문의봇 하향 릴레이(재상 님이 고객사 답장을 붙이며 '문의봇에 전달/릴레이해줘'류로 요청할 때, 위 고객사→APM 릴레이와 달리 원래 **작업자 쪽에서 올라온 문의·재수급**에 대한 고객사 회신을 되짚어 보내는 경우): 문의/재수급 요청은 시트(문의봇·재수급봇 탭)에 원 스레드 URL과 함께 기록되어 있으니, 웹훅 연동 없이 **find_unresolved_inquiry(work, episode)**로 그 시트를 조회해 미해결(완료 미체크) 건의 원 스레드를 찾는다. ①고객사 답에서 작품(일/중/한)+회차 추출 ②find_unresolved_inquiry 호출 ③결과가 1건이면 그 candidate의 link(스레드 URL)를 send_message의 thread 인자로 그대로 넘겨 답변 relay(+APM 멘션: candidate.apm이 서주원/정태영/박재상이면 위 Slack ID 맵으로, 그 외 이름이면 query_sheet(worker_db)로 slack_id 조회 — 이름 그대로 텍스트로 멘션하지 말 것) ④2건 이상이면 후보(작품·회차·링크) 보여주고 어느 스레드인지 되묻기 ⑤0건이면 '미해결 문의/재수급 못 찾음'이라 답하고 지어내지 말 것. 게이트(버튼)—'보냈다' 단정 금지.",
   "★토톡(ToTalk) 개념·발송 규칙: 토톡은 TOTUS 에디터 안의 코멘트/멘션 기능이다. '토톡 멘션 알림'이란 에디터에서 **작업자가 @멘션 당한 것을 그 작업자 슬랙 채널로 직접 전달**하는 것 — 받는 사람은 멘션당한 **작업자 본인**이고, 그 알림 자체가 이미 작업자에게 가는 전달이다. PM(박재상)이 '확인 후 전달'하는 중간 단계가 아니다. check_totalk_mentions는 조회/초안 전용(발송 안 함). ★재상 님이 특정 토톡 알림을 '보내줘/전달해줘' 하면 아래 템플릿 **그대로**(라벨·순서 유지) 보내라. 절대 '@박재상 확인 후 작업자에게 전달' 같은 PM 전달 프레임을 붙이지 말고, 작성자(발송자)도 노출하지 말 것. 담당자=작품 담당 APM @멘션(서주원/정태영/박재상 맵), 본문 앞에 멘션당한 작업자 @멘션, 수신일시=멘션 생성일시. 템플릿: 📩 *Totalk 알림* / 작품명 : {프로젝트명(대괄호태그 제거)} / 담당자 : @{APM} / 본문 : @{작업자} {본문} / 수신일시 : {멘션 생성일시}.",
   "★PIVO ID 상식: 프로젝트명·메시지·견적요청 본문의 **`[PV-숫자]`(보통 6자리)에서 그 숫자가 PIVO ID**다. 도구에 PIVO를 넘길 땐 'PV-' 접두를 떼고 **숫자만** 넘겨라('PV-201454'→'201454'). 그리고 PIVO로 견적/프로젝트를 못 찾으면 거기서 멈추지 말고 **일본어 가제나 중국어 원제로도 조회**해본다(견적 by-pivo·totus_find_project 둘 다 이름검색이 됨).",
@@ -621,6 +622,23 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: true } }
+    ),
+    tool(
+      "propose_work_note",
+      "작품별 특이사항(작업 시·납품 시마다 챙겨야 하는 주의사항)을 출판사 드라이브 링크 시트 비고란에 기록한다('이 작품 특이사항으로 ~ 적어둬/기억해둬/기록해둬'). 예: 타이틀 로고 위치를 원작과 반드시 맞춰야 함. 기록해두면 이후 이 작품 납품일마다 자동으로 스캔되어 그날 관련 스레드를 찾아 리마인드가 나간다. 확인 버튼 없이 즉시 반영.",
+      { work: z.string().describe("작품명(한/일/중 무엇이든) 또는 PIVO ID"), note: z.string().describe("기록할 특이사항 내용(짧고 명확하게)") },
+      async ({ work, note }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const r = await setWorkNote(work, note);
+          if (!r.ok) {
+            if (r.ambiguous) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: r.msg, candidates: r.candidates, note: "후보가 여럿이라 어느 작품인지 되물어라." }) }] };
+            return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: r.msg }) }] };
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ applied: true, work: r.workName, note, msg: "이미 시트에 반영됨(확인 불필요). 이 작품 납품일마다 자동으로 리마인드됨." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: false } }
     ),
     tool(
       "query_sheet",
@@ -1706,7 +1724,7 @@ function startSession() {
       // (claude.ai 조직 커넥터의 깨진 헤더 'Bearer 복사한_토큰'이 봇 세션에 실려
       //  매 응답을 깨뜨리던 문제 차단 — 툰식이는 외부 커넥터가 필요 없음)
       strictMcpConfig: true,
-      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
+      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
         "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
@@ -3205,7 +3223,52 @@ async function checkWeeklyScrumDiff() {
     console.log(`[scrum-diff] ${mdate} 진행 요약 발송 (thread ${st.threadTs}, 상세 DM ${detail.trim() ? "O" : "X"})`);
   } catch (e) { console.error("[scrum-diff] 실패:", e?.message ?? e); }
 }
-async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); }
+// ── 작품별 특이사항(비고) 납품일 리마인드 ───────────────────────
+// 출판사 드라이브 링크 시트 F열(비고)에 적힌 작품이 오늘 납품일이면, 그 작품 관련 스레드를
+// 찾아(find_thread) 특이사항을 리마인드하도록 브레인에게 '시스템 트리거' 턴을 하나 흘려보낸다.
+// (매번 다른 스레드일 수 있어 고정 채널/스레드로 박아두지 않고 그때그때 검색시킴 — 재상 님 결정 2026-07-10)
+const DELIVERY_NOTE_HOUR = Number(process.env.DELIVERY_NOTE_HOUR ?? 9);   // 이 시각(KST) 이후 그날 첫 tick에서 1회
+let _deliveryNoteDate = null;
+async function todayDeliveriesWithNotes() {
+  if (!gasReady()) return [];
+  const notes = await listWorkNotes();
+  if (!notes.length) return [];
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+  const j = await gasQuery({ sheet: "delivery", q: "byDate", date: today, lang: "both" }).catch(() => null);
+  const rows = j?.rows || [];
+  if (!rows.length) return [];
+  const hits = [];
+  for (const n of notes) {
+    const titles = [n.koTitle, n.jaTitle, n.fixTitle, n.zhTitle].filter(Boolean).map(norm);
+    const matched = rows.filter((r) => { const rw = norm(r.work); return titles.some((t) => t && (rw.includes(t) || t.includes(rw))); });
+    if (matched.length) hits.push({ work: n.koTitle || n.jaTitle || n.zhTitle, note: n.note, apm: n.apm, episodes: [...new Set(matched.map((m) => m.episode))].sort((a, b) => a - b) });
+  }
+  return hits;
+}
+async function checkDeliveryNotes() {
+  try {
+    if (!BRAIN_ON) return;
+    const now = new Date();
+    const kh = Number(now.toLocaleString("en-US", { timeZone: "Asia/Seoul", hour: "2-digit", hour12: false }));
+    const kd = now.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+    if (kh < DELIVERY_NOTE_HOUR || _deliveryNoteDate === kd) return;
+    _deliveryNoteDate = kd;
+    const hits = await todayDeliveriesWithNotes();
+    for (const h of hits) {
+      try {
+        const epTxt = h.episodes.length ? `${h.episodes.join(",")}화 ` : "";
+        const posted = await dmOwner(`🔔 오늘 *${h.work}* ${epTxt}납품일 — 특이사항 있어 관련 스레드 찾아 리마인드할게요.`);
+        if (!posted?.channel || !posted?.ts) continue;
+        const ctx = { client: app.client, channel: posted.channel, threadTs: posted.ts, ts: posted.ts, placeholderTs: null, startedAt: Date.now(), done: false };
+        const content = `[시스템 트리거 — 재상 님이 보낸 메시지 아님. 자동 스캔 결과] 오늘(${kd}) *${h.work}* ${epTxt}납품일이고, 이 작품 특이사항(비고)이 등록돼 있어: "${h.note}". find_thread로 이 작품의 오늘/최근 관련 납품·작업 스레드를 찾아서, 위 특이사항을 리마인드하는 답글을 남겨줘(담당 APM 실제 멘션 포함, send_message로 발송). 스레드를 못 찾겠으면 후보 목록을 이 DM에 보여주거나, 아예 못 찾았다고 짧게 알려줘.`;
+        queue.push({ content, ctx, attachTexts: [], fileRefs: [], user: DISPATCHER_USER_ID });
+        if (wake) { const w = wake; wake = null; w(); }
+      } catch (e) { console.error("[delivery-note] 트리거 실패:", h.work, e?.message ?? e); }
+    }
+    if (hits.length) console.log(`[delivery-note] 오늘 특이사항 대상 ${hits.length}건 트리거`);
+  } catch (e) { console.error("[delivery-note] 실패:", e?.message ?? e); }
+}
+async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDeliveryNotes(); }
 
 (async () => {
   await app.start();
