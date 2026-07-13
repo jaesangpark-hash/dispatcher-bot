@@ -2,6 +2,7 @@ import "dotenv/config";
 import pkg from "@slack/bolt";
 const { App, Assistant } = pkg;
 import { pollOnce, initSince, refreshJungil } from "./totalk.js";
+import { tickReviewFollowup } from "./reviewFollowup.js";
 import { runInitiative, dueDailyInitiative } from "./initiative.js";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
@@ -3313,7 +3314,7 @@ async function checkDeliveryNotes() {
     }
   } catch (e) { console.error("[delivery-note] 실패:", e?.message ?? e); }
 }
-async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDeliveryNotes(); }
+async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDeliveryNotes(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); }
 
 (async () => {
   await app.start();
