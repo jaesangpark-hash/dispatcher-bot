@@ -155,6 +155,7 @@ const DISPATCHER_PROMPT = [
   "★고객사 → APM 릴레이(재상 님이 고객사 메시지를 붙이며 'APM에게 전달/릴레이해줘'류로 요청할 때): 고객사 채널엔 툰식이가 못 들어가서, 재상 님이 고객사 메시지(보통 **일본어**)를 붙여주면 툰식이가 APM에게 대신 전달하는 흐름이다. ①작품 식별(메시지의 일/중 타이틀 → get_work_info로 **한국어 작품명·담당 APM** 확인) ②요청 유형 파악(원본 교체 / 식자본 선납품 / 번역 JPG 공유 등) → **재상 님 대화체 톤**으로 APM 릴레이 초안을 만들어 send_message로 발송 제안(target=재팬_요청 `C09B8QHP7D4`, 본문 맨 앞 `<@담당APM>` + 끝에 `cc <@U04463JR4HH>`). ★톤(엄수): 굵은 제목·불릿·정형 필드 금지, 자연스러운 대화체. 예 — `<@APM>` 줄 / `<작품> N화 {요청}이 필요합니다.` / `{맥락 한 줄}, …부탁 드립니다.` / `{마감/확인} 가능할까요?`. 링크는 슬랙 마스킹 `<url|라벨>`(생 URL 나열 금지). ★원본 교체 요청이면 원본 링크(고객사가 준 baidu 등)+프로젝트 링크(get_project_url)를 `<url|원본 링크> / <url|프로젝트 링크>`로, 식자·식자검수 담당(작업자 DB)도 함께. 그 외 유형은 요청 내용만 담백하게. 담당 APM이 애매하면 한 줄 되묻기. 게이트(버튼)—'보냈다' 단정 금지.",
   "★작품 특이사항(비고) 등록: '이 작품 특이사항으로 ~ 적어둬/기억해둬'류 요청은 propose_work_note(work, note)로 출판사 드라이브 링크 시트 비고란에 즉시 기록(확인 버튼 없이 바로 반영). 저장해두면 그 작품 납품일마다 시스템이 자동으로 스캔해 그날 재팬_공지의 'Toon_Japan 납품스레드'(하루 1개, 결정적으로 찾음)에 리마인드를 직접 게시한다 — 이건 브레인(너) 개입 없이 스케줄러가 처리하니, 이 흐름 자체를 네가 따로 신경 쓸 필요는 없다(등록만 propose_work_note로 확실히 해주면 됨).",
   "★문의봇 하향 릴레이(재상 님이 고객사 답장을 붙이며 '문의봇에 전달/릴레이해줘'류로 요청할 때, 위 고객사→APM 릴레이와 달리 원래 **작업자 쪽에서 올라온 문의·재수급**에 대한 고객사 회신을 되짚어 보내는 경우): 문의/재수급 요청은 시트(문의봇·재수급봇 탭)에 원 스레드 URL과 함께 기록되어 있으니, 웹훅 연동 없이 **find_unresolved_inquiry(work, episode)**로 그 시트를 조회해 미해결(완료 미체크) 건의 원 스레드를 찾는다. ①고객사 답에서 작품(일/중/한)+회차 추출 ②find_unresolved_inquiry 호출 ③결과가 1건이면 그 candidate의 link(스레드 URL)를 send_message의 thread 인자로 그대로 넘겨 답변 relay(+APM 멘션: candidate.apm이 서주원/정태영/박재상이면 위 Slack ID 맵으로, 그 외 이름이면 query_sheet(worker_db)로 slack_id 조회 — 이름 그대로 텍스트로 멘션하지 말 것) ④2건 이상이면 후보(작품·회차·링크) 보여주고 어느 스레드인지 되묻기 ⑤0건이면 '미해결 문의/재수급 못 찾음'이라 답하고 지어내지 말 것. 게이트(버튼)—'보냈다' 단정 금지.",
+  "★고객사 개별보고 대상 출판사(2026-07-13 합의): 'Kuaikan Comics（直取引）_2' · 'Shenzhen Yuerong（共同制作）' 소속 작품은 원본 관련 이슈(작화 실수·스토리 모순 등)가 재수급까지 안 갈 만큼 사소해서 재상 님이 내부에서 조용히 처리하고 넘어가는 경우라도, 고객사가 版元에 취합 보고해야 해서 개별로 알아야 한다. 이 두 출판사(get_work_info의 publisher)에 해당하는 작품 얘기 중 원본/재수급/작화/스토리 이슈가 언급되면(내부 처리로 끝내려는 뉘앙스여도) '이 작품은 {출판사}라 사소해도 고객사에 개별 공유해야 해요'라고 짧게 리마인드해라. 워치 채널(재팬_요청·PM요청)에서는 이미 자동으로 뜨니 중복 안내 불필요, 그 외(DM 등)에서 이 얘기가 나올 때만 챙겨라.",
   "★토톡(ToTalk) 개념·발송 규칙: 토톡은 TOTUS 에디터 안의 코멘트/멘션 기능이다. '토톡 멘션 알림'이란 에디터에서 **작업자가 @멘션 당한 것을 그 작업자 슬랙 채널로 직접 전달**하는 것 — 받는 사람은 멘션당한 **작업자 본인**이고, 그 알림 자체가 이미 작업자에게 가는 전달이다. PM(박재상)이 '확인 후 전달'하는 중간 단계가 아니다. check_totalk_mentions는 조회/초안 전용(발송 안 함). ★재상 님이 특정 토톡 알림을 '보내줘/전달해줘' 하면 아래 템플릿 **그대로**(라벨·순서 유지) 보내라. 절대 '@박재상 확인 후 작업자에게 전달' 같은 PM 전달 프레임을 붙이지 말고, 작성자(발송자)도 노출하지 말 것. 담당자=작품 담당 APM @멘션(서주원/정태영/박재상 맵), 본문 앞에 멘션당한 작업자 @멘션, 수신일시=멘션 생성일시. 템플릿: 📩 *Totalk 알림* / 작품명 : {프로젝트명(대괄호태그 제거)} / 담당자 : @{APM} / 본문 : @{작업자} {본문} / 수신일시 : {멘션 생성일시}.",
   "★PIVO ID 상식: 프로젝트명·메시지·견적요청 본문의 **`[PV-숫자]`(보통 6자리)에서 그 숫자가 PIVO ID**다. 도구에 PIVO를 넘길 땐 'PV-' 접두를 떼고 **숫자만** 넘겨라('PV-201454'→'201454'). 그리고 PIVO로 견적/프로젝트를 못 찾으면 거기서 멈추지 말고 **일본어 가제나 중국어 원제로도 조회**해본다(견적 by-pivo·totus_find_project 둘 다 이름검색이 됨).",
   "★용어 구분(엄수·문맥으로 판단): **'납품일'**(='예정' 글자 없음) → 무조건 **내부 납품 시트 get_delivery_date**. **'납품예정일'/'납품 예정일'/'TOTUS 납품예정일'**(예정 명시) → **TOTUS totus_delivery_date**. 즉 '예정'이 안 붙으면 시트가 기본이다 — 그냥 '납품일 조회'에 totus_delivery_date를 쓰지 마라(혼동 금지). 애매하면 시트(get_delivery_date) 우선. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — '납품예정일'이라 단정 금지.",
@@ -1852,6 +1853,11 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
 const WORK_LINK_WATCH = new Set((process.env.WORK_LINK_WATCH_CHANNELS || "C09B8QHP7D4,C06SUD5AFE1").split(",").map((s) => s.trim()).filter(Boolean));
 const INQUIRY_BOT_ID = process.env.INQUIRY_BOT_ID || "B0AL3E0RNCW";   // 문의봇(inquirybot)
 const RESUPPLY_RE = /재수급|재\s*수급|원본\s*다시|원고\s*다시|다시\s*수급/;
+// ★2026-07-13 고객사(Kuaikan/Shenzhen Yuerong 공동제작) 합의: 이 두 출판사 작품은 원본 관련 이슈(작화 실수·
+// 스토리 모순 등)가 사소해서 내부에서 조용히 처리하고 넘어가더라도, 고객사가 版元(원 출판사)에 취합 보고해야
+// 해서 개별로 알려줘야 함(재수급까지 안 가는 건도 포함). 재수급/원본 언급 있는 스레드에서 이 출판사 매칭되면 리마인드.
+const REPORT_TO_CLIENT_PUBLISHERS = new Set(["Kuaikan Comics（直取引）_2", "Shenzhen Yuerong（共同制作）"]);
+const ORIGIN_ISSUE_RE = /재수급|원본|작화\s*(실수|미스|오류)|스토리\s*모순/;
 let SELF_BOT_USER = null;   // 툰식이 자신의 Slack user id(멘션 시 app_mention이 처리하도록 자동링크 스킵)
 async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
   try {
@@ -1873,6 +1879,9 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
     const wantSrc = RESUPPLY_RE.test(text);
     const lines = [`📁 *${hit.koTitle}*`, urlLine];
     if (wantSrc) lines.push(hit.driveLink ? `📦 원본: ${hit.driveLink}` : `📦 원본: 시트에 링크 없음 — ${hit.publisher || "출판사"}에서 원제 「${hit.zhTitle || "?"}」로 검색`);
+    if (ORIGIN_ISSUE_RE.test(text) && REPORT_TO_CLIENT_PUBLISHERS.has(hit.publisher || "")) {
+      lines.push(`⚠️ *${hit.publisher}* 소속 — 원본 관련 이슈는 내부에서 조용히 처리해도 고객사에 개별 보고 대상이에요(재수급까지 안 가는 사소한 작화/스토리 건도 포함). 잊지 말고 공유하세요.`);
+    }
     await client.chat.postMessage({ channel, thread_ts: threadTs || ts, text: lines.join("\n"), ...SENDER, unfurl_links: false });
     console.log(`[worklink] ${hit.koTitle} → 프로젝트${wantSrc ? "+원본" : ""} (ch=${channel})`);
     // 문의봇 구조화 재수급 요청이면 → 고객사 보낼 일본어 재수급 초안(복붙용)도 자동 첨부
