@@ -2609,9 +2609,18 @@ async function enrichSetjip(pivo) {
   const episodes = String(d["초도작업_총작업량"] || "").trim();
   const lines = String(d["견적특이사항"] || "").split("\n");
   let country = "일본 설정"; const cLine = lines.find((l) => /(일본|중국|유럽|다국적)\s*설정/.test(l)); if (cLine) { if (cLine.includes("중국")) country = "중국 설정"; else if (cLine.includes("유럽")) country = "유럽 설정"; else if (cLine.includes("다국적")) country = "다국적 설정"; }
-  // 견적페이지 표기는 실제로 "기대치"가 아니라 "[기대작S]"처럼 "기대작"+등급을 대괄호로 붙여 씀(코드가 '기대치'만 찾다 매칭 실패하던 버그, 2026-07-10).
-  // 등급 뒤에 붙는 잡담("번역 잘하시는 분 배정 부탁드립니다" 등)은 제외하고 대괄호 안 등급만 뽑는다.
-  let expectation = ""; const eLine = lines.find((l) => /기대(?:치|작)/.test(l)); if (eLine) { const em = eLine.match(/기대(?:치|작)\s*[:：]?\s*([^\]]*)/); expectation = em ? em[1].trim() : ""; }
+  // 견적페이지 기대치 표기가 통일돼 있지 않음(실측, 2026-07-10/13) — 최소 3가지 변형 확인됨:
+  //   ①"[기대작S]"(대괄호+기대작+등급) ②"P작품입니다"/"오리지날 P+ 작품입니다"(등급+작품, 기대작/기대치 단어 자체가 없음).
+  // ①을 먼저 찾고, 없으면 ②(등급 문자+선택적 '+'가 '작품'에 바로 붙는 패턴)로 폴백.
+  let expectation = "";
+  let eLine = lines.find((l) => /기대(?:치|작)/.test(l));
+  if (eLine) {
+    const em = eLine.match(/기대(?:치|작)\s*[:：]?\s*([^\]]*)/);
+    expectation = em ? em[1].trim() : "";
+  } else {
+    eLine = lines.find((l) => /[A-Za-z]{1,3}\+?\s*작품/.test(l));
+    if (eLine) { const em = eLine.match(/([A-Za-z]{1,3}\+?)\s*작품/); expectation = em ? em[1].trim() : ""; }
+  }
   let notes = lines.filter((l) => !(cLine && l === cLine) && !(eLine && l === eLine)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
   let isOriginal = false, originLink = "", driveLink = "", sheetOk = false;
   try {   // 내부시트 override(SA 권한 있을 때). 없으면 견적-only로 진행.
