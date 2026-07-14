@@ -70,7 +70,7 @@ const ownerOnly = () => (currentUser && currentUser !== OWNER_ID)
 function parseEpisodeSpec(spec) {
   const out = new Set();
   for (const part of String(spec).split(",").map((s) => s.trim()).filter(Boolean)) {
-    const m = part.match(/^(\d+)\s*[-~]\s*(\d+)$/);
+    const m = part.match(/^(\d+)\s*[-~]\s*(\d+)(?!\d)/);   // 끝에 "(完結)" 등 trailing 텍스트가 붙어도 범위 인식(2026-07-15)
     if (m) { let a = +m[1], b = +m[2]; if (a > b) [a, b] = [b, a]; for (let i = a; i <= b && out.size < 100; i++) out.add(i); }
     else { const n = part.match(/\d+/); if (n) out.add(+n[0]); }
   }
@@ -229,16 +229,19 @@ async function wongoPost(dryRun) {
   if (j.error) throw new Error("GAS: " + j.error);
   return j;
 }
-// 원고수급 미발송 건 중 납품일까지 14일 미만 남은 항목에 L열(비고란) "일정 타이트" 자동 기재(재상 님 요청 2026-07-14).
-// PIVO+화수로 납품 시트(중일 V5)에서 그 회차들의 가장 이른 납품일을 찾아 계산. 이미 비고가 있으면(수동 메모) 덮어쓰지 않음.
-// 납품일이 아직 시트에 없는 회차(원고가 번역 진행분보다 앞서 있는 경우)는 판단 불가라 스킵.
-async function flagTightWongoSchedule() {
+// 원고수급 미발송 건 비고란(L열) 자동 기재 — 두 가지(재상 님 요청 2026-07-14/2026-07-15):
+// ①납품일까지 14일 미만 남으면 "일정 타이트". PIVO+화수로 납품 시트(중일 V5)에서 그 회차들의 가장 이른
+//   납품일을 찾아 계산. 납품일이 아직 시트에 없는 회차(원고가 번역 진행분보다 앞서 있는 경우)는 판단 불가라 스킵.
+// ②①에 해당 안 하고 회차가 2개 이상 묶여 있으면(예 "66-68"=3화) "주{N}화 납품"(예: 3화 그룹→"주3화 납품").
+// 이미 비고가 있으면(수동 메모) 어느 쪽도 덮어쓰지 않음.
+async function annotateWongoNotes() {
   const OPS_ID = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
   const rows = (await readRangeRO(OPS_ID, "원고수급!A2:N")) || [];
   const isDone = (v) => /^(true|1|완료|y|yes|✓)$/i.test(String(v ?? "").trim());
   const kday = (t) => Math.floor((t + 9 * 3600 * 1000) / 86400000);   // KST 달력일
   const todayKDay = kday(Date.now());
   const updates = [];
+  let tightCount = 0, groupCount = 0;
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     const work = String(r[2] || "").trim();
@@ -249,16 +252,22 @@ async function flagTightWongoSchedule() {
     if (!pivo || !epRange) continue;
     const episodes = parseEpisodeSpec(epRange);
     if (!episodes.length) continue;
+
+    let noteValue = null;
     let dr;
-    try { dr = await resolveDeliveryCells({ work: pivo, episodes, lang: "zh-ja" }); } catch { continue; }
-    const days = dr.found.map((f) => f.currentDate).filter(Boolean)
-      .map((d) => { const m = String(d).match(/(\d{4})-(\d{2})-(\d{2})/); return m ? kday(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null; })
-      .filter((n) => n != null);
-    if (!days.length) continue;   // 이 회차들 납품일 미등록 — 판단 불가
-    if (Math.min(...days) - todayKDay < 14) updates.push({ a1: `원고수급!L${i + 2}`, value: "일정 타이트" });
+    try { dr = await resolveDeliveryCells({ work: pivo, episodes, lang: "zh-ja" }); } catch { dr = null; }
+    if (dr) {
+      const days = dr.found.map((f) => f.currentDate).filter(Boolean)
+        .map((d) => { const m = String(d).match(/(\d{4})-(\d{2})-(\d{2})/); return m ? kday(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null; })
+        .filter((n) => n != null);
+      if (days.length && Math.min(...days) - todayKDay < 14) { noteValue = "일정 타이트"; tightCount++; }
+    }
+    if (!noteValue && episodes.length >= 2) { noteValue = `주${episodes.length}화 납품`; groupCount++; }
+
+    if (noteValue) updates.push({ a1: `원고수급!L${i + 2}`, value: noteValue });
   }
   if (updates.length) await setCells(OPS_ID, updates);
-  return updates.length;
+  return { total: updates.length, tightCount, groupCount };
 }
 // 여러 작품을 배정 현황(등록 여부·상태) + 납품 시트(최근 납품일 지남 여부)로 한 번에 대조.
 // 시트를 작품 수만큼 반복 조회하지 않고 딱 2번(배정현황·납품시트)만 읽어 로컬 매칭 — get_delivery_date를
@@ -1477,18 +1486,19 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("run_wongo_update",
-      "원고수급(납품·이관) 시트의 '미발송' 건(발송 여부 N열 미체크 & 담당 APM 매칭 & 작품명 있음)을 GAS 웹앱으로 일괄 전송한다. ★재상 님이 버튼 없이 바로 실행하기로 함 — 이 도구는 확인 버튼 없이 즉시 슬랙 리포트 전송 + N열 체크 + n8n 반영을 수행하고 결과만 보고한다. '원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘' 류에 사용. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지). 빈 행·담당자 미매칭은 GAS가 제외. 전송 전에 납품일 14일 미만 남은 미발송 건은 비고란에 '일정 타이트'를 자동 기재한다(기존 비고 있으면 안 건드림). 성공 시 간단히, 실패/일부실패/타임아웃이면 분명히 보고.",
+      "원고수급(납품·이관) 시트의 '미발송' 건(발송 여부 N열 미체크 & 담당 APM 매칭 & 작품명 있음)을 GAS 웹앱으로 일괄 전송한다. ★재상 님이 버튼 없이 바로 실행하기로 함 — 이 도구는 확인 버튼 없이 즉시 슬랙 리포트 전송 + N열 체크 + n8n 반영을 수행하고 결과만 보고한다. '원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘' 류에 사용. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지). 빈 행·담당자 미매칭은 GAS가 제외. 전송 전에 비고란을 자동 기재한다: 납품일 14일 미만 남으면 '일정 타이트', 아니고 회차가 2개 이상 묶여 있으면 '주{N}화 납품'(기존 비고 있으면 안 건드림). 성공 시 간단히, 실패/일부실패/타임아웃이면 분명히 보고.",
       {},
       async () => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
-          let tightCount = 0;
-          try { tightCount = await flagTightWongoSchedule(); } catch (e) { console.error("[wongo] 일정타이트 플래그 실패:", e?.message ?? e); }
+          let noteStats = { total: 0, tightCount: 0, groupCount: 0 };
+          try { noteStats = await annotateWongoNotes(); } catch (e) { console.error("[wongo] 비고 자동기재 실패:", e?.message ?? e); }
+          const noteSummary = noteStats.total ? `, 비고 기재 ${noteStats.total}건(일정타이트 ${noteStats.tightCount}·회차그룹 ${noteStats.groupCount})` : "";
           const r = await wongoPost(false);                 // 버튼 없이 즉시 실제 전송
           const sent = r.managers ?? 0, failed = r.failedManagers ?? 0, rows = r.rows ?? 0;
-          if (sent === 0 && failed === 0) return { content: [{ type: "text", text: JSON.stringify({ ok: true, pending: 0, tightFlagged: tightCount, note: "보낼 미발송 건이 없었음(전부 발송됨/담당자 미매칭). 사용자에게 '보낼 거 없었어요'만 간단히." }) }] };
-          if (failed > 0) return { content: [{ type: "text", text: JSON.stringify({ ok: false, sent, failed, rows, tightFlagged: tightCount, codes: r.codes, note: `일부/전부 전송 실패(웹훅 응답코드 확인). 성공 ${sent}명/${rows}건만 체크됨, 실패분은 N 그대로. 사용자에게 실패 사실과 코드를 분명히 알릴 것.` }) }] };
-          return { content: [{ type: "text", text: JSON.stringify({ ok: true, sent, rows, tightFlagged: tightCount, note: `전송 완료(APM ${sent}명/${rows}건)${tightCount ? `, 일정 타이트 ${tightCount}건 비고 기재` : ""}. 사용자에게 간단히 '○건 전송했어요'${tightCount ? "(+타이트 건수)" : ""}.` }) }] };
+          if (sent === 0 && failed === 0) return { content: [{ type: "text", text: JSON.stringify({ ok: true, pending: 0, noteStats, note: "보낼 미발송 건이 없었음(전부 발송됨/담당자 미매칭). 사용자에게 '보낼 거 없었어요'만 간단히." }) }] };
+          if (failed > 0) return { content: [{ type: "text", text: JSON.stringify({ ok: false, sent, failed, rows, noteStats, codes: r.codes, note: `일부/전부 전송 실패(웹훅 응답코드 확인). 성공 ${sent}명/${rows}건만 체크됨, 실패분은 N 그대로. 사용자에게 실패 사실과 코드를 분명히 알릴 것.` }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ ok: true, sent, rows, noteStats, note: `전송 완료(APM ${sent}명/${rows}건)${noteSummary}. 사용자에게 간단히 '○건 전송했어요'${noteStats.total ? "(+비고 기재 건수)" : ""}.` }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(e?.message ?? e), note: "전송 중 오류/타임아웃. 사용자에게 문제를 알리고 잠시 후 재시도 안내." }) }] }; }
       },
       { annotations: { readOnlyHint: false } }),
