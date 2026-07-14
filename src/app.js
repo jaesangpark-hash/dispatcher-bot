@@ -8,7 +8,7 @@ import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import { lookupDelivery } from "./delivery.js";
 import { gasReady, gasQuery } from "./gas.js";
-import { lookupWork, koTitleIndex, listWorkNotes, setWorkNote } from "./works.js";
+import { lookupWork, koTitleIndex, listWorkNotes, setWorkNote, resolveTitleAliases } from "./works.js";
 import { norm } from "./sheets.js";
 import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
@@ -232,14 +232,36 @@ async function wongoPost(dryRun) {
 // 원고수급 미발송 건 비고란(L열) 자동 기재 — 두 가지(재상 님 요청 2026-07-14/2026-07-15):
 // ①납품일까지 14일 미만 남으면 "일정 타이트". PIVO+화수로 납품 시트(중일 V5)에서 그 회차들의 가장 이른
 //   납품일을 찾아 계산. 납품일이 아직 시트에 없는 회차(원고가 번역 진행분보다 앞서 있는 경우)는 판단 불가라 스킵.
-// ②①에 해당 안 하고 회차가 2개 이상 묶여 있으면(예 "66-68"=3화) "주{N}화 납품"(예: 3화 그룹→"주3화 납품").
+// ②①에 해당 안 하면, 그 작품의 납품 주기(같은 납품일끼리 묶이는 연속 회차 그룹 크기, 최빈값)를 계산해
+//   기본값(주2화)이 아니면 "주{N}화 납품"으로 라벨(예: 히든 클래스=주4화, 이모탈 월드=주3화).
+//   ★이 행이 요청한 화수 개수가 아니라 그 작품 전체의 납품 배치 패턴이 기준(실측 확인, 2026-07-15).
 // 이미 비고가 있으면(수동 메모) 어느 쪽도 덮어쓰지 않음.
+function wongoBatchMode(deliveryRows) {
+  const sorted = deliveryRows.filter((r) => !isNaN(r.ep) && r.date).sort((a, b) => a.ep - b.ep);
+  const sizes = [];
+  let cur = null;
+  for (const r of sorted) {
+    if (cur && cur.date === r.date && r.ep === cur.lastEp + 1) { cur.size++; cur.lastEp = r.ep; }
+    else { if (cur) sizes.push(cur.size); cur = { date: r.date, size: 1, lastEp: r.ep }; }
+  }
+  if (cur) sizes.push(cur.size);
+  if (!sizes.length) return null;
+  // 그룹 "개수"가 아니라 그 크기가 커버하는 총 회차 수(size*count)로 최빈값 계산 — 2화/3화 그룹이
+  // 섞여 있어도(예: 이모탈 월드) 실제 지배적인 납품 주기를 더 정확히 반영(실측 확인, 2026-07-15).
+  const weight = new Map();
+  for (const s of sizes) weight.set(s, (weight.get(s) || 0) + s);
+  let mode = null, best = 0;
+  for (const [s, w] of weight) if (w > best) { best = w; mode = s; }
+  return mode;
+}
 async function annotateWongoNotes() {
   const OPS_ID = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
   const rows = (await readRangeRO(OPS_ID, "원고수급!A2:N")) || [];
   const isDone = (v) => /^(true|1|완료|y|yes|✓)$/i.test(String(v ?? "").trim());
   const kday = (t) => Math.floor((t + 9 * 3600 * 1000) / 86400000);   // KST 달력일
   const todayKDay = kday(Date.now());
+  const DID = "1QWCtU1GnCT2BQZvuF_N-8MnpgiyqIDTcM0x6hdCi8mQ";
+  const dv = (await readRangeRO(DID, "납품관리시트_Japan(중일 V5)!A:G")) || [];
   const updates = [];
   let tightCount = 0, groupCount = 0;
   for (let i = 0; i < rows.length; i++) {
@@ -262,7 +284,16 @@ async function annotateWongoNotes() {
         .filter((n) => n != null);
       if (days.length && Math.min(...days) - todayKDay < 14) { noteValue = "일정 타이트"; tightCount++; }
     }
-    if (!noteValue && episodes.length >= 2) { noteValue = `주${episodes.length}화 납품`; groupCount++; }
+    if (!noteValue) {
+      const al = await resolveTitleAliases(pivo).catch(() => null);
+      const titles = al ? [al.koTitle, al.jaTitle, al.fixTitle].filter(Boolean).map(norm) : [];
+      if (titles.length) {
+        const drows = dv.filter((r2) => { const b = norm(r2[1]); return b && titles.some((t) => b.includes(t) || t.includes(b)); })
+          .map((r2) => ({ ep: parseInt(r2[4]), date: r2[6] }));
+        const mode = wongoBatchMode(drows);
+        if (mode && mode !== 2) { noteValue = `주${mode}화 납품`; groupCount++; }
+      }
+    }
 
     if (noteValue) updates.push({ a1: `원고수급!L${i + 2}`, value: noteValue });
   }
@@ -1486,7 +1517,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("run_wongo_update",
-      "원고수급(납품·이관) 시트의 '미발송' 건(발송 여부 N열 미체크 & 담당 APM 매칭 & 작품명 있음)을 GAS 웹앱으로 일괄 전송한다. ★재상 님이 버튼 없이 바로 실행하기로 함 — 이 도구는 확인 버튼 없이 즉시 슬랙 리포트 전송 + N열 체크 + n8n 반영을 수행하고 결과만 보고한다. '원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘' 류에 사용. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지). 빈 행·담당자 미매칭은 GAS가 제외. 전송 전에 비고란을 자동 기재한다: 납품일 14일 미만 남으면 '일정 타이트', 아니고 회차가 2개 이상 묶여 있으면 '주{N}화 납품'(기존 비고 있으면 안 건드림). 성공 시 간단히, 실패/일부실패/타임아웃이면 분명히 보고.",
+      "원고수급(납품·이관) 시트의 '미발송' 건(발송 여부 N열 미체크 & 담당 APM 매칭 & 작품명 있음)을 GAS 웹앱으로 일괄 전송한다. ★재상 님이 버튼 없이 바로 실행하기로 함 — 이 도구는 확인 버튼 없이 즉시 슬랙 리포트 전송 + N열 체크 + n8n 반영을 수행하고 결과만 보고한다. '원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘' 류에 사용. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지). 빈 행·담당자 미매칭은 GAS가 제외. 전송 전에 비고란을 자동 기재한다: 납품일 14일 미만 남으면 '일정 타이트', 아니면 그 작품의 납품 배치 주기(같은 납품일로 묶이는 연속 회차 크기의 최빈값)가 기본값(주2화)이 아니면 '주{N}화 납품'(기존 비고 있으면 안 건드림). 성공 시 간단히, 실패/일부실패/타임아웃이면 분명히 보고.",
       {},
       async () => {
         try {
