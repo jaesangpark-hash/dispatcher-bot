@@ -142,7 +142,7 @@ const DISPATCHER_PROMPT = [
   "★★길이(최우선·엄수): 분석·비교·요약·조회 응답의 *첫 답변은 최대 5줄*로 끝낸다. 표·카테고리 헤더(①②③)·소제목·긴 불릿나열 전부 금지(사용자가 '표로/자세히'라고 명시할 때만 허용). 여러 대상을 비교하면 *대상당 딱 1줄*. 정말 핵심 변화·결론만 남기고 세부(개별 기능·컬럼명·형식 변화 등)는 전부 버린다. 마지막 줄은 '자세히 볼래?'로 닫고, 사용자가 '자세히/상세/전체/표로'라 할 때만 펼친다. 길게 나열하려는 충동을 눌러라 — 짧은 게 기본이자 정답이다. (예: '박재상: 툰식이 개발중→운영중, 문의봇 연동 첫 달성. 나머지 3명 미기재. 자세히 볼래?' 이 정도 길이)",
   "업무 명령이든 가벼운 잡담이든 가리지 않고 받아준다. '그건 내 역할이 아니다' 같은 선긋기나 자기 한계 변명을 길게 늘어놓지 않는다.",
   "★★ 절대 규칙(최우선): 작품명·고유명사는 도구가 돌려준 셀 값(원문 문자열)을 **글자 하나도 바꾸지 않고 그대로 복사해** 출력한다. 음역·번역·한자↔한글 변환·가나 변환·표기 정리 일체 금지 (예: '最弱'→'최약' 금지, '覇王'→'패왕' 금지). 어느 언어(중/한/일) 제목을 골라올지 판단이 틀릴 수는 있어도, 일단 가져온 제목 문자열은 무조건 셀 값 그대로 출력한다. 한국어·일본어 제목이 둘 다 있으면 섞지 말고 각각 원문대로.",
-  "- 납품일/일정 → get_delivery_date (특정 작품 납품일, 중일 기본·한일 ko-ja). '그날/기간 납품 예정 리스트'(예 '7/17 납품 리스트')는 delivery_on_date(date 또는 from~to). → 날짜별 납품은 query_sheet로 시트 통째 읽지 말고 delivery_on_date로(서버측이라 빠름).",
+  "- 납품일/일정 → get_delivery_date (특정 작품 납품일, 중일 기본·한일 ko-ja). '그날/기간 납품 예정 리스트'(예 '7/17 납품 리스트')는 delivery_on_date(date 또는 from~to). → 날짜별 납품은 query_sheet로 시트 통째 읽지 말고 delivery_on_date로(서버측이라 빠름). ★작품 3개 이상을 배정 현황 등록여부·납품일 지남 여부로 한꺼번에 확인해야 하면 get_delivery_date를 작품마다 반복 호출하지 마라(매번 시트 전체 재조회라 느리고 하드타임아웃 위험) — check_work_list(works 배열)를 한 번만 호출해라.",
   "- 리테이크 집계·현황은 retake_query로(시트 통째 읽기 금지·빠름): '기간 리테이크 개수/많이 나온 작품 TOP'=mode:agg(from,to,top) 즉시. '○○ 리테이크 현황/오탈자 개수' 및 유형(번역/식자/애매) 분류=mode:list로 그 기간 행을 받아 *comment를 읽고* 분류(tag는 참고만, 결과 많으면 기간/작품 좁혀 재요청), 카운트는 compute.",
   "- 납품예정일 '변경/삭제(비우기)' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영, 변경 전용) / ②내부 납품관리시트 G열 = propose_delivery_edit(변경+삭제 둘 다). 둘 다 게이트형(버튼 확인). ★'납품일 지워/삭제/비워줘'(특히 재수급·문의로 고객사 확인 필요해 일정을 비워둘 때) → 내부 시트면 propose_delivery_edit에 new_date='삭제'(또는 빈 문자열)로 호출하면 G열을 비운다. 확인 끝나 다시 잡을 땐 같은 도구에 날짜를 준다. 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고(삭제는 보통 내부 시트), 절대 '변경/삭제했다'고 단정하지 말 것(버튼 눌러야 반영).",
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
@@ -259,6 +259,33 @@ async function flagTightWongoSchedule() {
   }
   if (updates.length) await setCells(OPS_ID, updates);
   return updates.length;
+}
+// 여러 작품을 배정 현황(등록 여부·상태) + 납품 시트(최근 납품일 지남 여부)로 한 번에 대조.
+// 시트를 작품 수만큼 반복 조회하지 않고 딱 2번(배정현황·납품시트)만 읽어 로컬 매칭 — get_delivery_date를
+// 여러 작품에 루프 돌리면 매번 시트 전체를 재조회해 느려서(하드타임아웃 실측, 2026-07-14) 만든 배치 전용 경로.
+async function checkWorkList(works, lang = "zh-ja") {
+  const OPS = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
+  const assign = (await readRangeRO(OPS, "배정 현황!A2:R")) || [];
+  const aIdx = new Map();
+  for (const r of assign) { const t = norm(r[0]); if (t) aIdx.set(t, r); }
+  const DID = "1QWCtU1GnCT2BQZvuF_N-8MnpgiyqIDTcM0x6hdCi8mQ";
+  const tab = lang === "ko-ja" ? "납품관리시트_Japan(한일 V5)" : "납품관리시트_Japan(중일 V5)";
+  const dv = (await readRangeRO(DID, `${tab}!A:G`)) || [];
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+  const out = [];
+  for (const w of works) {
+    const key = norm(w);
+    let hit = aIdx.get(key), via = null;
+    if (!hit) {
+      const al = await resolveTitleAliases(w).catch(() => null);
+      if (al) for (const alias of al.aliases) { const h = aIdx.get(norm(alias)); if (h) { hit = h; via = al.koTitle; break; } }
+    }
+    const rows = dv.filter((r) => { const b = norm(r[1]); return b && (b.includes(key) || key.includes(b)); });
+    const dates = rows.map((r) => r[6]).filter(Boolean).sort();
+    const lastDelivery = dates.length ? dates[dates.length - 1] : null;
+    out.push({ work: w, inAssignSheet: !!hit, assignStatus: hit ? hit[1] : null, resolvedVia: via, lastDelivery, deliveryPast: lastDelivery ? lastDelivery < today : null });
+  }
+  return out;
 }
 // n8n 로컬 웹훅 POST(.env N8N_WEBHOOK_BASE = http://localhost:5678). path=웹훅 경로.
 async function n8nPost(path, body) {
@@ -612,6 +639,16 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }
     ),
+    tool("check_work_list",
+      "여러 작품을 한 번에 배정 현황 시트 등록 여부·진행상태, 그리고 납품 시트 최근 납품일이 지났는지 대조한다(시트를 딱 2번만 읽고 로컬 매칭 — 빠름). ★3개 이상 작품의 배정현황/납품일을 확인할 때는 get_delivery_date를 작품마다 반복 호출하지 마라(매번 시트 전체를 새로 읽어 느리고, 실제로 하드타임아웃 난 적 있음, 2026-07-14) — 이 도구를 한 번만 호출해라. '이 작품들 중 배정 현황에 없는 거·납품일 지난 거 알려줘' 류.",
+      { works: z.array(z.string()).describe("확인할 작품명(한국어) 목록"), lang: z.enum(["zh-ja", "ko-ja"]).optional().describe("납품 시트 언어쌍(기본 zh-ja)") },
+      async ({ works, lang }) => {
+        try {
+          const r = await checkWorkList(works, lang || "zh-ja");
+          return { content: [{ type: "text", text: JSON.stringify({ results: r }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("retake_query",
       "리테이크 시트(중일·한일 RAW)를 서버측에서 빠르게 조회·집계한다. mode=agg: 기간 내 *작품별 리테이크 건수 TOP N*(코멘트 안 읽고 카운트 → 즉시). 'X월 리테이크 개수/많이 나온 작품 TOP' 류. mode=list: 기간/작품/APM으로 좁힌 리테이크 행(인입일·작품·회차·수정내용(코멘트)·tag·APM·마감일). '○○ 리테이크 현황/오탈자 개수' 류. ★유형(번역/식자/애매) 분류는 이 도구가 안 한다 — mode=list로 받은 행의 *comment(코멘트)를 읽어* 네가 분류하고 compute로 카운트하라(tag는 참고만, 단독 판단 금지). 결과가 많으면(truncated) 기간/작품을 좁혀 재요청.",
       { mode: z.enum(["list", "agg"]), from: z.string().optional().describe("시작일 yyyy-mm-dd(인입일 기준)"), to: z.string().optional().describe("종료일 yyyy-mm-dd"), work: z.string().optional().describe("작품명(부분일치)"), apm: z.string().optional().describe("APM 이름"), lang: z.enum(["zh", "ko", "both"]).optional().describe("기본 both"), top: z.string().optional().describe("agg일 때 상위 N(예 5)") },
@@ -1759,7 +1796,7 @@ function startSession() {
       // (claude.ai 조직 커넥터의 깨진 헤더 'Bearer 복사한_토큰'이 봇 세션에 실려
       //  매 응답을 깨뜨리던 문제 차단 — 툰식이는 외부 커넥터가 필요 없음)
       strictMcpConfig: true,
-      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
+      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
         "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
