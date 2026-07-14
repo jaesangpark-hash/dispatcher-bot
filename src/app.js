@@ -238,18 +238,22 @@ async function wongoPost(dryRun) {
 // 이미 비고가 있으면(수동 메모) 어느 쪽도 덮어쓰지 않음.
 function wongoBatchMode(deliveryRows) {
   const sorted = deliveryRows.filter((r) => !isNaN(r.ep) && r.date).sort((a, b) => a.ep - b.ep);
-  const sizes = [];
+  const groups = [];
   let cur = null;
   for (const r of sorted) {
     if (cur && cur.date === r.date && r.ep === cur.lastEp + 1) { cur.size++; cur.lastEp = r.ep; }
-    else { if (cur) sizes.push(cur.size); cur = { date: r.date, size: 1, lastEp: r.ep }; }
+    else { if (cur) groups.push(cur); cur = { date: r.date, size: 1, firstEp: r.ep, lastEp: r.ep }; }
   }
-  if (cur) sizes.push(cur.size);
-  if (!sizes.length) return null;
+  if (cur) groups.push(cur);
+  // 1화가 포함된 그룹(초도 — 보통 한꺼번에 크게 일괄 납품됨)은 이후 정상 주기와 성격이 달라 계산에서 제외.
+  // 이게 없으면 초도 일괄분(예: 1~10화 한 번에)이 주기를 왜곡함(실측: PIVO 191538, 2026-07-15).
+  const steady = groups.filter((g) => g.firstEp !== 1);
+  const use = steady.length ? steady : groups;   // 아직 초도분밖에 없으면(신작) 그거라도 사용
+  if (!use.length) return null;
   // 그룹 "개수"가 아니라 그 크기가 커버하는 총 회차 수(size*count)로 최빈값 계산 — 2화/3화 그룹이
   // 섞여 있어도(예: 이모탈 월드) 실제 지배적인 납품 주기를 더 정확히 반영(실측 확인, 2026-07-15).
   const weight = new Map();
-  for (const s of sizes) weight.set(s, (weight.get(s) || 0) + s);
+  for (const g of use) weight.set(g.size, (weight.get(g.size) || 0) + g.size);
   let mode = null, best = 0;
   for (const [s, w] of weight) if (w > best) { best = w; mode = s; }
   return mode;
