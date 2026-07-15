@@ -51,7 +51,7 @@ export function parseDeliveryNoticeTab(filePath, dateStr) {
   if (!sheet) return { error: `'${tab}'(${md}) 탭이 파일에 없음. 있는 탭: ${wb.SheetNames.join(", ")}` };
 
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
-  const zhIdx = rows.findIndex((r) => r && r.length === 1 && String(r[0]).trim() === "중일");
+  const zhIdx = rows.findIndex((r) => r && String(r[0] ?? "").trim() === "중일");
   if (zhIdx < 0) return { error: `'${tab}'(${md}) 탭에서 [중일] 구분 행을 못 찾음 — 형식이 다른 파일일 수 있음` };
 
   const hanilRows = rows.slice(2, zhIdx);
@@ -82,7 +82,8 @@ export async function findUndelivered(dateStr) {
   catch (e) { return { error: `시트 읽기 실패(${md} 탭): ${e?.message ?? e}` }; }
   if (!rows || !rows.length) return { error: `'${md}' 탭이 없거나 비어있음` };
 
-  const zhIdx = rows.findIndex((r) => r && r.length === 1 && String(r[0]).trim() === "중일");
+  // 라이브 시트는 F열(체크박스)이 항상 채워져 있어 마커 행도 길이>1이라 첫 셀만 본다(엑셀 파일과 다름).
+  const zhIdx = rows.findIndex((r) => r && String(r[0] ?? "").trim() === "중일");
   const isDone = (v) => String(v ?? "").trim().toUpperCase() === "TRUE";
   const pick = (r) => ({ title: String(r[0] || "").trim(), job: String(r[3] || "").trim(), apm: String(r[4] || "").trim() });
 
