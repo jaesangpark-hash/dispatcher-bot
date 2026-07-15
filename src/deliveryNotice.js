@@ -4,8 +4,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import XLSX from "xlsx";
+import { readRange } from "./sheets.js";
 
 const DOWNLOADS = "C:/Users/P-205/Downloads";
+// 납품 완료 체크박스가 있는 라이브 구글시트(엑셀 파일의 원본). 탭명 "M/D"(예 "7/15", zero-pad 없음).
+const COMPLETION_SHEET_ID = "1foLY_HtD8PwF4li2z_5V7Zfyq8NhFOiWv508okAdcTY";
 // 고정 멘션(재팬팀 운영 리소스 레지스트리 기준, 2026-06-15 확정)
 const MENTION_IDS = ["U02BTD7TY48", "U04463JR4HH", "U02GPTNGZ5W", "U05CE8HFA6B", "U07E0QPL8MV"];
 
@@ -57,6 +60,38 @@ export function parseDeliveryNoticeTab(filePath, dateStr) {
   for (const r of hanilRows) splitRow(r, chodo, hanil);
   for (const r of zhongyiRows) splitRow(r, chodo, zhongyi);
   return { md, tab, chodo, hanil, zhongyi };
+}
+
+// "2026-07-16"/"7/16" 등 → 라이브 완료체크 시트의 탭명("7/16", zero-pad 없음)
+function resolveLiveTab(dateStr) {
+  const s = String(dateStr).trim();
+  let m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  let month, day;
+  if (m) { month = +m[2]; day = +m[3]; }
+  else { m = s.match(/(\d{1,2})\s*[/.]\s*(\d{1,2})/); if (m) { month = +m[1]; day = +m[2]; } }
+  if (!month || !day) return null;
+  return `${month}/${day}`;
+}
+
+// 라이브 완료체크 시트(F열=납품완료 체크박스)에서 아직 미완료(F≠TRUE)인 회차 + 담당(납품 진행 APM/PM) 조회.
+export async function findUndelivered(dateStr) {
+  const md = resolveLiveTab(dateStr);
+  if (!md) return { error: `날짜를 못 읽음: '${dateStr}' (예: 2026-07-16 또는 7/16)` };
+  let rows;
+  try { rows = await readRange(COMPLETION_SHEET_ID, `${md}!A1:F3000`); }
+  catch (e) { return { error: `시트 읽기 실패(${md} 탭): ${e?.message ?? e}` }; }
+  if (!rows || !rows.length) return { error: `'${md}' 탭이 없거나 비어있음` };
+
+  const zhIdx = rows.findIndex((r) => r && r.length === 1 && String(r[0]).trim() === "중일");
+  const isDone = (v) => String(v ?? "").trim().toUpperCase() === "TRUE";
+  const pick = (r) => ({ title: String(r[0] || "").trim(), job: String(r[3] || "").trim(), apm: String(r[4] || "").trim() });
+
+  const hanilRows = zhIdx >= 0 ? rows.slice(2, zhIdx) : rows.slice(2);
+  const zhongyiRows = zhIdx >= 0 ? rows.slice(zhIdx + 2) : [];
+
+  const hanilPending = hanilRows.filter((r) => r[0] && r[3] && !isDone(r[5])).map(pick);
+  const zhongyiPending = zhongyiRows.filter((r) => r[0] && r[3] && !isDone(r[5])).map(pick);
+  return { md, hanilPending, zhongyiPending };
 }
 
 // 파싱 결과 → 실제 발송 텍스트(Slack mrkdwn). send_message(target=재팬_공지, text=이거)로 넘긴다.

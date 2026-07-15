@@ -25,7 +25,7 @@ import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock } from "./learned.js";
 import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery } from "./schedule.js";
-import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText } from "./deliveryNotice.js";
+import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText, findUndelivered } from "./deliveryNotice.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
 
@@ -705,6 +705,18 @@ const apmTools = createSdkMcpServer({
           if (parsed.error) return { content: [{ type: "text", text: JSON.stringify({ error: parsed.error }) }] };
           const text = buildNoticeText(parsed);
           return { content: [{ type: "text", text: JSON.stringify({ found: true, file: filePath, date: parsed.md, counts: { 초도: parsed.chodo.length, 한일: parsed.hanil.length, 중일: parsed.zhongyi.length }, text, sendTarget: "C09B8QLR5FG", note: "이 text를 send_message(target='C09B8QLR5FG', 재팬_공지)로 넘겨 발송 제안해라. 아직 안 보냈음." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
+    tool("check_undelivered_episodes",
+      "그날 아직 납품 완료 체크 안 된(F열 미체크) 회차와 담당(납품 진행 APM/PM)을 라이브 시트에서 조회한다('오늘 납품 안 된 거 뭐야', '아직 안 끝난 회차·담당 알려줘' 류, 하루 중 수시로 물어볼 수 있음). build_delivery_notice가 참조하는 것과 같은 원본 시트(체크박스 포함) 실시간 조회.",
+      { date: z.string().optional().describe("날짜(예 '2026-07-15' 또는 '7/15'). 생략하면 오늘") },
+      async ({ date }) => {
+        try {
+          const d = date || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+          const r = await findUndelivered(d);
+          if (r.error) return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ date: r.md, hanilPending: r.hanilPending, zhongyiPending: r.zhongyiPending, hanilCount: r.hanilPending.length, zhongyiCount: r.zhongyiPending.length }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
@@ -1856,7 +1868,7 @@ function startSession() {
       // (claude.ai 조직 커넥터의 깨진 헤더 'Bearer 복사한_토큰'이 봇 세션에 실려
       //  매 응답을 깨뜨리던 문제 차단 — 툰식이는 외부 커넥터가 필요 없음)
       strictMcpConfig: true,
-      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
+      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
         "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
