@@ -2208,6 +2208,22 @@ async function classifyRetake(fix) {
   return { type: "애매", reason: "분류 파싱 실패" };
 }
 
+// 리테이크 봇의 한국어(관리용) 수정내용 → 번역가(전원 일본인)에게 그대로 전달 가능한 일본어 문구로 변환.
+// propose_retake 시스템프롬프트 규칙과 동일한 스타일('오류원문→수정문', 한국어 사유는 일역).
+async function translateFixToJapanese(fix) {
+  if (!fix) return "";
+  const prompt = [
+    "다음은 웹툰 리테이크(번역 수정 요청) 내용이다. 번역가(전원 일본인)에게 그대로 전달할 수 있도록 일본어 문장으로만 다시 작성하라.",
+    "- 이미 일본어로 된 인용(원문/수정문)은 그대로 유지하고, 한국어 설명 부분만 자연스러운 일본어로 옮긴다.",
+    "- 가능하면 건마다 '오류원문→수정문' 형태로 정리한다(예: 「楽」→「樂」 修正してください).",
+    "- 여러 건이면 줄바꿈으로 구분한다.",
+    "- 다른 설명 없이 일본어 문장만 출력하라(번호매기기·따옴표 등 부가 표시 불필요).",
+    "", "[원본 수정내용]", String(fix).slice(0, 1500),
+  ].join("\n");
+  const out = await toollessQuery(prompt, { label: "리테이크 일역" });
+  return (out || "").trim() || fix;
+}
+
 async function dmOwner(text) {
   try { const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID }); if (dm.channel?.id) return await app.client.chat.postMessage({ channel: dm.channel.id, text, ...SENDER }); } catch (e) { console.error("[retake-watch] DM 실패:", e?.message ?? e); }
 }
@@ -2235,14 +2251,15 @@ async function handleRetakeWatch({ message, client }) {
     const cls = await classifyRetake(p.fix || "");
     if (cls.type === "식자") { logRW(ts, p, "skip:식자"); return; }
     // 4) 애매(유형 애매 or 작품 매칭 1건 아님) → 박재상에게 질문(초안-우선이라 어차피 박재상에게 감)
+    const jpFix = await translateFixToJapanese(p.fix);   // 번역가는 전원 일본인 — 전달용은 항상 일본어로 준비해둔다.
     if (cls.type === "애매" || cand.length !== 1) {
       const why = [cand.length !== 1 ? `작품 매칭 ${cand.length}건` : "", cls.type === "애매" ? `유형 애매(${cls.reason || ""})` : ""].filter(Boolean).join(" / ");
-      await dmOwner(`🔁 *리테이크 확인 필요* (자동 감지)\n• 작품: *${p.work}* / 화수: ${p.ep || "?"}\n• 사유: ${why}\n• 수정내용: ${(p.fix || "").slice(0, 300)}\n→ 번역가에게 보낼 거면 \`propose_retake\`로 지시해줘 (작품·회차·수정내용).`);
+      await dmOwner(`🔁 *리테이크 확인 필요* (자동 감지)\n• 작품: *${p.work}* / 화수: ${p.ep || "?"}\n• 사유: ${why}\n• 번역가 전달용(일본어):\n${jpFix}\n→ 번역가에게 보낼 거면 \`propose_retake\`로 지시해줘 (작품·회차 그대로, 수정내용은 위 일본어 문구 그대로 사용).`);
       logRW(ts, p, `ask:${cls.type}/cand${cand.length}`);
       return;
     }
     // 5) 명확(중일 확정 + 번역 + 매칭 1건) → 번역가 발송 초안을 박재상 DM으로(발송은 버튼)
-    const rk = await buildRetake({ work: p.work, episode: p.ep || "", fix: p.fix || "" });
+    const rk = await buildRetake({ work: p.work, episode: p.ep || "", fix: jpFix || p.fix || "" });
     if (!rk.found || !rk.target) {
       await dmOwner(`🔁 *리테이크 초안 실패* — *${p.work}* ${p.ep || ""}\n• ${!rk.found ? "작품 못 찾음" : "번역가/채널 못 찾음"} → 필요하면 propose_retake로 수동 처리.`);
       logRW(ts, p, "ask:buildfail");
