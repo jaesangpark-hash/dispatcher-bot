@@ -3414,6 +3414,39 @@ async function findTodayDeliveryThreadTs() {
   } catch (e) { console.error("[delivery-note] 오늘 납품스레드 탐색 실패:", e?.message ?? e); }
   return null;
 }
+// ── 일일 납품 공지("Toon_Japan 납품스레드") 자동 발송 ──────────────
+// 재상 님 요청(2026-07-15): 매일 오전 엑셀 파일 탭이 있는 날짜만, 2026-07-24까지 자동 발송.
+// 이미 그날 스레드가 있으면(다른 프로세스가 먼저 올렸거나 재기동 중복) 스킵 — findTodayDeliveryThreadTs 재사용.
+const DELIVERY_NOTICE_SEND_HOUR = Number(process.env.DELIVERY_NOTICE_SEND_HOUR ?? 9);
+const DELIVERY_NOTICE_CUTOFF = "2026-07-24";
+let _deliveryNoticeSentDate = null;
+async function checkDailyNoticePost() {
+  try {
+    if (!BRAIN_ON) return;
+    const now = new Date();
+    const kh = Number(now.toLocaleString("en-US", { timeZone: "Asia/Seoul", hour: "2-digit", hour12: false }));
+    const kd = now.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+    if (kh < DELIVERY_NOTICE_SEND_HOUR || _deliveryNoticeSentDate === kd) return;
+    if (kd > DELIVERY_NOTICE_CUTOFF) return;   // 기한 지남 — 매번 조용히 스킵(마킹 불필요)
+
+    const existing = await findTodayDeliveryThreadTs();
+    if (existing) { _deliveryNoticeSentDate = kd; console.log(`[delivery-notice] 오늘(${kd}) 이미 납품스레드 있음 — 스킵`); return; }
+
+    const file = findLatestDeliveryExcel();
+    if (!file) return;   // 파일 없으면 다음 tick에 재시도
+
+    const mm = Number(now.toLocaleString("en-US", { timeZone: "Asia/Seoul", month: "numeric" }));
+    const dd = Number(now.toLocaleString("en-US", { timeZone: "Asia/Seoul", day: "numeric" }));
+    const md = `${mm}/${dd}`;
+    const parsed = parseDeliveryNoticeTab(file, md);
+    if (parsed.error) { _deliveryNoticeSentDate = kd; console.log(`[delivery-notice] ${md} 탭 없음 — 오늘은 스킵 (${parsed.error})`); return; }
+
+    const text = buildNoticeText(parsed);
+    await app.client.chat.postMessage({ channel: DELIVERY_THREAD_CHANNEL, text, ...SENDER, unfurl_links: false });
+    _deliveryNoticeSentDate = kd;
+    console.log(`[delivery-notice] ${md} 납품스레드 자동 발송 완료 (초도${parsed.chodo.length}·한일${parsed.hanil.length}·중일${parsed.zhongyi.length})`);
+  } catch (e) { console.error("[delivery-notice] 실패:", e?.message ?? e); }
+}
 async function checkDeliveryNotes() {
   try {
     if (!BRAIN_ON) return;
@@ -3444,7 +3477,7 @@ async function checkDeliveryNotes() {
     }
   } catch (e) { console.error("[delivery-note] 실패:", e?.message ?? e); }
 }
-async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDeliveryNotes(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); }
+async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); }
 
 (async () => {
   await app.start();
