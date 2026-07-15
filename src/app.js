@@ -390,13 +390,16 @@ async function logSetjipSchedule({ work, pivo, apmId, submitDate, threadLink }) 
   } catch (e) { console.error("[setjip-schedule] 이력 기록 실패:", e?.message ?? e); }
 }
 // 매일 체크: 제출 희망일(I열 ISO) == 오늘이고 아직 리마인드 안 했으면(G열≠TRUE) 재상 님께 검수 DM.
+// 제출희망일 자체가 "오전 중"이라 자정 직후(0시대)에 알리면 의미가 없음 — 이 시각(KST) 이후 그날 첫 tick에서.
+const SETJIP_DEADLINE_HOUR = Number(process.env.SETJIP_DEADLINE_HOUR ?? 9);
 let _setjipDeadlineDate = null;
 async function checkSetjipDeadline() {
   try {
     if (!BRAIN_ON) return;
     const now = new Date();
+    const kh = Number(now.toLocaleString("en-US", { timeZone: "Asia/Seoul", hour: "2-digit", hour12: false }));
     const kd = now.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
-    if (_setjipDeadlineDate === kd) return;
+    if (kh < SETJIP_DEADLINE_HOUR || _setjipDeadlineDate === kd) return;
     const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:I2000`);
     if (!rows?.length) { _setjipDeadlineDate = kd; return; }
     const updates = [];
