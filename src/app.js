@@ -381,7 +381,7 @@ async function logSetjipSchedule({ work, pivo, apmId, submitDate, threadLink }) 
       { a1: `${SETJIP_SCHEDULE_TAB}!A${row}`, value: today },
       { a1: `${SETJIP_SCHEDULE_TAB}!B${row}`, value: work || "" },
       { a1: `${SETJIP_SCHEDULE_TAB}!C${row}`, value: pivo || "" },
-      { a1: `${SETJIP_SCHEDULE_TAB}!D${row}`, value: apmId ? `<@${apmId}>` : "" },
+      { a1: `${SETJIP_SCHEDULE_TAB}!D${row}`, value: apmId ? (USER_NAMES[apmId] || apmId) : "" },
       { a1: `${SETJIP_SCHEDULE_TAB}!E${row}`, value: submitDate || "" },
       { a1: `${SETJIP_SCHEDULE_TAB}!F${row}`, value: threadLink || "" },
       { a1: `${SETJIP_SCHEDULE_TAB}!G${row}`, value: "FALSE" },
@@ -406,7 +406,7 @@ async function checkSetjipDeadline() {
       const iso = r[8], reminded = String(r[6] || "").trim().toUpperCase() === "TRUE";
       if (!iso || reminded || iso !== kd) continue;
       const work = r[1] || "", thread = r[5] || "";
-      await dmOwner(`📅 *설정집 검수 리마인드* — *${work}* 제출 희망일이 오늘이에요.\n${thread ? thread : ""}\n작업자가 파일 첨부 후 🔍버튼을 눌렀는지 확인하고, 아직이면 재촉해주세요.`);
+      await dmOwner(`📅 *설정집 검수 리마인드* — *${work}* 제출 희망일이 오늘이에요.\n${thread ? thread : ""}\n설정집 task 완료 여부 확인하고 검수해주세요.`);
       updates.push({ a1: `${SETJIP_SCHEDULE_TAB}!G${i + 2}`, value: "TRUE" });
       hit++;
     }
