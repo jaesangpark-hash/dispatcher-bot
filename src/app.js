@@ -151,7 +151,8 @@ const DISPATCHER_PROMPT = [
   "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. ★한 리테이크 알림에 화수가 여럿(예 '121, 123')이면 화수마다 이 도구를 나눠 부르지 말고 episode에 콤마로 합쳐('121,123') **한 번만** 호출—fix도 화수별 내용이 다르면 '121話：...\\n123話：...'처럼 한 문자열에 줄바꿈으로 합친다(회차별 성격이 달라도 마찬가지). 나눠 부르면 참고 에디터가 화수별로 하나씩만 잡혀 사용자가 혼란스러워한다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode,batch): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님). ★배치: 1-3화 등 초회분이면 batch 생략(初回分 기본), '재제출/추가분/再提出/追話'이거나 4화 이상 후속분이면 batch='再提出追話'로 그 배치 등급·코멘트를 고른다. 회차(예 '4')는 사용자가 말한 그대로 episode에. 초안은 ✏️수정 모달로 본문(문구·코멘트·등급) 손볼 수 있음.",
   "- 완결 작품 처리('○○ 완결 작품 처리해줘/완결처리'): propose_totus_complete(work나 pivo). 프로젝트명 뒤 '(완)' + 상태 완료를 한 번에(게이트). 이미 (완) 있으면 상태만. '처리했다' 단정 금지.",
   "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
-  "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, apm, [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 담당 APM 이름만 받아라(번역/식자는 사용자가 주면 반영, 없으면 기본값). 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. 게이트(버튼)—'게시했다' 단정 금지. APM 이름이 안 나오면 누구 담당인지 한 줄 되묻기.",
+  "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, apm, [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 담당 APM 이름만 받아라(번역/식자는 사용자가 주면 반영, 없으면 기본값). 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. 게이트(버튼)—'게시했다' 단정 금지. APM 이름이 안 나오면 누구 담당인지 한 줄 되묻기. 게시하면 그 스레드에 '🔍 설정집 검수' 버튼도 자동으로 붙는다(신규 요청만 — 이 기능 이전에 만든 옛 요청 스레드엔 버튼이 없음).",
+  "- 설정집 검수 실행('이 설정집 검수 실행해줘/검수 돌려줘', 특히 버튼이 없는 옛 설정집 작성 요청 스레드에서): run_setjip_review([thread]). 그 스레드 안에서 부르면 thread 생략. 실제 검수 버튼 클릭과 동일하게 n8n을 직접 트리거할 뿐이라 결과는 안 준다 — '검수를 요청했다'까지만 말하고 '검수했다/결과 나왔다'고 단정하지 말 것.",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
   "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 후 봇이 자동으로 이어서 처리하는 것: ①TOTUS 프로젝트명 가제→FIX 변경 ②출판사 드라이브 링크 시트 한국어 타이틀·APM 채움 ③납품 시트(중일 V5)에 초도 회차만큼 행(1~N화) 생성 — 이 세 가지는 확정 버튼('✅ 프로젝트명+시트 반영') 한 번으로 봇이 직접 쓴다. ④1-3화 번역검수 자동 모니터 등록. 그러니 propose_totus_project·register_translation_monitor를 따로 부르지 말 것(수동 등록 요청 때만 register). ★중요: '내부 시트(한국어 타이틀·납품 행)는 도구로 못 바꾼다/직접 채워야 한다'고 답하지 마라 — 위 버튼 체인으로 봇이 실제로 쓴다(버튼을 안 누르면 안 될 뿐). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★고객사 → APM 릴레이(재상 님이 고객사 메시지를 붙이며 'APM에게 전달/릴레이해줘'류로 요청할 때): 고객사 채널엔 툰식이가 못 들어가서, 재상 님이 고객사 메시지(보통 **일본어**)를 붙여주면 툰식이가 APM에게 대신 전달하는 흐름이다. ①작품 식별(메시지의 일/중 타이틀 → get_work_info로 **한국어 작품명·담당 APM** 확인) ②요청 유형 파악(원본 교체 / 식자본 선납품 / 번역 JPG 공유 등) → **재상 님 대화체 톤**으로 APM 릴레이 초안을 만들어 send_message로 발송 제안(target=재팬_요청 `C09B8QHP7D4`, 본문 맨 앞 `<@담당APM>` + 끝에 `cc <@U04463JR4HH>`). ★톤(엄수): 굵은 제목·불릿·정형 필드 금지, 자연스러운 대화체. 예 — `<@APM>` 줄 / `<작품> N화 {요청}이 필요합니다.` / `{맥락 한 줄}, …부탁 드립니다.` / `{마감/확인} 가능할까요?`. 링크는 슬랙 마스킹 `<url|라벨>`(생 URL 나열 금지). ★원본 교체 요청이면 원본 링크(고객사가 준 baidu 등)+프로젝트 링크(get_project_url)를 `<url|원본 링크> / <url|프로젝트 링크>`로, 식자·식자검수 담당(작업자 DB)도 함께. 그 외 유형은 요청 내용만 담백하게. 담당 APM이 애매하면 한 줄 되묻기. 게이트(버튼)—'보냈다' 단정 금지.",
@@ -1264,6 +1265,25 @@ const apmTools = createSdkMcpServer({
         } catch (e2) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e2?.message ?? e2) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("run_setjip_review",
+      "설정집 검수를 n8n '중일 설정집 자동 검수 V2'로 직접 실행 요청한다('이 설정집 검수 실행해줘/검수 돌려줘/검수 트리거해줘'). setjip_run_review 버튼(🔍 설정집 검수)을 누른 것과 완전히 동일하게 n8n webhook(seoljeongjip-run)을 직접 호출 — 버튼이 없는 옛 설정집 작성 요청 스레드(신규 검수버튼 붙기 전에 만들어진 것)에서도 자연어로 트리거할 수 있게 하는 경로. 검수 대상 스레드 안에서 부르면 thread 생략 가능(지금 이 스레드를 그대로 씀). ★결과는 이 도구가 주지 않는다 — n8n이 잠시 후 개인채널에 직접 올림. '검수했다/결과 나왔다'고 단정 금지, '검수를 요청했다'까지만.",
+      { thread: z.string().optional().describe("설정집 작성 요청 메시지의 슬랙 링크(permalink). 생략하면 지금 대화 중인 스레드를 그대로 쓴다.") },
+      async ({ thread }) => {
+        try {
+          const ctx = currentCtx;
+          let channel = ctx?.channel, ts = ctx?.ts;
+          if (thread) {
+            const p = parseSlackLink(thread);
+            if (!p) return { content: [{ type: "text", text: JSON.stringify({ error: `스레드 링크를 못 읽음: ${thread}` }) }] };
+            if (p.channel) channel = p.channel;
+            ts = p.ts;
+          }
+          if (!channel || !ts) return { content: [{ type: "text", text: JSON.stringify({ error: "채널/스레드를 특정 못 함 — 설정집 작성 요청 스레드 안에서 부르거나 thread 링크를 줘라." }) }] };
+          await n8nPost("seoljeongjip-run", { channel, thread_ts: ts, user: currentUser || "" });
+          return { content: [{ type: "text", text: JSON.stringify({ triggered: true, channel, thread_ts: ts, note: "n8n에 검수를 요청했다. 결과는 잠시 후 개인채널에 n8n이 올린다. '검수 완료/결과' 등으로 단정하지 말고 '검수를 요청했다'고만 답하라." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: false } }),
     tool("send_message",
       "슬랙으로 메시지를 보낸다. 받는이가 재상 님 본인(U04463JR4HH)이면 바로 발송, 그 외(다른 사람/채널)면 프리뷰+확인 버튼 후 발송. target=채널ID(C…) 또는 사용자ID(U…). 사람 이름만 알면 먼저 query_sheet(worker_db)로 slack_id를 조회해 ID로 넘겨라. 특정 스레드에 댓글로 달려면 thread에 그 메시지 링크(permalink)를 넘겨라(그러면 그 스레드 답글로 발송). 임의로 '보냈다'고 말하지 말 것(확인 대기일 수 있음).",
       { target: z.string().optional().describe("받는 곳: 채널 ID(C…) 또는 사용자 ID(U…). thread(링크)를 주면 채널은 링크에서 자동 추출되므로 생략 가능"), text: z.string().describe("보낼 메시지 내용"), thread: z.string().optional().describe("스레드 답글로 달 대상 메시지의 슬랙 링크(permalink) 또는 thread_ts. 주면 그 스레드 안에 댓글로 발송") },
@@ -1872,7 +1892,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
