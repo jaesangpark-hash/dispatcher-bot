@@ -391,7 +391,7 @@ async function logSetjipSchedule({ work, pivo, apmId, submitDate, threadLink }) 
 }
 // 매일 체크: 제출 희망일(I열 ISO) == 오늘이고 아직 리마인드 안 했으면(G열≠TRUE) 재상 님께 검수 DM.
 // 제출희망일 자체가 "오전 중"이라 자정 직후(0시대)에 알리면 의미가 없음 — 이 시각(KST) 이후 그날 첫 tick에서.
-const SETJIP_DEADLINE_HOUR = Number(process.env.SETJIP_DEADLINE_HOUR ?? 9);
+const SETJIP_DEADLINE_HOUR = Number(process.env.SETJIP_DEADLINE_HOUR ?? 12);   // "오전 중" 마감이라 오전이 끝나는 정오에
 let _setjipDeadlineDate = null;
 async function checkSetjipDeadline() {
   try {
