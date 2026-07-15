@@ -25,6 +25,7 @@ import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock } from "./learned.js";
 import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery } from "./schedule.js";
+import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText } from "./deliveryNotice.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
 
@@ -690,6 +691,20 @@ const apmTools = createSdkMcpServer({
         try {
           const r = await checkWorkList(works, lang || "zh-ja");
           return { content: [{ type: "text", text: JSON.stringify({ results: r }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
+    tool("build_delivery_notice",
+      "'Toon_Japan 납품스레드' 일일 납품 공지 초안을 만든다('오늘/7/16 납품 공지 만들어줘' 류). 재상 님이 다운로드 폴더에 두는 'M_D-M_D 납품시트.xlsx' 파일(탭이 날짜별, 각 탭 안에 [한일]→[중일] 섹션 순서, Job name이 범위표기'1-20'면 초도)을 읽어서 [초도]/[한일]/[중일] 섹션과 고정 5인 멘션을 갖춘 완성 텍스트를 만든다. ★이 도구는 텍스트만 만들 뿐 발송하지 않는다 — 만든 text를 send_message(target=C09B8QLR5FG)로 넘겨 재팬_공지 채널 발송을 제안해라(게이트, '보냈다' 단정 금지). 파일 경로 안 주면 다운로드 폴더에서 '납품시트' 들어간 xlsx 중 가장 최근 파일을 자동으로 씀.",
+      { date: z.string().describe("날짜(예: '2026-07-16' 또는 '7/16'). 파일 안의 탭과 매칭된다"), file: z.string().optional().describe("엑셀 파일 전체 경로. 생략 시 다운로드 폴더에서 최신 '납품시트' 파일 자동 탐색") },
+      async ({ date, file }) => {
+        try {
+          const filePath = file || findLatestDeliveryExcel();
+          if (!filePath) return { content: [{ type: "text", text: JSON.stringify({ error: "다운로드 폴더에서 납품시트 엑셀을 못 찾음. 파일 경로를 알려달라고 되물어라." }) }] };
+          const parsed = parseDeliveryNoticeTab(filePath, date);
+          if (parsed.error) return { content: [{ type: "text", text: JSON.stringify({ error: parsed.error }) }] };
+          const text = buildNoticeText(parsed);
+          return { content: [{ type: "text", text: JSON.stringify({ found: true, file: filePath, date: parsed.md, counts: { 초도: parsed.chodo.length, 한일: parsed.hanil.length, 중일: parsed.zhongyi.length }, text, sendTarget: "C09B8QLR5FG", note: "이 text를 send_message(target='C09B8QLR5FG', 재팬_공지)로 넘겨 발송 제안해라. 아직 안 보냈음." }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
@@ -1841,7 +1856,7 @@ function startSession() {
       // (claude.ai 조직 커넥터의 깨진 헤더 'Bearer 복사한_토큰'이 봇 세션에 실려
       //  매 응답을 깨뜨리던 문제 차단 — 툰식이는 외부 커넥터가 필요 없음)
       strictMcpConfig: true,
-      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
+      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
         "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
