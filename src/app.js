@@ -12,7 +12,7 @@ import { lookupWork, koTitleIndex, listWorkNotes, setWorkNote, resolveTitleAlias
 import { norm } from "./sheets.js";
 import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
-import { setCell, getCell, setCells, getCells } from "./sheets-write.js";
+import { setCell, getCell, setCells, getCells, ensureTab } from "./sheets-write.js";
 import { readRange as readRangeRO } from "./sheets.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
@@ -355,6 +355,66 @@ async function ctxPermalink() {
 const EDIT_TTL_MS = 24 * 60 * 60 * 1000;   // 버튼 유효 24h (영속화로 재시작에도 유지)
 
 const SETJIP_CHANNEL = process.env.SETJIP_CHANNEL || "C09AUQN8GEB";   // 설정집 작성 요청 채널(#재팬_작업요청)
+// ── 설정집 일정 관리(2026-07-15): 요청 이력을 시트에 남기고, 제출 희망일 당일 재상 님께 검수 리마인드 ──
+const SETJIP_SCHEDULE_SHEET = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
+const SETJIP_SCHEDULE_TAB = "설정집 일정";
+let _setjipTabEnsured = false;
+// "7/24(金) 오전 중" 같은 표시용 문자열 → 비교용 ISO 날짜("2026-07-24"). 이미 지난 월/일이면 내년으로 보정(연말 경계 대비).
+function submitDateToISO(s) {
+  const m = String(s || "").match(/^(\d{1,2})\/(\d{1,2})/);
+  if (!m) return null;
+  const now = new Date(Date.now() + 9 * 3600 * 1000);
+  let year = now.getUTCFullYear();
+  const mo = +m[1], da = +m[2];
+  const todayNum = now.getUTCFullYear() * 10000 + (now.getUTCMonth() + 1) * 100 + now.getUTCDate();
+  if (mo * 100 + da < (todayNum % 10000) - 3000) year += 1;   // 대략 3개월 이상 과거처럼 보이면 연도 넘어간 것으로 간주
+  return `${year}-${String(mo).padStart(2, "0")}-${String(da).padStart(2, "0")}`;
+}
+// 설정집 작성 요청 게시 직후 이력 한 줄 기록(실패해도 요청 게시 자체는 막지 않음 — 게시가 우선).
+async function logSetjipSchedule({ work, pivo, apmId, submitDate, threadLink }) {
+  try {
+    if (!_setjipTabEnsured) { await ensureTab(SETJIP_SCHEDULE_SHEET, SETJIP_SCHEDULE_TAB); _setjipTabEnsured = true; }
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A:A`);
+    const row = (rows?.length || 1) + 1;   // 헤더 다음 첫 빈 행
+    const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    await setCells(SETJIP_SCHEDULE_SHEET, [
+      { a1: `${SETJIP_SCHEDULE_TAB}!A${row}`, value: today },
+      { a1: `${SETJIP_SCHEDULE_TAB}!B${row}`, value: work || "" },
+      { a1: `${SETJIP_SCHEDULE_TAB}!C${row}`, value: pivo || "" },
+      { a1: `${SETJIP_SCHEDULE_TAB}!D${row}`, value: apmId ? `<@${apmId}>` : "" },
+      { a1: `${SETJIP_SCHEDULE_TAB}!E${row}`, value: submitDate || "" },
+      { a1: `${SETJIP_SCHEDULE_TAB}!F${row}`, value: threadLink || "" },
+      { a1: `${SETJIP_SCHEDULE_TAB}!G${row}`, value: "FALSE" },
+      { a1: `${SETJIP_SCHEDULE_TAB}!I${row}`, value: submitDateToISO(submitDate) || "" },
+    ]);
+  } catch (e) { console.error("[setjip-schedule] 이력 기록 실패:", e?.message ?? e); }
+}
+// 매일 체크: 제출 희망일(I열 ISO) == 오늘이고 아직 리마인드 안 했으면(G열≠TRUE) 재상 님께 검수 DM.
+let _setjipDeadlineDate = null;
+async function checkSetjipDeadline() {
+  try {
+    if (!BRAIN_ON) return;
+    const now = new Date();
+    const kd = now.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+    if (_setjipDeadlineDate === kd) return;
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:I2000`);
+    if (!rows?.length) { _setjipDeadlineDate = kd; return; }
+    const updates = [];
+    let hit = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const iso = r[8], reminded = String(r[6] || "").trim().toUpperCase() === "TRUE";
+      if (!iso || reminded || iso !== kd) continue;
+      const work = r[1] || "", thread = r[5] || "";
+      await dmOwner(`📅 *설정집 검수 리마인드* — *${work}* 제출 희망일이 오늘이에요.\n${thread ? thread : ""}\n작업자가 파일 첨부 후 🔍버튼을 눌렀는지 확인하고, 아직이면 재촉해주세요.`);
+      updates.push({ a1: `${SETJIP_SCHEDULE_TAB}!G${i + 2}`, value: "TRUE" });
+      hit++;
+    }
+    if (updates.length) await setCells(SETJIP_SCHEDULE_SHEET, updates);
+    _setjipDeadlineDate = kd;
+    if (hit) console.log(`[setjip-schedule] 오늘(${kd}) 마감 리마인드 ${hit}건 발송`);
+  } catch (e) { console.error("[setjip-schedule] 리마인드 체크 실패:", e?.message ?? e); }
+}
 // 스레드 검색 대상 채널(.env SEARCH_CHANNELS = "ID:이름,ID:이름,…"). find_thread가 여기서만 검색.
 const SEARCH_CHANNELS = (process.env.SEARCH_CHANNELS || "").split(",").map((s) => s.trim()).filter(Boolean).map((s) => { const [id, ...n] = s.split(":"); return { id: id.trim(), name: (n.join(":").trim() || id.trim()) }; });
 const KO_WD = ["일", "월", "화", "수", "목", "금", "토"];
@@ -2691,6 +2751,8 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
         { type: "actions", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "🔍 설정집 검수" }, action_id: "setjip_run_review", value: posted.ts }] },
       ],
     }).catch((e) => console.error("[setjip_confirm] 검수 버튼 게시 실패:", e?.message ?? e));
+    const permalink = await client.chat.getPermalink({ channel: p.channel, message_ts: posted.ts }).then((r) => r?.permalink).catch(() => null);
+    logSetjipSchedule({ work: p.work, pivo: p.e?.pivo, apmId: p.apmId, submitDate: p.e?.submit_date, threadLink: permalink });
     await reply(`✅ 설정집 작성 요청 게시 완료 → <#${p.channel}> (${p.work})`);
   } catch (e) {
     await reply(`❌ 게시 실패: ${e?.message ?? e}\n(봇이 그 채널 멤버인지 확인)`);
@@ -3558,7 +3620,7 @@ async function checkDeliveryNotes() {
     }
   } catch (e) { console.error("[delivery-note] 실패:", e?.message ?? e); }
 }
-async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); }
+async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); }
 
 (async () => {
   await app.start();

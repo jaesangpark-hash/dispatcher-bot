@@ -59,6 +59,19 @@ export async function getCells(sheetId, a1List) {
   return (j.valueRanges || []).map((vr) => vr.values?.[0]?.[0] ?? "");
 }
 
+// 새 탭 생성(이미 있으면 무시). 트래킹용 탭을 처음 한 번만 만들 때 사용.
+export async function ensureTab(sheetId, title) {
+  const token = await getWriteToken();
+  const meta = await (await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties.title`, { headers: { Authorization: `Bearer ${token}` } })).json();
+  if (meta.error) throw new Error(`메타 조회 실패: ${meta.error.message}`);
+  if ((meta.sheets || []).some((s) => s.properties?.title === title)) return { created: false };
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`;
+  const r = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ requests: [{ addSheet: { properties: { title } } }] }) });
+  const j = await r.json();
+  if (j.error) throw new Error(`탭 생성 실패: ${j.error.message}`);
+  return { created: true };
+}
+
 // 여러 셀 일괄 쓰기. updates = [{ a1, value }]. 1회 HTTP(values:batchUpdate).
 export async function setCells(sheetId, updates) {
   if (!updates.length) return { totalUpdatedCells: 0 };
