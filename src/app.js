@@ -3477,6 +3477,13 @@ async function checkDeliveryNotes() {
     const text = `🔔 *오늘 납품 중 특이사항 있는 작품*\n${lines.join("\n")}`;
     const threadTs = await findTodayDeliveryThreadTs();
     if (threadTs) {
+      const replies = await app.client.conversations.replies({ channel: DELIVERY_THREAD_CHANNEL, ts: threadTs, limit: 60 }).catch(() => null);
+      const alreadyPosted = (replies?.messages || []).some((m) => /오늘 납품 중 특이사항 있는 작품/.test(m.text || ""));
+      if (alreadyPosted) {   // 재기동으로 메모리 플래그가 초기화돼도 실제 스레드를 재확인해 중복 게시 방지
+        console.log(`[delivery-note] 이미 오늘자 리마인드 있음 — 스킵`);
+        _deliveryNoteDate = kd;
+        return;
+      }
       await app.client.chat.postMessage({ channel: DELIVERY_THREAD_CHANNEL, thread_ts: threadTs, text, ...SENDER, unfurl_links: false });
       console.log(`[delivery-note] 납품스레드에 ${hits.length}건 리마인드 게시`);
       _deliveryNoteDate = kd;
