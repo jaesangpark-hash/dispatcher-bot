@@ -70,8 +70,9 @@ export async function buildRetake({ work, episode, fix, channel = null }) {
       const tasks = (jr?.data?.[0]?.오퍼레이션 || []).flatMap((o) => o.태스크 || []);
       if (!transEmail) { const tr = tasks.filter((t) => trim(t.오퍼레이션유형명) === "번역").pop(); transEmail = tr?.작업자?.이메일 ? trim(tr.작업자.이메일) : null; }
       const lastOf = (nm) => { const c = tasks.filter((t) => trim(t.오퍼레이션유형명) === nm); return c[c.length - 1]; };
-      const sik = lastOf("식자검수"), dl = lastOf("납품검수");
+      const sik = lastOf("식자검수"), sj = lastOf("식자"), dl = lastOf("납품검수");
       if (sik) editors.push({ ep, url: `https://main.totus.pro/ko/editor?uuid=${sik.uuid}`, kind: "식자검수" });
+      else if (sj) editors.push({ ep, url: `https://main.totus.pro/ko/editor?uuid=${sj.uuid}`, kind: "식자" });
       else if (dl) editors.push({ ep, url: `https://main.totus.pro/ko/editor?uuid=${dl.uuid}`, kind: "납품검수" });
     }
   }
@@ -111,7 +112,12 @@ export async function buildRetake({ work, episode, fix, channel = null }) {
   const body = bodyLines.join("\n");
 
   const target = channel || trChannel || trId;   // 번역가 채널 우선, 없으면 번역가 DM
-  const editorKind = editorLines.length ? `식자검수 ${editorLines.length}/${eps.length}화` : "없음";
+  // 화수별로 식자검수/식자/납품검수가 섞일 수 있어 종류별로 나눠 표시(예 "식자검수 1/2화, 식자 1/2화") — 몇 화가 어떤 종류로 잡혔는지 한눈에 보이게.
+  const kindCounts = {};
+  for (const e of editorLines) kindCounts[e.kind] = (kindCounts[e.kind] || 0) + 1;
+  const editorKind = editorLines.length
+    ? Object.entries(kindCounts).map(([k, c]) => `${k} ${c}/${eps.length}화`).join(", ")
+    : "없음";
   return {
     found: true,
     headerReal, headerPreview, body,
