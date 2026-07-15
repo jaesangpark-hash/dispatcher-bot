@@ -2661,11 +2661,35 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
   try {
     try { await client.conversations.join({ channel: p.channel }); } catch {}
     const text = buildSetjipText(p.e, { translator: p.translator, typesetter: p.typesetter, apmId: p.apmId, client_pm: "" }, false);
-    await client.chat.postMessage({ channel: p.channel, text, ...SENDER });
+    const posted = await client.chat.postMessage({ channel: p.channel, text, ...SENDER });
     appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "setjip", channel: p.channel, work: p.work, pivo: p.e?.pivo }) + "\n");
+    // n8n 인터랙션 디스패처가 하던 "검수 버튼 부착"을 여기서 직접 함 — 그쪽 워크플로우 없이도 자동 검수 V2(seoljeongjip-run)를 바로 트리거할 수 있게.
+    await client.chat.postMessage({
+      channel: p.channel, thread_ts: posted.ts, ...SENDER, text: "설정집 검수 버튼",
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: "✅ 완성되면 *시스템메시지 xlsx를 이 스레드에 첨부* 후 아래 버튼을 눌러주세요.\n수정 후 *재검수*는 새 파일 첨부 → 버튼 재클릭." } },
+        { type: "actions", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "🔍 설정집 검수" }, action_id: "setjip_run_review", value: posted.ts }] },
+      ],
+    }).catch((e) => console.error("[setjip_confirm] 검수 버튼 게시 실패:", e?.message ?? e));
     await reply(`✅ 설정집 작성 요청 게시 완료 → <#${p.channel}> (${p.work})`);
   } catch (e) {
     await reply(`❌ 게시 실패: ${e?.message ?? e}\n(봇이 그 채널 멤버인지 확인)`);
+  }
+});
+
+// 설정집 검수 버튼 클릭 → n8n "중일 설정집 자동 검수 V2"(seoljeongjip-run) 직접 트리거.
+// 원래 n8n "설정집 인터랙션 디스패처"가 하던 역할(요청 생성)을 이 도구가 대체하면서, 검수 버튼 부착·클릭 처리까지 여기서 떠맡는다.
+app.action("setjip_run_review", async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id;
+  const thread_ts = body.actions?.[0]?.value || body.message?.thread_ts || body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel, thread_ts, text: t, ...SENDER }).catch(() => {});
+  // 원본(n8n) 설계도 이 버튼엔 사용자 제한이 없었음 — 요청 완성 후 첨부하는 사람(작업자/APM)이 누구든 누를 수 있어야 함.
+  try {
+    await n8nPost("seoljeongjip-run", { channel, thread_ts, user: body.user?.id });
+    await reply("🔍 검수를 요청했어요. 결과는 곧 개인채널에 올라올 거예요.");
+  } catch (e) {
+    await reply(`❌ 검수 요청 실패: ${e?.message ?? e}`);
   }
 });
 
