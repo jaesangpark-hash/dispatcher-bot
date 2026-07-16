@@ -233,6 +233,27 @@ export async function deliveryOnDate(dateStr) {
   return { date: `${want.month}/${want.day}`, works: items.length, totalEpisodes: totalEps, items };
 }
 
+// ★주간 납품 배치 주기(예: "23-24"→2화, "25-26"→2화 = 주2화 납품) — 고객사 스케줄 시트의 週次 納品話数 기준.
+// 원고수급 비고 자동기재(annotateWongoNotes)용. 재상 님 확인(2026-07-16): 배치 주기는 납품일 그룹핑이 아니라
+// 이 시트의 週次 納品話数 칸(예 "23-24"/"25-26" 밑에 적힌 "2") 기준으로 판단해야 함.
+// 週次 데이터가 이미 週 단위로 나뉘어 있어 날짜 그룹핑 불필요 — 각 週의 회차수(parseEpisodes 길이)로 바로 최빈값 계산.
+export async function deliveryBatchMode({ work, pivo } = {}) {
+  const { block: b } = await resolveBlock({ work, pivo });
+  if (!b) return null;
+  const counts = b.weeks
+    .map((w) => { const eps = parseEpisodes(w.deliveryEps); return eps.length ? { firstEp: eps[0], n: eps.length } : null; })
+    .filter(Boolean);
+  if (!counts.length) return null;
+  // 초도(1화 포함 주)는 몰아서 납품되는 경우가 많아 이후 정상 주기와 성격이 달라 계산에서 제외(wongoBatchMode와 동일 원칙).
+  const steady = counts.filter((c) => c.firstEp !== 1);
+  const use = steady.length ? steady : counts;
+  const weight = new Map();
+  for (const c of use) weight.set(c.n, (weight.get(c.n) || 0) + c.n);
+  let mode = null, best = 0;
+  for (const [s, w] of weight) if (w > best) { best = w; mode = s; }
+  return mode;
+}
+
 // 작품별 스케줄 (주차별 런칭/회차/납품)
 export async function workSchedule(work) {
   const blocks = await getBlocks();

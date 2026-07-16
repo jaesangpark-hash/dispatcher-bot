@@ -24,7 +24,7 @@ import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot,
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock } from "./learned.js";
-import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery } from "./schedule.js";
+import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode } from "./schedule.js";
 import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText, findUndelivered } from "./deliveryNotice.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
@@ -235,40 +235,19 @@ async function wongoPost(dryRun) {
 // 원고수급 미발송 건 비고란(L열) 자동 기재 — 두 가지(재상 님 요청 2026-07-14/2026-07-15):
 // ①납품일까지 14일 미만 남으면 "일정 타이트". PIVO+화수로 납품 시트(중일 V5)에서 그 회차들의 가장 이른
 //   납품일을 찾아 계산. 납품일이 아직 시트에 없는 회차(원고가 번역 진행분보다 앞서 있는 경우)는 판단 불가라 스킵.
-// ②①에 해당 안 하면, 그 작품의 납품 주기(같은 납품일끼리 묶이는 연속 회차 그룹 크기, 최빈값)를 계산해
-//   1·2화는 기본값 취급(라벨 없음), 3화 이상이면 "주{N}화 납품"으로 라벨(예: 히든 클래스=주4화, 이모탈 월드=주3화).
-//   ★이 행이 요청한 화수 개수가 아니라 그 작품 전체의 납품 배치 패턴이 기준(실측 확인, 2026-07-15).
+// ②①에 해당 안 하면, 그 작품의 납품 주기를 계산해 1·2화는 기본값 취급(라벨 없음), 3화 이상이면 "주{N}화 납품".
+//   ★주기 판단은 고객사 스케줄 시트(deliveryBatchMode, schedule.js)의 週次 納品話数 기준 — 처음엔 내부 납품
+//   시트(중일 V5)의 납품일 그룹핑으로 계산했는데, 초도(1화 포함) 배치만 있고 아직 週次 데이터가 없는 신작에서
+//   그 초도 배치 크기를 그대로 주기로 오인하는 문제가 있었음(예: 좀비 나이트메어 — 초도 20화 몰아내고 이후
+//   매주 1화씩인데 "주20화"로 잘못 라벨됨, 재상 님 확인 2026-07-16). 스케줄 시트는 이미 週 단위로 나뉘어
+//   있어 이런 오인식이 없음.
 // 이미 비고가 있으면(수동 메모) 어느 쪽도 덮어쓰지 않음.
-function wongoBatchMode(deliveryRows) {
-  const sorted = deliveryRows.filter((r) => !isNaN(r.ep) && r.date).sort((a, b) => a.ep - b.ep);
-  const groups = [];
-  let cur = null;
-  for (const r of sorted) {
-    if (cur && cur.date === r.date && r.ep === cur.lastEp + 1) { cur.size++; cur.lastEp = r.ep; }
-    else { if (cur) groups.push(cur); cur = { date: r.date, size: 1, firstEp: r.ep, lastEp: r.ep }; }
-  }
-  if (cur) groups.push(cur);
-  // 1화가 포함된 그룹(초도 — 보통 한꺼번에 크게 일괄 납품됨)은 이후 정상 주기와 성격이 달라 계산에서 제외.
-  // 이게 없으면 초도 일괄분(예: 1~10화 한 번에)이 주기를 왜곡함(실측: PIVO 191538, 2026-07-15).
-  const steady = groups.filter((g) => g.firstEp !== 1);
-  const use = steady.length ? steady : groups;   // 아직 초도분밖에 없으면(신작) 그거라도 사용
-  if (!use.length) return null;
-  // 그룹 "개수"가 아니라 그 크기가 커버하는 총 회차 수(size*count)로 최빈값 계산 — 2화/3화 그룹이
-  // 섞여 있어도(예: 이모탈 월드) 실제 지배적인 납품 주기를 더 정확히 반영(실측 확인, 2026-07-15).
-  const weight = new Map();
-  for (const g of use) weight.set(g.size, (weight.get(g.size) || 0) + g.size);
-  let mode = null, best = 0;
-  for (const [s, w] of weight) if (w > best) { best = w; mode = s; }
-  return mode;
-}
 async function annotateWongoNotes() {
   const OPS_ID = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
   const rows = (await readRangeRO(OPS_ID, "원고수급!A2:N")) || [];
   const isDone = (v) => /^(true|1|완료|y|yes|✓)$/i.test(String(v ?? "").trim());
   const kday = (t) => Math.floor((t + 9 * 3600 * 1000) / 86400000);   // KST 달력일
   const todayKDay = kday(Date.now());
-  const DID = "1QWCtU1GnCT2BQZvuF_N-8MnpgiyqIDTcM0x6hdCi8mQ";
-  const dv = (await readRangeRO(DID, "납품관리시트_Japan(중일 V5)!A:G")) || [];
   const updates = [];
   let tightCount = 0, groupCount = 0;
   for (let i = 0; i < rows.length; i++) {
@@ -292,14 +271,8 @@ async function annotateWongoNotes() {
       if (days.length && Math.min(...days) - todayKDay < 14) { noteValue = "일정 타이트"; tightCount++; }
     }
     if (!noteValue) {
-      const al = await resolveTitleAliases(pivo).catch(() => null);
-      const titles = al ? [al.koTitle, al.jaTitle, al.fixTitle].filter(Boolean).map(norm) : [];
-      if (titles.length) {
-        const drows = dv.filter((r2) => { const b = norm(r2[1]); return b && titles.some((t) => b.includes(t) || t.includes(b)); })
-          .map((r2) => ({ ep: parseInt(r2[4]), date: r2[6] }));
-        const mode = wongoBatchMode(drows);
-        if (mode && mode >= 3) { noteValue = `주${mode}화 납품`; groupCount++; }   // 1·2화는 기본값 취급, 3화 이상만 라벨
-      }
+      const mode = await deliveryBatchMode({ pivo }).catch(() => null);
+      if (mode && mode >= 3) { noteValue = `주${mode}화 납품`; groupCount++; }   // 1·2화는 기본값 취급, 3화 이상만 라벨
     }
 
     if (noteValue) updates.push({ a1: `원고수급!L${i + 2}`, value: noteValue });
