@@ -39,7 +39,7 @@ const {
   DISPATCHER_MODEL = "claude-sonnet-4-6",
   BOT_DISPLAY_NAME,   // 설정 시 chat.postMessage username 으로 표시명 강제 (chat:write.customize 스코프 필요)
   BOT_ICON_EMOJI,     // 선택: 표시 아이콘 (예: ":robot_face:")
-  BOT_NAG_HOURS = "9,14,18", // 재촉 리마인더 발송 시각들(콤마, 시·로컬). 기본 09·14·18시 하루 3회
+  BOT_NAG_HOURS = "12,17", // 재촉 리마인더 발송 시각들(콤마, 시·로컬). 12·17시 하루 2회(문의봇 시트 리마인드 과다 알림 완화, 2026-07-16)
   APM_USER_IDS = "", // 조회·검수만 허용할 APM Slack ID(콤마 구분). 변경·발송·리마인더는 재상(DISPATCHER_USER_ID)만.
   REMINDER_CHANNEL = "C0B73GL3WAJ", // 리마인더(재촉·예약·미해결 문의/재수급) 발송 채널. 봇이 이 채널 멤버여야 함.
   INQUIRY_OVERDUE_DAYS = "2", // 문의/재수급 인입일로부터 이 일수 이상 완료 미체크면 미해결로 재촉
