@@ -1,14 +1,21 @@
-// TOTUS 게이트웨이 읽기(read-only). botV2 .env의 PLATFORM_API_URL/TOKEN 사용.
+// TOTUS 게이트웨이 읽기(read-only). PLATFORM_API_URL/TOKEN 사용(자체 .env 우선, 없으면 botV2 .env 폴백).
 // 베이스: https://totus-api.voithru-ai.com (명세의 {EC2}:9101을 공개 게이트웨이로 대체)
 import fs from "node:fs";
 
 const BOTV2_ENV = "c:/Users/P-205/Desktop/slack-inquiry-botV2/.env";
 
+// ★EC2 등 원격 배포 시 로컬 botV2 경로가 없음 — process.env를 우선 쓰고, 로컬 개발 환경에서만 파일로 폴백.
 function creds() {
-  const env = fs.readFileSync(BOTV2_ENV, "utf8");
-  const url = env.match(/^PLATFORM_API_URL=(.*)$/m)?.[1]?.trim().replace(/\/+$/, "");
-  const tok = env.match(/^PLATFORM_API_TOKEN=(.*)$/m)?.[1]?.trim().replace(/^['"]|['"]$/g, "");
-  if (!url || !tok) throw new Error("PLATFORM_API_URL/TOKEN 없음 (botV2 .env)");
+  let url = process.env.PLATFORM_API_URL?.trim().replace(/\/+$/, "");
+  let tok = process.env.PLATFORM_API_TOKEN?.trim().replace(/^['"]|['"]$/g, "");
+  if (!url || !tok) {
+    try {
+      const env = fs.readFileSync(BOTV2_ENV, "utf8");
+      if (!url) url = env.match(/^PLATFORM_API_URL=(.*)$/m)?.[1]?.trim().replace(/\/+$/, "");
+      if (!tok) tok = env.match(/^PLATFORM_API_TOKEN=(.*)$/m)?.[1]?.trim().replace(/^['"]|['"]$/g, "");
+    } catch { /* 원격 환경엔 이 파일이 없음 — process.env만으로 판단 */ }
+  }
+  if (!url || !tok) throw new Error("PLATFORM_API_URL/TOKEN 없음 (.env 또는 botV2 .env)");
   return { url, tok };
 }
 
