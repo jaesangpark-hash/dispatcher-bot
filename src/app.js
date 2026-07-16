@@ -597,8 +597,8 @@ async function checkDailyReport() {
 // 잡 = { label, ctx, run:async(id)=>text }. run은 toolless query(ctx·전역상태 안 건드림 → 병렬 안전)로
 // 판단하고 결과 문자열을 반환하면 워커가 잡에 캡처된 ctx 스레드로 게시한다.
 const WORKER_COUNT = Number(process.env.WORKER_COUNT || process.env.REVIEW_WORKERS || 4);
-const JOB_TIMEOUT_MS = 300_000;
-const TEXT_EXPORT_BUDGET_MS = 200_000;   // 텍스트 추출 잡 1회 예산(워커 타임아웃 300s보다 짧게) — 초과 시 남은 화는 자동 이어받기
+const JOB_TIMEOUT_MS = 600_000;   // 워커 1개당 독립 타임아웃(다른 워커는 안 막힘). 5분에서 10분으로 늘림(2026-07-16)
+const TEXT_EXPORT_BUDGET_MS = 200_000;   // 텍스트 추출 잡 1회 예산(워커 타임아웃 JOB_TIMEOUT_MS보다 짧게) — 초과 시 남은 화는 자동 이어받기
 const jobs = [];
 const jobWaiters = [];        // 대기 중 워커 resolver (잡 1개당 1명 깨움)
 let workersStarted = false;
@@ -649,7 +649,7 @@ async function jobWorker(id) {
     try {
       const out = await Promise.race([
         job.run(id),
-        new Promise((_, rej) => setTimeout(() => rej(new Error(`${job.label} 타임아웃(>5분)`)), JOB_TIMEOUT_MS)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`${job.label} 타임아웃(>${JOB_TIMEOUT_MS / 60000}분)`)), JOB_TIMEOUT_MS)),
       ]);
       if (out) await workerPost(job.ctx, out);
     } catch (e) {
