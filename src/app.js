@@ -165,7 +165,7 @@ const DISPATCHER_PROMPT = [
   "★용어 구분(엄수·문맥으로 판단): **'납품일'**(='예정' 글자 없음) → 무조건 **내부 납품 시트 get_delivery_date**. **'납품예정일'/'납품 예정일'/'TOTUS 납품예정일'**(예정 명시) → **TOTUS totus_delivery_date**. 즉 '예정'이 안 붙으면 시트가 기본이다 — 그냥 '납품일 조회'에 totus_delivery_date를 쓰지 마라(혼동 금지). 애매하면 시트(get_delivery_date) 우선. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — '납품예정일'이라 단정 금지.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수). ★단 출판사가 bilibili comics(哔哩哔哩漫画)나 kuaikan(快看漫画)이면 긴 검색 안내는 생략하되 **플랫폼명 + 중국어 원제(zhTitle)** 를 함께 짧게 준다(원제로 검색하므로 필수). 예: '비리비리예요 — 원제: 「{zhTitle}」' / '콰이칸이에요 — 원제: 「{zhTitle}」'.",
-  "- TOTUS 링크 요청: 작품 '프로젝트/작업진행 페이지 링크' = get_project_url(작품) (작품 단위, 회차 불필요). 특정 회차·오퍼레이션의 '에디터 링크' = get_editor_url(작품, 회차, 오퍼레이션명) (상태 무관 최신 task 기준). 둘 다 한국어 제목만으론 동명 프로젝트가 여럿 잡힐 수 있음(ambiguous:true+candidates로 옴) — 그러면 임의로 첫 번째를 고르지 말고 candidates 목록 보여주며 PIVO ID로 다시 물어라.",
+  "- TOTUS 링크 요청: 작품 '프로젝트/작업진행 페이지 링크' = get_project_url(작품) (작품 단위, 회차 불필요). 특정 회차·오퍼레이션의 '에디터 링크' = get_editor_url(작품, 회차, 오퍼레이션명) (상태 무관 최신 task 기준). 둘 다 한국어 제목만으론 동명 프로젝트가 여럿 잡힐 수 있는데, [PV-정식6자리표기]가 붙은 것으로 자동 특정하니 보통은 되묻지 않는다. 그것도 하나로 안 좁혀지면(ambiguous:true) 그때만 candidates 목록 보여주며 되물어라.",
   "- 원본/원고/소스 'PSD·파일 다운로드' 요청 → get_source_files(작품, 회차[, page]). 특정 페이지만(예 '48화 2페이지', '3,4페이지')이면 page 인자에 번호를 넣는다. ★출력은 각 파일을 **슬랙 마스킹 하이퍼링크 `<다운로드URL|파일명>`** 로 만들어 **한 줄(또는 몇 줄)에 `·`로 이어** 압축한다 — raw URL을 파일마다 한 줄씩 나열하지 마라(30줄씩 길어짐). 라벨은 파일명 그대로(페이지 정보 보이게, 예 `48-2.psd`). 예: `📦 원본: <url1|48-1.psd> · <url2|48-2.psd> · <url3|49-1.psd>`. (봇이 파일을 직접 받거나 슬랙에 올리지 말 것 — 대용량이라 링크로만.) 링크는 cf.totus.pro 서명 URL이라 클릭하면 바로 받힌다(로그인 불필요·일정 시간 후 만료).",
   "- 그 외 운영 시트 → query_sheet (사용 가능한 뷰 목록·필드는 그 도구 설명에 들어있으니 거기 보고 고른다).",
   "query_sheet 효율 규칙(중요): 리스트/현황/기간 질문은 한 번의 호출로 서버측에서 좁혀 가져온다. filterField/filterOp/filterValue(예: 리테이크 미완료=filterField:done, filterOp:neq, filterValue:완료), dateField/dateFrom/dateTo(기간), distinct(중복 제거)를 적극 사용. work 없이 큰 시트를 통째로 가져오거나, 같은 호출을 반복하지 말 것. 한 번에 답이 되도록 필터를 설계해 호출 횟수를 최소화한다.",
@@ -726,6 +726,13 @@ async function uploadTextCsv(ctx, { work, pivo, of, to, csv, missing }) {
   await ctx.client.files.uploadV2({ channel_id: ctx.channel, thread_ts: ctx.threadTs || ctx.ts, initial_comment: `📄 ${work} ${of}~${to}화 텍스트 (${rows}행)${missingNote}`, file_uploads: [{ file: Buffer.from(csv, "utf8"), filename: `${title}.csv` }] });
 }
 
+// findProject 검색 결과가 여럿일 때(동명/구표기 프로젝트 중복) 되묻지 않고 [PV-정식6자리] 태그 붙은 것 하나로 자동 특정.
+// 그것도 0개거나 2개 이상이면(진짜 모호) null 반환 — 그때만 candidates 목록으로 폴백.
+function pickPivoTagged(candidates) {
+  if (candidates.length === 1) return candidates[0];
+  const tagged = candidates.filter((p) => /\[PV-\d{6}\]/.test(String(p.프로젝트 || "")));
+  return tagged.length === 1 ? tagged[0] : null;
+}
 // ── 도구(모듈) — 빌드 1: 납품일 조회 (read-only) ───────────────────
 const apmTools = createSdkMcpServer({
   name: "apm",
@@ -1062,8 +1069,8 @@ const apmTools = createSdkMcpServer({
           const fp = await findProject(work);
           const candidates = fp?.data || [];
           if (!candidates.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음.` }) }] };
-          if (candidates.length > 1) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: `'${work}'로 동일/유사 이름 프로젝트가 ${candidates.length}건 검색됨(한국어 제목만으론 특정 안 됨). PIVO ID로 다시 물어보거나 후보 중 골라달라고 하라.`, candidates: candidates.map((p) => ({ name: p.프로젝트, uuid: p.uuid })) }) }] };
-          const proj = candidates[0];
+          const proj = pickPivoTagged(candidates);
+          if (!proj) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: `'${work}'로 동일/유사 이름 프로젝트가 ${candidates.length}건 검색되고 [PV-정식표기]로도 하나로 안 좁혀짐. 후보 중 골라달라고 하라.`, candidates: candidates.map((p) => ({ name: p.프로젝트, uuid: p.uuid })) }) }] };
           const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
           let jobs = (await projectJobs(proj.uuid, episode))?.data || [];
           if (!jobs.length) {   // episode 필터 0건(구작) → JOB명 회차 매칭 폴백 (review.js와 동일)
@@ -1095,8 +1102,8 @@ const apmTools = createSdkMcpServer({
           const fp = await findProject(work);
           const candidates = fp?.data || [];
           if (!candidates.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음.` }) }] };
-          if (candidates.length > 1) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: `'${work}'로 동일/유사 이름 프로젝트가 ${candidates.length}건 검색됨(한국어 제목만으론 특정 안 됨). PIVO ID로 다시 물어보거나 후보 중 골라달라고 하라.`, candidates: candidates.map((p) => ({ name: p.프로젝트, uuid: p.uuid })) }) }] };
-          const proj = candidates[0];
+          const proj = pickPivoTagged(candidates);
+          if (!proj) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: `'${work}'로 동일/유사 이름 프로젝트가 ${candidates.length}건 검색되고 [PV-정식표기]로도 하나로 안 좁혀짐. 후보 중 골라달라고 하라.`, candidates: candidates.map((p) => ({ name: p.프로젝트, uuid: p.uuid })) }) }] };
           const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
           return { content: [{ type: "text", text: JSON.stringify({ work: projName, projectUuid: proj.uuid, url: `https://admin.totus.pro/ko/workProgressManagementDetail/?id=${proj.uuid}` }) }] };
         } catch (e) {
