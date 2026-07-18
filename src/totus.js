@@ -77,3 +77,8 @@ export const setDeliveryDate = (jps, dryRun = false) =>
 // body 예: { name: "새 프로젝트명" } / { action: "hold"|"unhold"|"process"|"pause"|"complete"|"cancel" } / { managerAuthUuid } / { genreCode }
 export const setProjectSettings = (projectUuid, body) =>
   sendJSON("PATCH", `/projects/${projectUuid}/settings`, body, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
+// 연결 Task 생성(리테이크) — 대상 taskUuid(COMPLETED 상태)+하위 오퍼레이션 태스크를 전부 새로 생성.
+// 기존 READY/PROCESSING 하위 태스크는 닫히고 COMPLETED는 유지, 작업자·타입은 원본에서 승계.
+// 응답 data.createdTaskUuids = 새로 생성된 태스크 uuid 배열.
+export const retakeTask = (taskUuid) =>
+  sendJSON("POST", `/tasks/${taskUuid}/retake`, { creationReason: "RETAKE" }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });

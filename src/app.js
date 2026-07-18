@@ -17,7 +17,7 @@ import { readRange as readRangeRO } from "./sheets.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups } from "./totus.js";
+import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, retakeTask } from "./totus.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
@@ -151,6 +151,7 @@ const DISPATCHER_PROMPT = [
   "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. ★한 리테이크 알림에 화수가 여럿(예 '121, 123')이면 화수마다 이 도구를 나눠 부르지 말고 episode에 콤마로 합쳐('121,123') **한 번만** 호출—fix도 화수별 내용이 다르면 '121話：...\\n123話：...'처럼 한 문자열에 줄바꿈으로 합친다(회차별 성격이 달라도 마찬가지). 나눠 부르면 참고 에디터가 화수별로 하나씩만 잡혀 사용자가 혼란스러워한다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode,batch): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님). ★배치: 1-3화 등 초회분이면 batch 생략(初回分 기본), '재제출/추가분/再提出/追話'이거나 4화 이상 후속분이면 batch='再提出追話'로 그 배치 등급·코멘트를 고른다. 회차(예 '4')는 사용자가 말한 그대로 episode에. 초안은 ✏️수정 모달로 본문(문구·코멘트·등급) 손볼 수 있음.",
   "- 완결 작품 처리('○○ 완결 작품 처리해줘/완결처리'): propose_totus_complete(work나 pivo). 프로젝트명 뒤 '(완)' + 상태 완료를 한 번에(게이트). 이미 (완) 있으면 상태만. '처리했다' 단정 금지.",
   "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
+  "- TOTUS 태스크 리테이크(연결 태스크 생성, '○○ N화 [오퍼레이션] task 열어줘/리테이크해줘'): propose_task_retake(work, episode, operation). 대상은 COMPLETED 태스크만 가능하고, 실행하면 그 태스크+하위 오퍼레이션이 전부 새로 생성됨(진행중 하위는 닫힘, 완료된 하위는 유지). 여러 회차는 episode에 범위/목록으로 한 번에(회차마다 도구 나눠 부르지 말 것). COMPLETED 아닌 회차는 자동 제외되고 미리보기에 표시됨. 게이트형(버튼)—'열었다/리테이크했다' 단정 금지.",
   "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, apm, [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 담당 APM 이름만 받아라(번역/식자는 사용자가 주면 반영, 없으면 기본값). 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. 게이트(버튼)—'게시했다' 단정 금지. APM 이름이 안 나오면 누구 담당인지 한 줄 되묻기. 게시하면 그 스레드에 '🔍 설정집 검수' 버튼도 자동으로 붙는다(신규 요청만 — 이 기능 이전에 만든 옛 요청 스레드엔 버튼이 없음).",
   "- 설정집 검수 실행('이 설정집 검수 실행해줘/검수 돌려줘', 특히 버튼이 없는 옛 설정집 작성 요청 스레드에서): run_setjip_review([thread]). 그 스레드 안에서 부르면 thread 생략. 실제 검수 버튼 클릭과 동일하게 n8n을 직접 트리거할 뿐이라 결과는 안 준다 — '검수를 요청했다'까지만 말하고 '검수했다/결과 나왔다'고 단정하지 말 것.",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
@@ -212,6 +213,7 @@ const pendingFeedback = new PersistMap("feedback");  // fbId → { channel, text
 const pendingRetakes = new PersistMap("retakes");    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
 const pendingTransStart = new PersistMap("transstart"); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
 const pendingSetjip = new PersistMap("setjip");      // sjId → { channel, text, work, createdAt } 설정집 작성 요청 게시
+const pendingTaskRetake = new PersistMap("taskretake"); // trId → { work, operation, items[{episode,taskUuid,status}], createdAt } TOTUS 태스크 리테이크(연결 태스크 생성)
 let setjipSeq = 0;
 let editSeq = pendingEdits.maxSeq();
 let totusDateSeq = pendingTotusDates.maxSeq();
@@ -222,6 +224,7 @@ let sendSeq = pendingSends.maxSeq();
 let feedbackSeq = pendingFeedback.maxSeq();
 let retakeSeq = pendingRetakes.maxSeq();
 let transStartSeq = pendingTransStart.maxSeq();
+let taskRetakeSeq = pendingTaskRetake.maxSeq();
 // 원고수급 미발송 일괄전송 GAS 웹앱 호출(dryRun=건수만, 아니면 실제 전송+체크)
 async function wongoPost(dryRun) {
   const url = process.env.WONGO_UPDATE_URL, secret = process.env.WONGO_UPDATE_SECRET;
@@ -1065,6 +1068,83 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: true } }
+    ),
+    tool(
+      "propose_task_retake",
+      "TOTUS에서 회차(들)의 특정 오퍼레이션 태스크를 '리테이크'(연결 태스크 생성)하도록 제안한다(게이트형: 미리보기+✅버튼). 대상 태스크는 COMPLETED 상태여야 하며, 실행하면 그 태스크+하위(다음 단계) 오퍼레이션 태스크가 전부 새로 생성되고(작업자·타입은 원본 승계) 기존 READY/PROCESSING 하위 태스크는 닫힌다(COMPLETED 하위는 유지). '○○ 1-20화 [오퍼레이션] task 열어줘/리테이크해줘' 류. 여러 회차는 episode에 범위/목록으로 한 번에 담아라(회차마다 도구를 나눠 부르지 말 것). COMPLETED가 아닌 회차는 자동으로 제외되고 미리보기에 표시된다. 절대 '열었다/리테이크했다'고 단정하지 말 것(버튼 눌러야 실행).",
+      {
+        work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
+        episode: z.string().describe("회차. 단일('5'), 범위('1-20'), 목록('1,3,5') 가능 — 여러 회차는 반드시 이렇게 한 번에 담는다"),
+        operation: z.string().describe("오퍼레이션명(번역·번역검수·식자·식자검수·식자번역검수·납품검수 등) 또는 OTC코드"),
+      },
+      async ({ work, episode, operation }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const ctx = currentCtx;
+          const fp = await findProject(work);
+          const candidates = fp?.data || [];
+          if (!candidates.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음.` }) }] };
+          const proj = pickPivoTagged(candidates);
+          if (!proj) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: `'${work}'로 동일/유사 이름 프로젝트가 여럿 검색됨. PIVO ID로 다시 확인하라.`, candidates: candidates.map((p) => ({ name: p.프로젝트, uuid: p.uuid })) }) }] };
+          const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
+          const episodes = parseEpisodeSpec(episode);
+          if (!episodes.length) return { content: [{ type: "text", text: JSON.stringify({ error: `회차 해석 실패: '${episode}'` }) }] };
+
+          const qn = String(operation).replace(/\s/g, ""); const qc = qn.toUpperCase();
+          const nmOf = (t) => String(t.오퍼레이션유형명 || "").replace(/\s/g, "");
+          const cdOf = (t) => String(t.오퍼레이션유형 || "").toUpperCase();
+
+          const items = [];
+          const notFound = [];
+          for (const ep of episodes) {
+            let jobs = (await projectJobs(proj.uuid, ep))?.data || [];
+            if (!jobs.length) {
+              const re = new RegExp(`(?:第|-)0*${ep}(?:\\D|$)`);
+              jobs = ((await projectJobs(proj.uuid))?.data || []).filter((x) => re.test((x.JOB명 || "").trim()));
+            }
+            const tasks = jobs.flatMap((j) => (j.오퍼레이션 || []).flatMap((op) => op.태스크 || []));
+            let match = tasks.filter((t) => nmOf(t) === qn || cdOf(t) === qc);
+            if (!match.length) match = tasks.filter((t) => { const nm = nmOf(t); return (nm && (nm.includes(qn) || qn.includes(nm))) || cdOf(t).includes(qc); });
+            if (!match.length) { notFound.push(ep); continue; }
+            match.sort((a, b) => String(b.시작일원본 || b.마감일원본 || "").localeCompare(String(a.시작일원본 || a.마감일원본 || "")));
+            const t = match[0];
+            items.push({ episode: ep, taskUuid: t.uuid, status: t.상태, statusName: t.상태명 || t.상태, operationName: t.오퍼레이션유형명 });
+          }
+          if (!items.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, msg: `지정 회차 전부 '${operation}' 태스크를 못 찾음.`, notFound }) }] };
+
+          const ready = items.filter((it) => it.status === "COMPLETED");
+          const notCompleted = items.filter((it) => it.status !== "COMPLETED");
+          if (!ready.length) return { content: [{ type: "text", text: JSON.stringify({ found: true, work: projName, msg: "매칭된 태스크가 있지만 전부 COMPLETED가 아니라 리테이크 불가.", notCompleted, notFound }) }] };
+
+          const trId = `tr_${++taskRetakeSeq}`;
+          const p = { work: projName, operation: ready[0]?.operationName || operation, items: ready, createdAt: Date.now() };
+          pendingTaskRetake.set(trId, p);
+          if (ctx?.client && ctx?.channel) {
+            const lines = [
+              `🔁 *TOTUS 태스크 리테이크 제안* — ${projName} (${p.operation})`,
+              `대상 ${ready.length}건(회차: ${compactRanges(ready.map((r) => r.episode))})`,
+              notCompleted.length ? `⚠️ COMPLETED 아니라 제외됨(${notCompleted.length}건): ${notCompleted.map((n) => `${n.episode}화(${n.statusName})`).join(", ")}` : "",
+              notFound.length ? `⚠️ 태스크 자체를 못 찾음: ${notFound.join(", ")}화` : "",
+              "실행하면 각 태스크+하위 오퍼레이션이 새로 생성되고, 기존 진행중 하위 태스크는 닫힙니다(완료된 건 유지).",
+            ].filter(Boolean).join("\n");
+            const posted = await ctx.client.chat.postMessage({
+              channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `태스크 리테이크 확인: ${projName} ${p.operation}`,
+              blocks: [
+                { type: "section", text: { type: "mrkdwn", text: lines } },
+                { type: "actions", elements: [
+                  { type: "button", style: "primary", text: { type: "plain_text", text: `🔁 ${ready.length}건 리테이크` }, value: trId, action_id: "task_retake_confirm" },
+                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: trId, action_id: "task_retake_cancel" },
+                ] },
+              ],
+            });
+            p.previewChannel = posted.channel; p.previewTs = posted.ts; pendingTaskRetake.save();
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, work: projName, operation: p.operation, targetCount: ready.length, notCompleted, notFound, note: "확인 버튼을 보냈음. 재상 님이 버튼을 눌러야 실제 리테이크 실행됨. '열었다'고 단정하지 말 것." }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: false } }
     ),
     tool(
       "get_project_url",
@@ -1939,7 +2019,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
@@ -2684,6 +2764,36 @@ app.action("proj_confirm", async ({ ack, body, client }) => {
 app.action("proj_cancel", async ({ ack, body, client }) => {
   await ack();
   pendingTotusProj.delete(body.actions?.[0]?.value);
+  await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+// ── TOTUS 태스크 리테이크 확인/취소 (연결 태스크 생성, 실제 호출은 여기서만) ──
+app.action("task_retake_confirm", async ({ ack, body, client }) => {
+  await ack();
+  const id = body.actions?.[0]?.value;
+  const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+  if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
+  const p = pendingTaskRetake.get(id);
+  if (!p) return reply("⌛ 만료됐거나 이미 처리된 요청이에요.");
+  pendingTaskRetake.delete(id);
+  if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
+  const done = [], failed = [];
+  for (const it of p.items) {
+    try {
+      const res = await retakeTask(it.taskUuid);
+      appendFileSync("logs/totus-retake.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, work: p.work, operation: p.operation, episode: it.episode, taskUuid: it.taskUuid, ok: res?.success, created: res?.data?.createdTaskUuids }) + "\n");
+      if (res?.success) done.push(it.episode); else failed.push({ episode: it.episode, resp: res });
+    } catch (e) { failed.push({ episode: it.episode, err: String(e?.message ?? e) }); }
+  }
+  const lines = [`🔁 *${p.work}* (${p.operation}) 리테이크 결과`];
+  if (done.length) lines.push(`✅ 성공 ${done.length}건: ${compactRanges(done)}화`);
+  if (failed.length) lines.push(`❌ 실패 ${failed.length}건: ${failed.map((f) => `${f.episode}화(${f.err || f.resp?.error || "오류"})`).join(", ")}`);
+  await reply(lines.join("\n"));
+});
+app.action("task_retake_cancel", async ({ ack, body, client }) => {
+  await ack();
+  pendingTaskRetake.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
 
