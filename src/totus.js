@@ -82,3 +82,7 @@ export const setProjectSettings = (projectUuid, body) =>
 // 응답 data.createdTaskUuids = 새로 생성된 태스크 uuid 배열.
 export const retakeTask = (taskUuid) =>
   sendJSON("POST", `/tasks/${taskUuid}/retake`, { creationReason: "RETAKE" }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
+// Task 일정 일괄 변경. tasks=[{taskUuid,startDate,endDate}], 날짜는 YYYY-MM-DD(게이트웨이가 KST 00:00~23:59:59로 자동 보정) 또는 ISO datetime.
+// 응답 data: {성공,실패,succeededTaskUuids,failedTaskUuids,정규화된일정}. 일부 실패해도 success:true(부분 성공 허용).
+export const setTaskDates = (tasks) =>
+  sendJSON("POST", `/tasks/dates`, { tasks }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
