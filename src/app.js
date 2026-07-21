@@ -1419,13 +1419,41 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: false } }),
     tool("send_message",
-      "슬랙으로 메시지를 보낸다. 받는이가 재상 님 본인(U04463JR4HH)이면 바로 발송, 그 외(다른 사람/채널)면 프리뷰+확인 버튼 후 발송. target=채널ID(C…) 또는 사용자ID(U…). 사람 이름만 알면 먼저 query_sheet(worker_db)로 slack_id를 조회해 ID로 넘겨라. 특정 스레드에 댓글로 달려면 thread에 그 메시지 링크(permalink)를 넘겨라(그러면 그 스레드 답글로 발송). 임의로 '보냈다'고 말하지 말 것(확인 대기일 수 있음).",
-      { target: z.string().optional().describe("받는 곳: 채널 ID(C…) 또는 사용자 ID(U…). thread(링크)를 주면 채널은 링크에서 자동 추출되므로 생략 가능"), text: z.string().describe("보낼 메시지 내용"), thread: z.string().optional().describe("스레드 답글로 달 대상 메시지의 슬랙 링크(permalink) 또는 thread_ts. 주면 그 스레드 안에 댓글로 발송") },
-      async ({ target, text, thread }) => {
+      "슬랙으로 메시지를 보낸다. 받는이가 재상 님 본인(U04463JR4HH)이면 바로 발송, 그 외(다른 사람/채널)면 프리뷰+확인 버튼 후 발송. target=채널ID(C…) 또는 사용자ID(U…). 사람 이름만 알면 먼저 query_sheet(worker_db)로 slack_id를 조회해 ID로 넘겨라. 특정 스레드에 댓글로 달려면 thread에 그 메시지 링크(permalink)를 넘겨라(그러면 그 스레드 답글로 발송). 여러 명/채널에 같은 종류의 공지를 한 번에 보낼 땐 target/text 대신 items 배열을 써라 — 확인 버튼이 대상마다 따로 생기지 않고 1개로 묶여서 한 번에 전체 발송/취소된다(대량 발송 시 버튼 난립 방지). 임의로 '보냈다'고 말하지 말 것(확인 대기일 수 있음).",
+      {
+        target: z.string().optional().describe("받는 곳: 채널 ID(C…) 또는 사용자 ID(U…). thread(링크)를 주면 채널은 링크에서 자동 추출되므로 생략 가능. items를 쓸 땐 생략"),
+        text: z.string().optional().describe("보낼 메시지 내용. items를 쓸 땐 생략"),
+        thread: z.string().optional().describe("스레드 답글로 달 대상 메시지의 슬랙 링크(permalink) 또는 thread_ts. 주면 그 스레드 안에 댓글로 발송"),
+        items: z.array(z.object({
+          target: z.string().describe("채널 ID(C…) 또는 사용자 ID(U…)"),
+          text: z.string().describe("이 대상에게 보낼 메시지(대상별로 멘션 등 다르게 넣어도 됨)"),
+        })).optional().describe("여러 대상에 한 번에 보낼 목록. 2명 이상 발송 시 target/text 단일 호출 대신 이걸 써서 확인 버튼을 1개로 묶어라."),
+      },
+      async ({ target, text, thread, items }) => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
           if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "발송 컨텍스트 없음" }) }] };
+
+          if (items && items.length) {
+            const cleaned = items.map((it) => ({ target: String(it.target || "").trim(), text: it.text })).filter((it) => it.target && it.text);
+            if (!cleaned.length) return { content: [{ type: "text", text: JSON.stringify({ error: "items가 비어있음" }) }] };
+            const sendId = `send_${++sendSeq}`;
+            pendingSends.set(sendId, { items: cleaned, createdAt: Date.now() });
+            const lines = cleaned.map((it, i) => `${i + 1}. ${it.target.startsWith("C") ? `<#${it.target}>` : `<@${it.target}>`}`).join("\n");
+            await ctx.client.chat.postMessage({
+              channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `일괄 발송 확인: ${cleaned.length}건`,
+              blocks: [
+                { type: "section", text: { type: "mrkdwn", text: `✉️ *일괄 발송 확인 (${cleaned.length}건)*\n${lines}` } },
+                { type: "actions", elements: [
+                  { type: "button", style: "primary", text: { type: "plain_text", text: `✉️ 전체 발송 (${cleaned.length}건)` }, value: sendId, action_id: "send_confirm" },
+                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: sendId, action_id: "send_cancel" },
+                ] },
+              ],
+            });
+            return { content: [{ type: "text", text: JSON.stringify({ proposed: true, count: cleaned.length, note: "확인 버튼 1개(일괄)를 보냈음. 사용자가 버튼을 눌러야 전체 발송됨. 보냈다고 말하지 말 것." }) }] };
+          }
+
           // 스레드 링크 파싱 → thread_ts(+채널). target 없으면 링크 채널 사용.
           let threadTs = null;
           if (thread) { const p = parseSlackLink(thread); if (!p) return { content: [{ type: "text", text: JSON.stringify({ error: `스레드 링크/ts를 못 읽음: ${thread} (슬랙 메시지 '링크 복사' 값 또는 1719300000.123456 형식)` }) }] }; threadTs = p.ts; if (!target && p.channel) target = p.channel; }
@@ -2826,6 +2854,26 @@ app.action("send_confirm", async ({ ack, body, client }) => {
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 발송이에요.");
   pendingSends.delete(id);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
+
+  if (p.items) {
+    const results = [];
+    for (const it of p.items) {
+      try {
+        await client.chat.postMessage({ channel: it.target, text: it.text, ...SENDER });
+        appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, target: it.target, threadTs: null, text: it.text }) + "\n");
+        results.push({ target: it.target, ok: true });
+      } catch (e) {
+        results.push({ target: it.target, ok: false, err: e?.message ?? String(e) });
+      }
+    }
+    const okList = results.filter((r) => r.ok).map((r) => (r.target.startsWith("C") ? `<#${r.target}>` : `<@${r.target}>`));
+    const failList = results.filter((r) => !r.ok);
+    let msg = `✅ 발송 완료 ${okList.length}/${results.length}건`;
+    if (failList.length) msg += `\n❌ 실패: ${failList.map((f) => `${f.target.startsWith("C") ? `<#${f.target}>` : `<@${f.target}>`}(${f.err})`).join(", ")}`;
+    await reply(msg);
+    return;
+  }
+
   try {
     if (p.threadTs) { try { await client.conversations.join({ channel: p.target }); } catch {} }
     await client.chat.postMessage({ channel: p.target, text: p.text, thread_ts: p.threadTs || undefined, ...SENDER });
