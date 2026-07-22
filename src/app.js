@@ -395,6 +395,50 @@ async function checkSetjipDeadline() {
     if (hit) console.log(`[setjip-schedule] 오늘(${kd}) 마감 리마인드 ${hit}건 발송`);
   } catch (e) { console.error("[setjip-schedule] 리마인드 체크 실패:", e?.message ?? e); }
 }
+// 설정집 SETUP 태스크(TOTUS) 완료 자동 감지 → 검수 자동 트리거(2026-07-22).
+// PIVO만으로 BID 없이 상태 확인: 견적(quotationByPivo)→projectUuid → projectJobs에서 "설정집" JOB의 uuid
+// → taskList(jobUuids+operationTypeCode:OTC0052)로 그 SETUP 태스크 상태 조회. (projectJobs 자체의 "오퍼레이션"은
+// 이 JOB에서 비어있어 못 씀 — taskList가 실제 상태를 주는 유일한 경로. projectUuid 단독 필터는 이 게이트웨이에서
+// 무시되고 전역 목록이 와서 반드시 jobUuids로 좁혀야 함, 2026-07-22 실측 확인.)
+async function setjipTaskStatus(pivo) {
+  const q = await quotationByPivo(pivo).catch(() => null);
+  const projectUuid = Array.isArray(q?.data) ? q.data[0]?.projectUuid : null;
+  if (!projectUuid) return null;
+  const jobs = await projectJobs(projectUuid).catch(() => null);
+  const job = (jobs?.data || []).find((j) => String(j["JOB명"] || "").trim() === "설정집");
+  if (!job?.uuid) return null;
+  const tasks = await taskList({ jobUuids: job.uuid, operationTypeCode: "OTC0052" }).catch(() => null);
+  return tasks?.data?.[0]?.["상태"] || null;
+}
+let _setjipTaskCheckAt = 0;
+async function checkSetjipTaskCompletion() {
+  try {
+    if (!BRAIN_ON) return;
+    if (Date.now() - _setjipTaskCheckAt < 5 * 60 * 1000) return;   // TOTUS 부하 방지 — 5분 간격
+    _setjipTaskCheckAt = Date.now();
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:J2000`);
+    if (!rows?.length) return;
+    let hit = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const triggered = String(r[9] || "").trim().toUpperCase() === "TRUE";   // J열 = 자동검수 트리거 완료(H열은 '비고'라 사용 못 함)
+      if (triggered) continue;
+      const pivo = String(r[2] || "").trim(), threadLink = String(r[5] || "").trim();
+      if (!pivo || !threadLink) continue;
+      try {
+        const status = await setjipTaskStatus(pivo);
+        if (status !== "COMPLETED") continue;
+        const p = parseSlackLink(threadLink);
+        if (!p) continue;
+        // 웹훅 발송 전에 먼저 마킹 — 재기동/겹침에도 중복 트리거 안 되게(스크럼 diff 중복발송 사고 교훈, 실패 시 미발송 감수).
+        await setCells(SETJIP_SCHEDULE_SHEET, [{ a1: `${SETJIP_SCHEDULE_TAB}!J${i + 2}`, value: "TRUE" }]);
+        await n8nPost("seoljeongjip-run", { channel: p.channel, thread_ts: p.ts, user: OWNER_ID });   // 자동 트리거라 클릭자가 없음 — 검수 결과 DM은 재상 님 앞으로
+        hit++;
+        console.log(`[setjip-auto-review] ${r[1] || pivo} SETUP 완료 감지 → 검수 자동 트리거`);
+      } catch (e) { console.error("[setjip-auto-review] 개별 처리 실패:", pivo, e?.message ?? e); }
+    }
+  } catch (e) { console.error("[setjip-auto-review] 실패:", e?.message ?? e); }
+}
 // 스레드 검색 대상 채널(.env SEARCH_CHANNELS = "ID:이름,ID:이름,…"). find_thread가 여기서만 검색.
 const SEARCH_CHANNELS = (process.env.SEARCH_CHANNELS || "").split(",").map((s) => s.trim()).filter(Boolean).map((s) => { const [id, ...n] = s.split(":"); return { id: id.trim(), name: (n.join(":").trim() || id.trim()) }; });
 const KO_WD = ["일", "월", "화", "수", "목", "금", "토"];
@@ -3793,7 +3837,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
