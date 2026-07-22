@@ -669,7 +669,7 @@ async function toollessQuery(prompt, meta = {}) {
     if (m.type === "assistant") { for (const b of m.message?.content || []) if (b.type === "text" && b.text) buf += b.text; }
     else if (m.type === "result") {
       const out = (m.result || buf || "").trim();
-      logUsage({ kind: "worker", label: meta.label || null, channel: meta.channel || null, chars: out.length, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null });
+      logUsage({ kind: "worker", label: meta.label || null, channel: meta.channel || null, chars: out.length, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null, cacheRead: m.usage?.cache_read_input_tokens ?? null, cacheWrite: m.usage?.cache_creation_input_tokens ?? null });
       return out;
     }
   }
@@ -684,7 +684,7 @@ async function toollessVisionQuery(content, meta = {}) {
     if (m.type === "assistant") { for (const b of m.message?.content || []) if (b.type === "text" && b.text) buf += b.text; }
     else if (m.type === "result") {
       const out = (m.result || buf || "").trim();
-      logUsage({ kind: "worker", label: meta.label || null, channel: meta.channel || null, chars: out.length, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null });
+      logUsage({ kind: "worker", label: meta.label || null, channel: meta.channel || null, chars: out.length, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null, cacheRead: m.usage?.cache_read_input_tokens ?? null, cacheWrite: m.usage?.cache_creation_input_tokens ?? null });
       return out;
     }
   }
@@ -2118,7 +2118,7 @@ function startSession() {
         buf = "";
         const elapsed = ctx?.startedAt ? ((Date.now() - ctx.startedAt) / 1000).toFixed(1) : "?";
         console.log(`[brain] 응답 완료 (${elapsed}s, ${text.length}자${m.is_error ? ", is_error" : ""})`);
-        logUsage({ kind: "main", user: currentTurn?.user || null, channel: ctx?.channel || null, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, chars: text.length, isError: !!m.is_error, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null });
+        logUsage({ kind: "main", user: currentTurn?.user || null, channel: ctx?.channel || null, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, chars: text.length, isError: !!m.is_error, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null, cacheRead: m.usage?.cache_read_input_tokens ?? null, cacheWrite: m.usage?.cache_creation_input_tokens ?? null });
         if (m.is_error) console.log(`[brain] 에러내용: ${text.slice(0, 200).replace(/\n/g, " ")}`);
         const rlTurn = currentTurn;   // rate-limit 재시도용 캡처
         currentTurn = null;
