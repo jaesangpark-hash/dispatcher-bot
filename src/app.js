@@ -3613,6 +3613,8 @@ async function checkWeeklyScrum() {
     const mdShort = `${mtg.getUTCMonth() + 1}/${mtg.getUTCDate()}`;
     let st = {}; try { st = JSON.parse(readFileSync("data/weekly-scrum.json", "utf8")); } catch { /* 첫 실행 */ }
     if (st.week === mdate) return;                               // 이번 회의 주기 이미 공지
+    // ★Outline 문서 생성·슬랙 발송(느림) 전에 먼저 주차를 마킹 — 그 사이 재기동/겹친 tick이 있어도 재공지 안 되게.
+    st.week = mdate; try { writeFileSync("data/weekly-scrum.json", JSON.stringify(st)); } catch { }
     // 지난주 문서 이어받기(있으면 그 마크다운 그대로 — 링크·첨부 보존), 없으면 빈 템플릿
     let body = scrumBlankBody(mdate, mdow);
     try {
@@ -3653,6 +3655,8 @@ async function checkWeeklyScrumDiff() {
       st.diffDone = mdate; try { writeFileSync("data/weekly-scrum.json", JSON.stringify(st)); } catch { }
       return;
     }
+    // ★무거운 작업(Outline 조회·LLM 호출·슬랙 발송) 전에 먼저 완료 마킹 — 그 사이 재기동/겹친 tick이 있어도 재실행 안 되게(중복 발송 방지 우선, 실패 시 발송 누락 감수).
+    st.diffDone = mdate; try { writeFileSync("data/weekly-scrum.json", JSON.stringify(st)); } catch { }
     const cur = await outlineDocText(st.docId);
     const prev = (await outlineChildren()).filter((k) => k.id !== st.docId && !String(k.title || "").includes(mdate)).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
     const prevText = prev ? await outlineDocText(prev.id) : "";
@@ -3784,7 +3788,16 @@ async function checkDeliveryNotes() {
     }
   } catch (e) { console.error("[delivery-note] 실패:", e?.message ?? e); }
 }
-async function tick() { await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); }
+let _tickRunning = false;   // setInterval은 이전 tick()이 끝나든 말든 다음 틱을 쏨 — LLM 호출 등으로 60초 넘게 걸리면 겹쳐 재진입해 중복 발송(2026-07-22 스크럼 diff 4중발송 사고 원인). 락으로 겹침 자체를 차단.
+async function tick() {
+  if (_tickRunning) return;
+  _tickRunning = true;
+  try {
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e));
+  } finally {
+    _tickRunning = false;
+  }
+}
 
 (async () => {
   await app.start();
