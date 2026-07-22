@@ -322,6 +322,11 @@ async function n8nPost(path, body) {
   return j;
 }
 let currentCtx = null;            // { client, channel, ts } — handle()가 메시지마다 갱신(직렬 가정). 영속 대상 아님(client 비직렬)
+// chat.getPermalink 응답(?thread_ts=...&cid=... 쿼리 포함)은 브라우저를 거쳐 슬랙 앱으로 리다이렉트된다.
+// 쿼리를 뗀 순수 경로(archives/CH/pXXXX)는 클릭 시 바로 앱으로 열리므로, 시트에 저장하는 링크는 이 형태로 정규화한다.
+function stripPermalinkQuery(url) {
+  return url ? String(url).split("?")[0] : url;
+}
 // 지금 턴이 온 스레드(요청 자리)의 슬랙 퍼머링크. 리마인더에 '어디서 요청했는지' 링크를 붙일 때 사용.
 async function ctxPermalink() {
   const c = currentCtx;
@@ -397,9 +402,11 @@ async function checkSetjipDeadline() {
 }
 // 설정집 SETUP 태스크(TOTUS) 완료 자동 감지 → 검수 자동 트리거(2026-07-22).
 // PIVO만으로 BID 없이 상태 확인: 견적(quotationByPivo)→projectUuid → projectJobs에서 "설정집" JOB의 uuid
-// → taskList(jobUuids+operationTypeCode:OTC0052)로 그 SETUP 태스크 상태 조회. (projectJobs 자체의 "오퍼레이션"은
+// → taskList(jobUuids+operationTypeCode:OTC0054)로 그 태스크 상태 조회. (projectJobs 자체의 "오퍼레이션"은
 // 이 JOB에서 비어있어 못 씀 — taskList가 실제 상태를 주는 유일한 경로. projectUuid 단독 필터는 이 게이트웨이에서
 // 무시되고 전역 목록이 와서 반드시 jobUuids로 좁혀야 함, 2026-07-22 실측 확인.)
+// ★OTC0054(검수·번역 — 체크번역셋업) 기준으로 확정(2026-07-22): "설정집" JOB 안에도 여러 오퍼레이션 단계가 있고,
+// 그 중 OTC0054가 종료돼야 실제 설정집 작업이 끝난 것으로 볼 수 있음 — 이전 단계(OTC0052)만으로는 완료 판정 불가.
 async function setjipTaskStatus(pivo) {
   const q = await quotationByPivo(pivo).catch(() => null);
   const projectUuid = Array.isArray(q?.data) ? q.data[0]?.projectUuid : null;
@@ -407,7 +414,7 @@ async function setjipTaskStatus(pivo) {
   const jobs = await projectJobs(projectUuid).catch(() => null);
   const job = (jobs?.data || []).find((j) => String(j["JOB명"] || "").trim() === "설정집");
   if (!job?.uuid) return null;
-  const tasks = await taskList({ jobUuids: job.uuid, operationTypeCode: "OTC0052" }).catch(() => null);
+  const tasks = await taskList({ jobUuids: job.uuid, operationTypeCode: "OTC0054" }).catch(() => null);
   return tasks?.data?.[0]?.["상태"] || null;
 }
 let _setjipTaskCheckAt = 0;
@@ -2955,11 +2962,11 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
     await client.chat.postMessage({
       channel: p.channel, thread_ts: posted.ts, ...SENDER, text: "설정집 검수 버튼",
       blocks: [
-        { type: "section", text: { type: "mrkdwn", text: "✅ 완성되면 *시스템메시지 xlsx를 이 스레드에 첨부* 후 아래 버튼을 눌러주세요.\n수정 후 *재검수*는 새 파일 첨부 → 버튼 재클릭." } },
+        { type: "section", text: { type: "mrkdwn", text: "✅ 완성되면 아래 버튼을 눌러주세요.\n수정 후 *재검수*도 버튼 재클릭." } },
         { type: "actions", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "🔍 설정집 검수" }, action_id: "setjip_run_review", value: posted.ts }] },
       ],
     }).catch((e) => console.error("[setjip_confirm] 검수 버튼 게시 실패:", e?.message ?? e));
-    const permalink = await client.chat.getPermalink({ channel: p.channel, message_ts: posted.ts }).then((r) => r?.permalink).catch(() => null);
+    const permalink = await client.chat.getPermalink({ channel: p.channel, message_ts: posted.ts }).then((r) => stripPermalinkQuery(r?.permalink)).catch(() => null);
     logSetjipSchedule({ work: p.work, pivo: p.e?.pivo, apmId: p.apmId, submitDate: p.e?.submit_date, threadLink: permalink });
     await reply(`✅ 설정집 작성 요청 게시 완료 → <#${p.channel}> (${p.work})`);
   } catch (e) {
