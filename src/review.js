@@ -92,7 +92,12 @@ export async function extractEpisode({ work, episode, lang = "ko-ja", stage = nu
   const order = stage && STAGE_BY_NAME[stage] ? [{ code: STAGE_BY_NAME[stage], name: stage }] : STAGE_ORDER;
   for (const s of order) {
     if (!byCode[s.code]) continue;
-    const arr = (await translationText(byCode[s.code]))?.data;
+    let arr;
+    try {
+      arr = (await translationText(byCode[s.code]))?.data;
+    } catch {
+      continue; // 태스크는 있어도 리소스(RTC0014/RTC0017) 자체가 없는 경우(TOTUS 404) — 다음 단계로 폴백
+    }
     if (Array.isArray(arr) && arr.length) {
       return {
         work: projectName, episode: String(episode), pivo: usePivo, stage: s.name,
