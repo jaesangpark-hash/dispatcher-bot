@@ -391,16 +391,19 @@ async function reviewEngineReview({ work, episode, stage, lang, taskUuid, pairs 
   };
   for (let attempt = 1; attempt <= 2; attempt++) {
     let r;
+    const startedAt = Date.now();
     try {
       r = await fetch(`${REVIEW_ENGINE_BASE}/review`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-        signal: AbortSignal.timeout(580_000),
+        signal: AbortSignal.timeout(1_400_000),   // review-engine REQUEST_TIMEOUT_SECONDS(1800s)보다 짧게, JOB_TIMEOUT_MS(25분)보다 짧게
       });
     } catch (e) {
-      // 네트워크 레벨 실패(연결거부/리셋/타임아웃 등, fetch가 응답조차 못 받은 경우) — 1회 재시도
       const detail = e?.cause?.code || e?.cause?.message || e?.message || String(e);
-      if (attempt === 1) { await new Promise((res) => setTimeout(res, 5000)); continue; }
-      throw new Error(`review-engine 연결 실패(${attempt}회 시도): ${detail}`);
+      // /review는 비싸고(수 분·다중 LLM콜) run_key 중복실행 방지가 서버에 없음 — 요청 전송 후 한참 지나 끊긴 거면
+      // (서버는 이미 처리 중일 가능성 높음) 재시도하지 않고 바로 에러 반환. 연결 자체가 안 된 경우(수초 내 실패)만 1회 재시도.
+      const failedFast = Date.now() - startedAt < 10_000;
+      if (attempt === 1 && failedFast) { await new Promise((res) => setTimeout(res, 5000)); continue; }
+      throw new Error(`review-engine 연결 실패(${attempt}회 시도, ${failedFast ? "즉시실패" : "장시간 후 끊김—중복실행 방지로 재시도 안 함"}): ${detail}`);
     }
     const t = await r.text();
     let j; try { j = JSON.parse(t); } catch { j = { raw: t.slice(0, 300) }; }
@@ -877,7 +880,7 @@ async function checkDailyReport() {
 // 잡 = { label, ctx, run:async(id)=>text }. run은 toolless query(ctx·전역상태 안 건드림 → 병렬 안전)로
 // 판단하고 결과 문자열을 반환하면 워커가 잡에 캡처된 ctx 스레드로 게시한다.
 const WORKER_COUNT = Number(process.env.WORKER_COUNT || process.env.REVIEW_WORKERS || 4);
-const JOB_TIMEOUT_MS = 600_000;   // 워커 1개당 독립 타임아웃(다른 워커는 안 막힘). 5분에서 10분으로 늘림(2026-07-16)
+const JOB_TIMEOUT_MS = 1_500_000;   // 워커 1개당 독립 타임아웃(다른 워커는 안 막힘). review-engine 호출이 Gemini 지연(504) 겹치면 10분도 부족한 사례 확인 → 25분으로 늘림(2026-07-27)
 const TEXT_EXPORT_BUDGET_MS = 200_000;   // 텍스트 추출 잡 1회 예산(워커 타임아웃 JOB_TIMEOUT_MS보다 짧게) — 초과 시 남은 화는 자동 이어받기
 const jobs = [];
 const jobWaiters = [];        // 대기 중 워커 resolver (잡 1개당 1명 깨움)
