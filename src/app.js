@@ -389,14 +389,24 @@ async function reviewEngineReview({ work, episode, stage, lang, taskUuid, pairs 
     assignee: stage || "",
     task_uuid: taskUuid || "",
   };
-  const r = await fetch(`${REVIEW_ENGINE_BASE}/review`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    signal: AbortSignal.timeout(580_000),
-  });
-  const t = await r.text();
-  let j; try { j = JSON.parse(t); } catch { j = { raw: t.slice(0, 300) }; }
-  if (!r.ok) throw new Error(`review-engine ${r.status}: ${(j?.detail || t).slice(0, 300)}`);
-  return j;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let r;
+    try {
+      r = await fetch(`${REVIEW_ENGINE_BASE}/review`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        signal: AbortSignal.timeout(580_000),
+      });
+    } catch (e) {
+      // 네트워크 레벨 실패(연결거부/리셋/타임아웃 등, fetch가 응답조차 못 받은 경우) — 1회 재시도
+      const detail = e?.cause?.code || e?.cause?.message || e?.message || String(e);
+      if (attempt === 1) { await new Promise((res) => setTimeout(res, 5000)); continue; }
+      throw new Error(`review-engine 연결 실패(${attempt}회 시도): ${detail}`);
+    }
+    const t = await r.text();
+    let j; try { j = JSON.parse(t); } catch { j = { raw: t.slice(0, 300) }; }
+    if (!r.ok) throw new Error(`review-engine ${r.status}: ${(j?.detail || t).slice(0, 300)}`);
+    return j;
+  }
 }
 // review-engine 응답(reviews[])을 작업자 수정요청용 텍스트로 포맷(QA_INSTRUCTIONS 출력 템플릿과 동일 스타일).
 function formatReviewEngineResult({ work, episode, stage, url }, resp) {
