@@ -80,7 +80,13 @@ export async function extractEpisode({ work, episode, lang = "ko-ja", stage = nu
   if (usePivo) {
     projectName = null;                                   // uuidForPivo에서 이름 확보
   } else {
-    const pv = await pivoForWork(work, lang);
+    let pv = await pivoForWork(work, lang);
+    // lang은 호출측 추정(기본 ko-ja)일 뿐 — 해당 언어쌍 납품시트에 없으면 반대쪽도 시도(중일/한일 오판정 방지)
+    if (pv.error && !pv.ambiguous) {
+      const otherLang = lang === "zh-ja" ? "ko-ja" : "zh-ja";
+      const pv2 = await pivoForWork(work, otherLang);
+      if (!pv2.error) { pv = pv2; lang = otherLang; }
+    }
     if (pv.error) return pv;
     usePivo = pv.pivo; projectName = pv.projectName;
   }
@@ -100,7 +106,7 @@ export async function extractEpisode({ work, episode, lang = "ko-ja", stage = nu
     }
     if (Array.isArray(arr) && arr.length) {
       return {
-        work: projectName, episode: String(episode), pivo: usePivo, stage: s.name,
+        work: projectName, episode: String(episode), pivo: usePivo, stage: s.name, lang,
         taskUuid: byCode[s.code], url: EDITOR_URL(byCode[s.code]), count: arr.length, pairs: buildPairs(arr),
       };
     }

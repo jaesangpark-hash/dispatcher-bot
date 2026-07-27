@@ -935,7 +935,7 @@ function makeReviewJob({ work, pivo, episode, lang, label, ctx }) {
     if (r.error) return `${label} ${episode}화: ${r.error}`;
     await workerPost(ctx, `🔎 ${r.work} ${r.episode}화 — ${r.stage} ${r.count}건 추출, review-engine 검수 중… (워커 ${id})`);
     try {
-      const resp = await reviewEngineReview({ work: r.work, episode: r.episode, stage: r.stage, lang: lang || "ko-ja", taskUuid: r.taskUuid, pairs: r.pairs });
+      const resp = await reviewEngineReview({ work: r.work, episode: r.episode, stage: r.stage, lang: r.lang || lang || "ko-ja", taskUuid: r.taskUuid, pairs: r.pairs });
       return formatReviewEngineResult({ work: r.work, episode: r.episode, stage: r.stage, url: r.url }, resp);
     } catch (e) {
       return `⚠️ ${r.work} ${r.episode}화 review-engine 검수 오류: ${e?.message ?? e}`;
