@@ -17,7 +17,8 @@ import { readRange as readRangeRO } from "./sheets.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, retakeTask, setTaskDates } from "./totus.js";
+import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, retakeTask, setTaskDates, setupXlsxBuffer } from "./totus.js";
+import { patchMinRowHeight } from "./xlsxRowHeight.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
@@ -28,6 +29,47 @@ import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeD
 import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText, findUndelivered } from "./deliveryNotice.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
+
+// 설정집 작성 요청 스레드에서 작품(uuid/PIVO/원제) 식별 → TOTUS 최신 xlsx 다운로드 → 첨부 공유.
+// run_setjip_review(검수 트리거+파일 동시 공유)·share_setjip_file(파일만) 공용 헬퍼.
+async function shareSetjipXlsx({ client, channel, ts }) {
+  const replies = await client.conversations.replies({ channel, ts, limit: 50 });
+  const messages = replies?.messages || [];
+  if (!messages.length) return { shared: false, error: "스레드를 못 읽음(봇 권한/ts 확인)" };
+  const allText = messages.map((m) => m.text || "").join("\n");
+
+  const UUID_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+  const TITLE_RE = /(?:原題|원제)\s*[：:]\s*([^\n]+)/i;
+  const PIVO_RE = /(?:PIVO|PV)[\s\-:：]*([0-9]{4,7})/i;
+
+  let projectUuid = allText.match(UUID_RE)?.[1] || null;
+  let work = null;
+  if (!projectUuid) {
+    const pivoM = allText.match(PIVO_RE);
+    if (pivoM) {
+      const q = await quotationByPivo(pivoM[1]).catch(() => null);
+      projectUuid = Array.isArray(q?.data) ? q.data[0]?.projectUuid : null;
+      work = pivoM[1];
+    }
+  }
+  if (!projectUuid) {
+    const titleM = allText.match(TITLE_RE);
+    if (titleM) {
+      const proj = await findProject(titleM[1].trim()).catch(() => null);
+      projectUuid = Array.isArray(proj?.data) ? proj.data[0]?.uuid : null;
+      work = titleM[1].trim();
+    }
+  }
+  if (!projectUuid) return { shared: false, error: "이 스레드에서 작품(PIVO/원제/uuid)을 못 찾음 — 설정집 작성 요청 스레드가 맞는지 확인해라." };
+
+  const { buffer: rawBuffer, filename } = await setupXlsxBuffer(projectUuid);
+  const fname = filename || `${work || projectUuid}.xlsx`.replace(/[\\/:*?"<>|]/g, "_");
+  let buffer = rawBuffer;
+  try { ({ buffer } = await patchMinRowHeight(rawBuffer, 20)); }
+  catch (e) { console.error("[shareSetjipXlsx] 행 높이 패치 실패(원본 그대로 공유):", e?.message ?? e); }
+  await client.files.uploadV2({ channel_id: channel, thread_ts: ts, initial_comment: `📎 설정집 원본 — ${work || projectUuid}`, file_uploads: [{ file: buffer, filename: fname }] });
+  return { shared: true, work: work || null, projectUuid };
+}
 
 // ── 환경 ──────────────────────────────────────────────────────────
 const {
@@ -154,7 +196,9 @@ const DISPATCHER_PROMPT = [
   "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
   "- TOTUS 태스크 리테이크(연결 태스크 생성, '○○ N화 [오퍼레이션] task 열어줘/리테이크해줘'): propose_task_retake(work, episode, operation, [startDate], [endDate]). 대상은 COMPLETED 태스크만 가능하고, 실행하면 그 태스크+하위 오퍼레이션이 전부 새로 생성됨(진행중 하위는 닫힘, 완료된 하위는 유지)+새 태스크들에 일정도 같이 입력됨. ★일정 기본값=오늘 하루(시작·마감 둘 다 오늘, KST) — 사용자가 날짜/기간을 말하면 그걸로(예 '4/15~4/20으로 잡아줘'는 startDate=4/15,endDate=4/20; '4/20까지'처럼 하나만 말하면 그 문맥에 맞게). 여러 회차가 **같은 오퍼레이션·같은 일정**이면 episode에 범위/목록으로 한 번에 담아라(회차마다 도구 나눠 부르지 말 것) — 단 **회차 그룹마다 일정이 다르면** 그건 그룹별로 도구를 따로 호출하는 게 맞다(예 '1-10화는 4/15~4/17, 11-20화는 4/18~4/20'이면 2번 호출, 확인 버튼도 그룹마다 따로 뜸). COMPLETED 아닌 회차는 자동 제외되고 미리보기에 표시됨. 게이트형(버튼)—'열었다/리테이크했다/일정 잡았다' 단정 금지.",
   "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, apm, [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 담당 APM 이름만 받아라(번역/식자는 사용자가 주면 반영, 없으면 기본값). 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. 게이트(버튼)—'게시했다' 단정 금지. APM 이름이 안 나오면 누구 담당인지 한 줄 되묻기. 게시하면 그 스레드에 '🔍 설정집 검수' 버튼도 자동으로 붙는다(신규 요청만 — 이 기능 이전에 만든 옛 요청 스레드엔 버튼이 없음).",
-  "- 설정집 검수 실행('이 설정집 검수 실행해줘/검수 돌려줘', 특히 버튼이 없는 옛 설정집 작성 요청 스레드에서): run_setjip_review([thread]). 그 스레드 안에서 부르면 thread 생략. 실제 검수 버튼 클릭과 동일하게 n8n을 직접 트리거할 뿐이라 결과는 안 준다 — '검수를 요청했다'까지만 말하고 '검수했다/결과 나왔다'고 단정하지 말 것.",
+  "- 설정집 검수 실행('이 설정집 검수 실행해줘/검수 돌려줘/검수해줘', 특히 버튼이 없는 옛 설정집 작성 요청 스레드에서): run_setjip_review([thread]). 그 스레드 안에서 부르면 thread 생략. 실제 검수 버튼 클릭과 동일하게 n8n을 직접 트리거하고, 동시에 그 시점 최신 설정집 xlsx도 같은 자리에 바로 첨부한다(file.shared:true). ★검수 판정 결과(문제점 리스트) 자체는 안 준다 — n8n이 잠시 후 개인채널에 직접 올린다. '검수를 요청했다 + 파일 보냈다'까지만 말하고 '검수했다/판정 결과 나왔다'고 단정하지 말 것.",
+  "- 설정집 원본 파일 공유('엑셀 파일 줘/설정집 파일 공유해줘/원본 파일 올려줘', 설정집 작성 요청 스레드에서): share_setjip_file([thread]). 그 스레드 안에서 부르면 thread 생략. TOTUS에서 그 시점 최신 xlsx를 받아 스레드에 바로 첨부(게이트 없음, 읽기성 공유라 즉시 실행).",
+  "- 설정집 일정 시트 수동 등록('이 PIVO 시트에 등록해줘/설정집 일정에 추가해줘', propose_setjip_request 흐름을 안 거치고 다른 경로로 요청 나갔을 때): register_setjip_schedule(pivo, [thread], [apm]). 설정집 요청 스레드 안에서 부르면 thread 생략. 스레드 본문에서 작품명·APM·제출희망일 자동 인식, 못 찾으면 apm 인자 필수. 이미 등록된 PIVO면 중복 스킵. 게이트 없이 즉시 실행.",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
   "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 후 봇이 자동으로 이어서 처리하는 것: ①TOTUS 프로젝트명 가제→FIX 변경 ②출판사 드라이브 링크 시트 한국어 타이틀·APM 채움 ③납품 시트(중일 V5)에 초도 회차만큼 행(1~N화) 생성 — 이 세 가지는 확정 버튼('✅ 프로젝트명+시트 반영') 한 번으로 봇이 직접 쓴다. ④1-3화 번역검수 자동 모니터 등록. 그러니 propose_totus_project·register_translation_monitor를 따로 부르지 말 것(수동 등록 요청 때만 register). ★중요: '내부 시트(한국어 타이틀·납품 행)는 도구로 못 바꾼다/직접 채워야 한다'고 답하지 마라 — 위 버튼 체인으로 봇이 실제로 쓴다(버튼을 안 누르면 안 될 뿐). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★고객사 → APM 릴레이(재상 님이 고객사 메시지를 붙이며 'APM에게 전달/릴레이해줘'류로 요청할 때): 고객사 채널엔 툰식이가 못 들어가서, 재상 님이 고객사 메시지(보통 **일본어**)를 붙여주면 툰식이가 APM에게 대신 전달하는 흐름이다. ①작품 식별(메시지의 일/중 타이틀 → get_work_info로 **한국어 작품명·담당 APM** 확인) ②요청 유형 파악(원본 교체 / 식자본 선납품 / 번역 JPG 공유 등) → **재상 님 대화체 톤**으로 APM 릴레이 초안을 만들어 send_message로 발송 제안(target=재팬_요청 `C09B8QHP7D4`, 본문 맨 앞 `<@담당APM>` + 끝에 `cc <@U04463JR4HH>`). ★톤(엄수): 굵은 제목·불릿·정형 필드 금지, 자연스러운 대화체. 예 — `<@APM>` 줄 / `<작품> N화 {요청}이 필요합니다.` / `{맥락 한 줄}, …부탁 드립니다.` / `{마감/확인} 가능할까요?`. 링크는 슬랙 마스킹 `<url|라벨>`(생 URL 나열 금지). ★원본 교체 요청이면 원본 링크(고객사가 준 baidu 등)+프로젝트 링크(get_project_url)를 `<url|원본 링크> / <url|프로젝트 링크>`로, 식자·식자검수 담당(작업자 DB)도 함께. 그 외 유형은 요청 내용만 담백하게. 담당 APM이 애매하면 한 줄 되묻기. 게이트(버튼)—'보냈다' 단정 금지.",
@@ -167,8 +211,8 @@ const DISPATCHER_PROMPT = [
   "★용어 구분(엄수·문맥으로 판단): **'납품일'**(='예정' 글자 없음) → 무조건 **내부 납품 시트 get_delivery_date**. **'납품예정일'/'납품 예정일'/'TOTUS 납품예정일'**(예정 명시) → **TOTUS totus_delivery_date**. 즉 '예정'이 안 붙으면 시트가 기본이다 — 그냥 '납품일 조회'에 totus_delivery_date를 쓰지 마라(혼동 금지). 애매하면 시트(get_delivery_date) 우선. ③totus_jobs·totus_tasks·totus_schedule_summary의 마감일은 *오퍼레이션*(PIVO 납품검수 등) 마감일이지 납품예정일이 아니다 — '납품예정일'이라 단정 금지.",
   "- 작품 기본정보(PIVO ID·타이틀·APM·출판사) → get_work_info",
   "- 작품 '원본 링크/원고 받는 곳/원본 수급처' 요청 → get_work_info의 driveLink(출판사 드라이브 링크)를 답한다. driveLink가 있으면 그 URL을 그대로 주고, 비어있으면(없음) '원본 링크는 시트에 없어요 — 출판사 {publisher}에서 중국어 제목 「{zhTitle}」로 검색하세요'처럼 **출판사(publisher) + 중국어 원제(zhTitle)** 를 함께 알려준다(드라이브를 중국어 작품명으로 검색하므로 zhTitle 필수). ★단 출판사가 bilibili comics(哔哩哔哩漫画)나 kuaikan(快看漫画)이면 긴 검색 안내는 생략하되 **플랫폼명 + 중국어 원제(zhTitle)** 를 함께 짧게 준다(원제로 검색하므로 필수). 예: '비리비리예요 — 원제: 「{zhTitle}」' / '콰이칸이에요 — 원제: 「{zhTitle}」'.",
-  "- TOTUS 링크 요청: 작품 '프로젝트/작업진행 페이지 링크' = get_project_url(작품) (작품 단위, 회차 불필요). 특정 회차·오퍼레이션의 '에디터 링크' = get_editor_url(작품, 회차, 오퍼레이션명) (상태 무관 최신 task 기준). 둘 다 한국어 제목만으론 동명 프로젝트가 여럿 잡힐 수 있는데, [PV-정식6자리표기]가 붙은 것으로 자동 특정하니 보통은 되묻지 않는다. 그것도 하나로 안 좁혀지면(ambiguous:true) 그때만 candidates 목록 보여주며 되물어라.",
-  "- 원본/원고/소스 'PSD·파일 다운로드' 요청 → get_source_files(작품, 회차[, page]). 특정 페이지만(예 '48화 2페이지', '3,4페이지')이면 page 인자에 번호를 넣는다. ★출력은 각 파일을 **슬랙 마스킹 하이퍼링크 `<다운로드URL|파일명>`** 로 만들어 **한 줄(또는 몇 줄)에 `·`로 이어** 압축한다 — raw URL을 파일마다 한 줄씩 나열하지 마라(30줄씩 길어짐). 라벨은 파일명 그대로(페이지 정보 보이게, 예 `48-2.psd`). 예: `📦 원본: <url1|48-1.psd> · <url2|48-2.psd> · <url3|49-1.psd>`. (봇이 파일을 직접 받거나 슬랙에 올리지 말 것 — 대용량이라 링크로만.) 링크는 cf.totus.pro 서명 URL이라 클릭하면 바로 받힌다(로그인 불필요·일정 시간 후 만료).",
+  "- TOTUS 링크 요청: 작품 '프로젝트/작업진행 페이지 링크' = get_project_url(작품) (작품 단위, 회차 불필요). 특정 회차·오퍼레이션의 '에디터 링크' = get_editor_url(작품, 회차, 오퍼레이션명) (상태 무관 최신 task 기준). 둘 다 한국어 제목만으론 동명 프로젝트가 여럿 잡힐 수 있는데, [PV-정식6자리표기]가 붙은 것으로 자동 특정하니 보통은 되묻지 않는다. 그것도 하나로 안 좁혀지면(ambiguous:true) 그때만 candidates 목록 보여주며 되물어라. ★링크는 도구가 코드로 이미 이 자리에 직접 포스트한다 — 너는 URL을 절대 다시 만들거나 옮겨 적지 말고, posted:true가 오면 '프로젝트/에디터 링크 보냈어요'처럼 한 줄로만 알려라.",
+  "- 원본/원고/소스 'PSD·파일 다운로드' 요청 → get_source_files(작품, 회차[, page]). 특정 페이지만(예 '48화 2페이지', '3,4페이지')이면 page 인자에 번호를 넣는다. ★링크는 도구가 코드로 이미 이 자리에 직접 포스트한다(서명 URL이라 로그인 없이 바로 받힌다) — 너는 링크 문자열을 절대 다시 만들거나 옮겨 적지 말고, 도구 결과에 posted:true가 오면 '원본 파일 N건 보냈어요'처럼 한 줄로만 알려라. found:false거나 error면 그 사유를 그대로 전한다.",
   "- 그 외 운영 시트 → query_sheet (사용 가능한 뷰 목록·필드는 그 도구 설명에 들어있으니 거기 보고 고른다).",
   "query_sheet 효율 규칙(중요): 리스트/현황/기간 질문은 한 번의 호출로 서버측에서 좁혀 가져온다. filterField/filterOp/filterValue(예: 리테이크 미완료=filterField:done, filterOp:neq, filterValue:완료), dateField/dateFrom/dateTo(기간), distinct(중복 제거)를 적극 사용. work 없이 큰 시트를 통째로 가져오거나, 같은 호출을 반복하지 말 것. 한 번에 답이 되도록 필터를 설계해 호출 횟수를 최소화한다.",
   "- TOTUS(작품 진행상황·일정 지연/임박·작업자·번역텍스트·견적) → totus_* 도구. PIVO ID 있으면 totus_quotation으로 projectUuid부터 확보 → 그 uuid로 totus_schedule_summary(일정)·totus_jobs/totus_tasks(작업·상태). 작품명만 있으면 totus_find_project로 uuid. 진행/일정/작업자는 시트보다 TOTUS가 정확. 번역텍스트(totus_translation_text)는 양 많으니 필요한 Task에만.",
@@ -321,6 +365,51 @@ async function n8nPost(path, body) {
   if (!r.ok) throw new Error(`n8n ${r.status}: ${t.slice(0, 200)}`);
   return j;
 }
+// review-engine(EC2) 검수 호출. 인라인 판단 대신 이 엔진(정규화·PASS1/2·critic)을 단일 소스로 사용.
+const REVIEW_ENGINE_BASE = (process.env.REVIEW_ENGINE_BASE || "http://13.125.252.179:8000").replace(/\/$/, "");
+async function reviewEngineReview({ work, episode, stage, lang, taskUuid, pairs }) {
+  const texts = pairs.map((p, i) => {
+    const [pageStr, tbStr] = String(p.pb || "").split("-");
+    return {
+      ep: parseInt(String(episode), 10) || 0,
+      index: i,
+      original: p.src || "",
+      translation: p.tgt || "",
+      page: Number.isFinite(parseInt(pageStr, 10)) ? parseInt(pageStr, 10) : null,
+      tb: Number.isFinite(parseInt(tbStr, 10)) ? parseInt(tbStr, 10) : null,
+    };
+  });
+  const body = {
+    work_id: work,
+    episode_range: String(episode),
+    source_language: lang === "zh-ja" ? "zh" : "ko",
+    batch_meta: { run_key: `dispatcher-${work}-${episode}-${Date.now()}`, batch_index: 0, total_batches: 1 },
+    texts,
+    job_name: "dispatcher-bot",
+    assignee: stage || "",
+    task_uuid: taskUuid || "",
+  };
+  const r = await fetch(`${REVIEW_ENGINE_BASE}/review`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    signal: AbortSignal.timeout(580_000),
+  });
+  const t = await r.text();
+  let j; try { j = JSON.parse(t); } catch { j = { raw: t.slice(0, 300) }; }
+  if (!r.ok) throw new Error(`review-engine ${r.status}: ${(j?.detail || t).slice(0, 300)}`);
+  return j;
+}
+// review-engine 응답(reviews[])을 작업자 수정요청용 텍스트로 포맷(QA_INSTRUCTIONS 출력 템플릿과 동일 스타일).
+function formatReviewEngineResult({ work, episode, stage, url }, resp) {
+  const lines = [`${work} / ${episode}화  (${stage})`, `task: ${url}`];
+  const reviews = resp?.reviews || [];
+  if (!reviews.length) { lines.push("", "問題なし"); return lines.join("\n"); }
+  for (const it of reviews) {
+    const pb = (it.page != null && it.tb != null) ? `${it.page}-${it.tb}` : `#${it.index + 1}`;
+    lines.push("", pb, it.translation || "", "->", it.suggestion || it.translation || "",
+      `사유: [${it.severity}/${it.issue_type}] ${it.issue_detail || ""}`.trim());
+  }
+  return lines.join("\n");
+}
 let currentCtx = null;            // { client, channel, ts } — handle()가 메시지마다 갱신(직렬 가정). 영속 대상 아님(client 비직렬)
 // chat.getPermalink 응답(?thread_ts=...&cid=... 쿼리 포함)은 브라우저를 거쳐 슬랙 앱으로 리다이렉트된다.
 // 쿼리를 뗀 순수 경로(archives/CH/pXXXX)는 클릭 시 바로 앱으로 열리므로, 시트에 저장하는 링크는 이 형태로 정규화한다.
@@ -421,10 +510,11 @@ let _setjipTaskCheckAt = 0;
 async function checkSetjipTaskCompletion() {
   try {
     if (!BRAIN_ON) return;
-    if (Date.now() - _setjipTaskCheckAt < 5 * 60 * 1000) return;   // TOTUS 부하 방지 — 5분 간격
+    if (Date.now() - _setjipTaskCheckAt < 60 * 60 * 1000) return;   // TOTUS 부하 방지 — 1시간 간격(불필요한 호출은 아래 마감일 윈도우로 추가 축소)
     _setjipTaskCheckAt = Date.now();
     const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:J2000`);
     if (!rows?.length) return;
+    const todayKST = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
     let hit = 0;
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
@@ -432,6 +522,13 @@ async function checkSetjipTaskCompletion() {
       if (triggered) continue;
       const pivo = String(r[2] || "").trim(), threadLink = String(r[5] || "").trim();
       if (!pivo || !threadLink) continue;
+      // 마감일(I열 ISO) 전날~다음날 구간에서만 TOTUS 조회 — 그 전엔 어차피 완료 가능성 낮고,
+      // 그 이후는 checkSetjipDeadline()의 일일 DM 리마인드(사람 개입)로 넘어감. 불필요한 API 호출 축소.
+      const deadlineISO = String(r[8] || "").trim();
+      if (deadlineISO) {
+        const daysDiff = Math.round((new Date(`${deadlineISO}T00:00:00+09:00`) - new Date(`${todayKST}T00:00:00+09:00`)) / 86400000);
+        if (isNaN(daysDiff) || daysDiff < -1 || daysDiff > 1) continue;
+      }
       try {
         const status = await setjipTaskStatus(pivo);
         if (status !== "COMPLETED") continue;
@@ -445,6 +542,124 @@ async function checkSetjipTaskCompletion() {
       } catch (e) { console.error("[setjip-auto-review] 개별 처리 실패:", pivo, e?.message ?? e); }
     }
   } catch (e) { console.error("[setjip-auto-review] 실패:", e?.message ?? e); }
+}
+// 자동검수 결과의 "📤 요청 스레드 전달" 버튼(설정집 인터랙션 디스패처 n8n)이 눌리면 그 결과가
+// "📋 설정집 검수 결과"로 시작하는 메시지로 요청 스레드에 올라온다 — 이 봇은 그 클릭 이벤트를 직접 못 받으니
+// (다른 슬랙 앱이 처리) 요청 스레드를 스캔해서 이 마커 메시지 등장 여부로 "수정요청 감지"를 판단(K열 기록).
+let _setjipRevisionCheckAt = 0;
+async function detectSetjipRevisionForward() {
+  try {
+    if (!BRAIN_ON) return;
+    if (Date.now() - _setjipRevisionCheckAt < 30 * 60 * 1000) return;   // 슬랙 API 부하 방지 — 30분 간격
+    _setjipRevisionCheckAt = Date.now();
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:N2000`);
+    if (!rows?.length) return;
+    const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    let hit = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const triggered = String(r[9] || "").trim().toUpperCase() === "TRUE";   // J열 = 자동검수 이미 트리거됨
+      const detected = String(r[10] || "").trim();                            // K열 = 수정요청 감지일
+      if (!triggered || detected) continue;
+      const threadLink = String(r[5] || "").trim();
+      const p = parseSlackLink(threadLink);
+      if (!p?.channel) continue;
+      try {
+        const replies = await app.client.conversations.replies({ channel: p.channel, ts: p.ts, limit: 100 });
+        const found = (replies?.messages || []).some((m) => (m.text || "").includes("설정집 검수 결과"));
+        if (!found) continue;
+        await setCells(SETJIP_SCHEDULE_SHEET, [{ a1: `${SETJIP_SCHEDULE_TAB}!K${i + 2}`, value: today }]);
+        hit++;
+        console.log(`[setjip-revision] ${r[1] || r[2]} 수정요청 감지(전달버튼) → K열 기록(${today})`);
+        await postSetjipRevisionAlert({ work: r[1] || r[2], pivo: r[2], threadLink, deadline: null });
+      } catch (e) { console.error("[setjip-revision] 개별 스캔 실패:", r[2], e?.message ?? e); }
+    }
+    if (hit) console.log(`[setjip-revision] 신규 감지 ${hit}건`);
+  } catch (e) { console.error("[setjip-revision] 실패:", e?.message ?? e); }
+}
+// 요청 스레드에 재상 님이 직접 남긴 댓글이 "수정 요청"인지 LLM으로 판별 + 마감일(있으면) 추출.
+async function classifySetjipRevisionComment(text) {
+  const todayISO = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  const prompt = [
+    "다음은 '중일 설정집 작성 요청' 슬랙 스레드에 재상 님이 남긴 댓글이다.",
+    "이 댓글이 설정집(번역/식자) 수정 요청인지 판단하고, 댓글에 마감일이 명시(또는 '이번주까지'처럼 상대적으로라도 언급)돼 있으면 오늘 날짜 기준으로 절대 날짜(YYYY-MM-DD)로 환산해 추출하라.",
+    `오늘 날짜(KST): ${todayISO}`,
+    "단순 확인·감사·질문·잡담이면 수정요청이 아니다.",
+    'JSON만 출력: {"isRevisionRequest": true|false, "deadline": "YYYY-MM-DD"|null, "reason": "짧게"}',
+    "", "[댓글]", String(text || "").slice(0, 1500),
+  ].join("\n");
+  const out = await toollessQuery(prompt, { label: "설정집 수정요청 판별" });
+  try {
+    const j = JSON.parse((out || "").match(/\{[\s\S]*\}/)?.[0] || "{}");
+    return { isRevisionRequest: Boolean(j.isRevisionRequest), deadline: /^\d{4}-\d{2}-\d{2}$/.test(j.deadline) ? j.deadline : null, reason: j.reason || "" };
+  } catch { return { isRevisionRequest: false, deadline: null, reason: "파싱 실패" }; }
+}
+// 재상 님이 설정집 요청 스레드(SETJIP_CHANNEL)에 직접 댓글 → 수정요청이면 K/M열 기록 + 완료버튼 알림.
+async function handleSetjipRevisionComment({ message, client }) {
+  try {
+    if (processed.has("sr:" + message.ts)) return;
+    processed.add("sr:" + message.ts);
+    if (!message.text) return;
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:N2000`);
+    if (!rows?.length) return;
+    const rowIdx = rows.findIndex((r) => {
+      const triggered = String(r[9] || "").trim().toUpperCase() === "TRUE";
+      const detected = String(r[10] || "").trim();
+      if (!triggered || detected) return false;
+      const p = parseSlackLink(String(r[5] || "").trim());
+      return p?.channel === message.channel && p?.ts === message.thread_ts;
+    });
+    if (rowIdx < 0) return;   // 이 스레드는 추적 대상 아니거나 이미 감지됨
+    const r = rows[rowIdx];
+    const cls = await classifySetjipRevisionComment(message.text);
+    if (!cls.isRevisionRequest) return;
+    const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    await setCells(SETJIP_SCHEDULE_SHEET, [
+      { a1: `${SETJIP_SCHEDULE_TAB}!K${rowIdx + 2}`, value: today },
+      { a1: `${SETJIP_SCHEDULE_TAB}!M${rowIdx + 2}`, value: cls.deadline || "" },
+    ]);
+    console.log(`[setjip-revision] ${r[1] || r[2]} 수정요청 감지(댓글, 마감:${cls.deadline || "기본"}) → K/M열 기록`);
+    await postSetjipRevisionAlert({ work: r[1] || r[2], pivo: r[2], threadLink: String(r[5] || "").trim(), deadline: cls.deadline });
+  } catch (e) { console.error("[setjip-revision] 댓글 처리 실패:", e?.message ?? e); }
+}
+// 완료(고객사 제출) 버튼이 붙은 알림 — REMINDER_CHANNEL에 게시.
+async function postSetjipRevisionAlert({ work, pivo, threadLink, deadline }) {
+  try {
+    const p = parseSlackLink(threadLink);
+    if (!p?.channel) { console.error("[setjip-revision] 스레드 파싱 실패, 알림 스킵:", threadLink); return; }
+    await app.client.chat.postMessage({
+      channel: p.channel, thread_ts: p.ts, ...SENDER,
+      text: `설정집 수정요청 감지: ${work}`,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: `📝 *설정집 수정요청 감지*${deadline ? ` (마감 ${deadline})` : ""} — 완료(고객사 제출)되면 아래 버튼을 눌러주세요.` } },
+        { type: "actions", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "✅ 완료(고객사 제출)" }, action_id: "setjip_revision_done", value: String(pivo || "") }] },
+      ],
+    });
+  } catch (e) { console.error("[setjip-revision] 알림 게시 실패:", e?.message ?? e); }
+}
+// 수정요청 감지(K열) 후 일정 기간 지나도 완료(L열) 안 된 것 — checkNag 합류용.
+// M열(재상 님이 댓글에서 직접 지정한 마감일)이 있으면 그 날짜를, 없으면 감지일+days를 기준으로 삼는다.
+function overdueSetjipRevisions(rows, days = 2) {
+  const today = new Date(Date.now() + 9 * 3600 * 1000);
+  const out = [];
+  for (const r of rows) {
+    const detected = String(r[10] || "").trim();
+    const done = String(r[11] || "").trim().toUpperCase() === "TRUE";
+    const customDeadline = String(r[12] || "").trim();
+    if (!detected || done) continue;
+    const threshold = customDeadline
+      ? new Date(`${customDeadline}T00:00:00+09:00`)
+      : new Date(new Date(`${detected}T00:00:00+09:00`).getTime() + days * 86400000);
+    if (isNaN(threshold) || today < threshold) continue;
+    const daysOver = Math.floor((today - threshold) / 86400000);
+    out.push({ work: r[1] || r[2] || "", pivo: r[2] || "", link: r[5] || "", daysOver, deadline: customDeadline || null });
+  }
+  return out;
+}
+function fmtSetjipRevisions(rows) {
+  if (!rows.length) return null;
+  const lines = rows.map((x) => `• ${x.work} — ${x.deadline ? `마감 ${x.deadline} 지남` : `${x.daysOver}일째 미확인`}${(x.link && x.link.indexOf("http") === 0) ? ` · <${x.link}|🔗링크>` : ""}`);
+  return `📝 *설정집 수정요청 미완료* (${rows.length}건)\n${lines.join("\n")}\n→ 위 "✅ 완료(고객사 제출)" 버튼으로 처리해주세요.`;
 }
 // 스레드 검색 대상 채널(.env SEARCH_CHANNELS = "ID:이름,ID:이름,…"). find_thread가 여기서만 검색.
 const SEARCH_CHANNELS = (process.env.SEARCH_CHANNELS || "").split(",").map((s) => s.trim()).filter(Boolean).map((s) => { const [id, ...n] = s.split(":"); return { id: id.trim(), name: (n.join(":").trim() || id.trim()) }; });
@@ -718,10 +933,13 @@ function makeReviewJob({ work, pivo, episode, lang, label, ctx }) {
   return { label: `${label} ${episode}화 검수`, ctx, run: async (id) => {
     const r = await extractEpisode({ work, pivo, episode, lang: lang || "ko-ja", stage: null });
     if (r.error) return `${label} ${episode}화: ${r.error}`;
-    await workerPost(ctx, `🔎 ${r.work} ${r.episode}화 — ${r.stage} ${r.count}건 추출, 검수 중… (워커 ${id})`);
-    const prompt = QA_INSTRUCTIONS + "\n\n[추출 결과]\n" + JSON.stringify(r)
-      + "\n\n위 [웹툰 번역 검수 기준]대로 pairs를 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성하라. 문제 없으면 본문에 '問題なし'만.";
-    return (await toollessQuery(prompt, { label: `검수 ${label} ${episode}화`, channel: ctx.channel })) || `${r.work} ${r.episode}화: 問題なし`;
+    await workerPost(ctx, `🔎 ${r.work} ${r.episode}화 — ${r.stage} ${r.count}건 추출, review-engine 검수 중… (워커 ${id})`);
+    try {
+      const resp = await reviewEngineReview({ work: r.work, episode: r.episode, stage: r.stage, lang: lang || "ko-ja", taskUuid: r.taskUuid, pairs: r.pairs });
+      return formatReviewEngineResult({ work: r.work, episode: r.episode, stage: r.stage, url: r.url }, resp);
+    } catch (e) {
+      return `⚠️ ${r.work} ${r.episode}화 review-engine 검수 오류: ${e?.message ?? e}`;
+    }
   } };
 }
 // 텍스트 추출(범위) 잡 — 화별 추출, 예산(200s) 초과 시 그때까지 것 누적해두고 남은 화부터 자동 이어받기(resume).
@@ -1114,12 +1332,18 @@ const apmTools = createSdkMcpServer({
           if (!match.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, msg: `${episode}화에 '${operation}' 오퍼레이션 task 없음.`, 가능한오퍼레이션: [...new Set(tasks.map((t) => t.오퍼레이션유형명).filter(Boolean))] }) }] };
           match.sort((a, b) => String(b.시작일원본 || b.마감일원본 || "").localeCompare(String(a.시작일원본 || a.마감일원본 || "")));   // 최신 우선(시작일 desc)
           const t = match[0];
-          return { content: [{ type: "text", text: JSON.stringify({ work: projName, episode, operation: t.오퍼레이션유형명, 상태: t.상태명 || t.상태, taskUuid: t.uuid, url: `https://main.totus.pro/ko/editor?uuid=${t.uuid}`, task수: match.length }) }] };
+          const url = `https://main.totus.pro/ko/editor?uuid=${t.uuid}`;
+          // ★모델이 UUID를 직접 옮겨적다 한 글자 오타 내는 사고가 있었음(2026-07-28). 링크는 코드가 '이 턴'의 자리에 직접 포스트한다.
+          const ctx = currentCtx;
+          if (ctx?.client) {
+            await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.threadTs || ctx.ts, text: `🔗 <${projName}> ${episode}화 ${t.오퍼레이션유형명} 에디터 링크예요\n${url}`, unfurl_links: false, ...SENDER });
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ posted: true, work: projName, episode, operation: t.오퍼레이션유형명, 상태: t.상태명 || t.상태, task수: match.length, note: "링크는 이미 코드가 직접 슬랙에 올렸다. 너는 URL을 재전송하거나 옮겨적지 말고 '보냈다'고만 한 줄로 알려라." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
       },
-      { annotations: { readOnlyHint: true } }
+      { annotations: {} }
     ),
     tool(
       "propose_task_retake",
@@ -1217,12 +1441,18 @@ const apmTools = createSdkMcpServer({
           const proj = pickPivoTagged(candidates);
           if (!proj) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: `'${work}'로 동일/유사 이름 프로젝트가 ${candidates.length}건 검색되고 [PV-정식표기]로도 하나로 안 좁혀짐. 후보 중 골라달라고 하라.`, candidates: candidates.map((p) => ({ name: p.프로젝트, uuid: p.uuid })) }) }] };
           const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
-          return { content: [{ type: "text", text: JSON.stringify({ work: projName, projectUuid: proj.uuid, url: `https://admin.totus.pro/ko/workProgressManagementDetail/?id=${proj.uuid}` }) }] };
+          const url = `https://admin.totus.pro/ko/workProgressManagementDetail/?id=${proj.uuid}`;
+          // ★모델이 UUID를 직접 옮겨적다 한 글자 오타 내는 사고가 있었음(2026-07-28). 링크는 코드가 '이 턴'의 자리에 직접 포스트한다.
+          const ctx = currentCtx;
+          if (ctx?.client) {
+            await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.threadTs || ctx.ts, text: `🔗 <${projName}> 프로젝트 링크예요\n${url}`, unfurl_links: false, ...SENDER });
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ posted: true, work: projName, note: "링크는 이미 코드가 직접 슬랙에 올렸다. 너는 URL을 재전송하거나 옮겨적지 말고 '보냈다'고만 한 줄로 알려라." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
       },
-      { annotations: { readOnlyHint: true } }
+      { annotations: {} }
     ),
     tool(
       "get_source_files",
@@ -1232,12 +1462,19 @@ const apmTools = createSdkMcpServer({
         try {
           const r = await sourceFilesFor(work, episode, page);
           if (!r.found) return { content: [{ type: "text", text: JSON.stringify(r) }] };
-          return { content: [{ type: "text", text: capJson({ ...r, note: "★출력은 slackLinks 문자열을 그대로 한 줄로 붙여라(각 파일이 파일명 라벨의 클릭 링크). raw url을 파일마다 나열하지 말 것. 다운로드URL은 서명 직접 링크(로그인 불필요·일정 시간 후 만료)." }) }] };
+          // ★모델이 <url|파일명> 링크를 직접 옮겨적다 URL 자리에 파일명을 잘못 넣는 사고가 있었음(2026-07-27).
+          //  링크 문자열은 모델을 거치지 않고 코드가 '이 턴'의 자리(currentCtx)에 직접 포스트한다.
+          const ctx = currentCtx;
+          const header = `📦 원본 파일 (${r.episode}화 ${r.page}페이지, ${r.파일수}건):`;
+          if (ctx?.client) {
+            await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.threadTs || ctx.ts, text: `${header}\n${r.slackLinks}`, unfurl_links: false, ...SENDER });
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ posted: true, work: r.work, episode: r.episode, page: r.page, 파일수: r.파일수, note: "링크는 이미 코드가 직접 슬랙에 올렸다. 너는 재전송하지 말고 '보냈다'고만 한 줄로 알려라(예: '원본 파일 N건 보냈어요')." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
       },
-      { annotations: { readOnlyHint: true } }
+      { annotations: {} }
     ),
     tool("review_episode",
       "웹툰 번역 검수: 작품명+회차(또는 PIVO ID+회차)로 식자번역검수(없으면 번역검수/번역) 텍스트를 추출해 돌려준다. ★PIVO ID를 알면(맥락에 'NNNNNN | ...' 또는 재상 님이 PIVO를 준 경우) work 대신 pivo에 넣어라 — 그러면 납품시트를 안 거치고 TOTUS로 바로 해석해 납품시트 미등록 작품도 검수된다. 작품명만 있으면 납품탭에서 PIVO를 찾는다(한일 lang 'ko-ja' 기본, 중일 'zh-ja'; pivo를 주면 lang 무관). 돌려받은 [검수 기준]대로 pairs를 2패스 검수해 문제 있는 항목만 [출력 템플릿]으로 작성한다. 결과에 error가 있으면 그 메시지를 그대로 전한다.",
@@ -1452,7 +1689,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("run_setjip_review",
-      "설정집 검수를 n8n '중일 설정집 자동 검수 V2'로 직접 실행 요청한다('이 설정집 검수 실행해줘/검수 돌려줘/검수 트리거해줘'). setjip_run_review 버튼(🔍 설정집 검수)을 누른 것과 완전히 동일하게 n8n webhook(seoljeongjip-run)을 직접 호출 — 버튼이 없는 옛 설정집 작성 요청 스레드(신규 검수버튼 붙기 전에 만들어진 것)에서도 자연어로 트리거할 수 있게 하는 경로. 검수 대상 스레드 안에서 부르면 thread 생략 가능(지금 이 스레드를 그대로 씀). ★결과는 이 도구가 주지 않는다 — n8n이 잠시 후 개인채널에 직접 올림. '검수했다/결과 나왔다'고 단정 금지, '검수를 요청했다'까지만.",
+      "설정집 검수를 n8n '중일 설정집 자동 검수 V2'로 직접 실행 요청하고, 동시에 그 시점 최신 설정집 xlsx 원본도 같은 자리에 바로 첨부한다('이 설정집 검수 실행해줘/검수 돌려줘/검수해줘'). setjip_run_review 버튼(🔍 설정집 검수)을 누른 것과 완전히 동일하게 n8n webhook(seoljeongjip-run)을 직접 호출 — 버튼이 없는 옛 설정집 작성 요청 스레드에서도 자연어로 트리거할 수 있게 하는 경로. 검수 대상 스레드 안에서 부르면 thread 생략 가능(지금 이 스레드를 그대로 씀). ★검수 판정 결과 자체는 이 도구가 주지 않는다 — n8n이 잠시 후 개인채널에 직접 올림('검수했다/결과 나왔다'고 단정 금지, '검수를 요청했다'까지만). 다만 xlsx 파일은 이 도구가 즉시 첨부하므로 파일 공유는 '보냈다'고 말해도 된다.",
       { thread: z.string().optional().describe("설정집 작성 요청 메시지의 슬랙 링크(permalink). 생략하면 지금 대화 중인 스레드를 그대로 쓴다.") },
       async ({ thread }) => {
         try {
@@ -1466,7 +1703,95 @@ const apmTools = createSdkMcpServer({
           }
           if (!channel || !ts) return { content: [{ type: "text", text: JSON.stringify({ error: "채널/스레드를 특정 못 함 — 설정집 작성 요청 스레드 안에서 부르거나 thread 링크를 줘라." }) }] };
           await n8nPost("seoljeongjip-run", { channel, thread_ts: ts, user: currentUser || "" });
-          return { content: [{ type: "text", text: JSON.stringify({ triggered: true, channel, thread_ts: ts, note: "n8n에 검수를 요청했다. 결과는 잠시 후 개인채널에 n8n이 올린다. '검수 완료/결과' 등으로 단정하지 말고 '검수를 요청했다'고만 답하라." }) }] };
+          const fileResult = await shareSetjipXlsx({ client: ctx.client, channel, ts });
+          return { content: [{ type: "text", text: JSON.stringify({
+            triggered: true, channel, thread_ts: ts, file: fileResult,
+            note: "n8n에 검수를 요청했다. 판정 결과는 잠시 후 개인채널에 n8n이 올린다 — '검수 완료/결과' 등으로 단정하지 말고 '검수를 요청했다'고만 답하라. file.shared가 true면 xlsx는 이미 이 자리에 올렸으니 '파일도 보냈다'고 함께 알려라.",
+          }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: false } }),
+    tool("share_setjip_file",
+      "설정집 작성 요청 스레드에 실제 설정집 xlsx 원본을 첨부해 공유한다('엑셀 파일 줘/설정집 파일 공유해줘/원본 파일 올려줘'). TOTUS에서 그 시점 최신본을 그대로 받아와 스레드에 올린다(재작성됐어도 항상 최신). 이 스레드 안에서 부르면 thread 생략 가능(지금 이 스레드를 그대로 씀).",
+      { thread: z.string().optional().describe("설정집 작성 요청 메시지의 슬랙 링크(permalink). 생략하면 지금 대화 중인 스레드를 그대로 쓴다.") },
+      async ({ thread }) => {
+        try {
+          const ctx = currentCtx;
+          let channel = ctx?.channel, ts = ctx?.ts;
+          if (thread) {
+            const p = parseSlackLink(thread);
+            if (!p) return { content: [{ type: "text", text: JSON.stringify({ error: `스레드 링크를 못 읽음: ${thread}` }) }] };
+            if (p.channel) channel = p.channel;
+            ts = p.ts;
+          }
+          if (!channel || !ts) return { content: [{ type: "text", text: JSON.stringify({ error: "채널/스레드를 특정 못 함 — 설정집 작성 요청 스레드 안에서 부르거나 thread 링크를 줘라." }) }] };
+          const result = await shareSetjipXlsx({ client: ctx.client, channel, ts });
+          return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: false } }),
+    tool("register_setjip_schedule",
+      "설정집 요청이 propose_setjip_request 흐름을 거치지 않고 다른 경로로 나갔을 때(재상 님이나 다른 사람이 직접 요청한 경우) '설정집 일정' 시트에 수동으로 등록한다('이 PIVO 시트에 등록해줘/설정집 일정에 추가해줘'). 이 시트에 있어야 마감 리마인드·TOTUS 완료 자동감지·자동검수·수정요청 추적이 전부 돌아간다. 이미 등록된 PIVO면 중복 등록하지 않고 알려준다. 게이트 없이 즉시 실행(추적용 기록 추가일 뿐이라 안전).",
+      {
+        pivo: z.string().describe("PIVO 번호(숫자만)"),
+        thread: z.string().optional().describe("설정집 작성 요청 메시지의 슬랙 링크(permalink). 생략하면 지금 대화 중인 스레드를 그대로 쓴다."),
+        apm: z.string().optional().describe("담당 APM 이름. 스레드 본문에 @멘션이 있으면 자동 인식하니 생략 가능, 못 찾으면 필수."),
+      },
+      async ({ pivo, thread, apm }) => {
+        try {
+          const ctx = currentCtx;
+          let channel = ctx?.channel, ts = ctx?.ts;
+          if (thread) {
+            const p = parseSlackLink(thread);
+            if (!p) return { content: [{ type: "text", text: JSON.stringify({ error: `스레드 링크를 못 읽음: ${thread}` }) }] };
+            if (p.channel) channel = p.channel;
+            ts = p.ts;
+          }
+          if (!channel || !ts) return { content: [{ type: "text", text: JSON.stringify({ error: "채널/스레드를 특정 못 함 — 설정집 요청 스레드 안에서 부르거나 thread 링크를 줘라." }) }] };
+
+          const pivoNum = String(pivo).match(/\d{4,}/)?.[0] || String(pivo).trim();
+          const existing = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!C2:C2000`);
+          if ((existing || []).some((r) => String(r[0] || "").trim() === pivoNum)) {
+            return { content: [{ type: "text", text: JSON.stringify({ error: `PIVO ${pivoNum}는 이미 '설정집 일정' 시트에 등록돼 있음(중복 방지로 스킵).` }) }] };
+          }
+
+          const replies = await ctx.client.conversations.replies({ channel, ts, limit: 10 }).catch(() => null);
+          const rootText = replies?.messages?.[0]?.text || "";
+          const workM = rootText.match(/작품명\s*[:：]\s*([^\n]+)/);
+          const apmM = rootText.match(/<@([A-Z0-9]+)>/);
+          const submitM = rootText.match(/설정집 제출 희망일\s*[:：]\s*([^\n]+)/);
+
+          let work = workM?.[1]?.trim() || "";
+          let apmName = (apm && apm.trim()) || (apmM ? (USER_NAMES[apmM[1]] || apmM[1]) : "");
+          const submitDate = submitM?.[1]?.trim() || "";
+
+          if (!work) {
+            const q = await quotationByPivo(pivoNum).catch(() => null);
+            const d = Array.isArray(q?.data) ? q.data[0] : null;
+            work = d?.pivoTitle || "";
+          }
+          if (!work) return { content: [{ type: "text", text: JSON.stringify({ error: "작품명을 못 찾음(스레드에도 TOTUS 견적에도 없음) — PIVO 확인 필요." }) }] };
+          if (!apmName) return { content: [{ type: "text", text: JSON.stringify({ error: "담당 APM을 못 찾음 — apm 인자로 이름을 알려줘." }) }] };
+
+          const deadlineISO = submitDateToISO(submitDate) || "";
+          const todayISO = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+          const reminded = (deadlineISO && deadlineISO <= todayISO) ? "TRUE" : "FALSE";   // 이미 지난 마감이면 중복 리마인드 방지
+          const permalink = await ctx.client.chat.getPermalink({ channel, message_ts: ts }).then((r) => stripPermalinkQuery(r?.permalink)).catch(() => thread || null);
+
+          const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A:A`);
+          const row = (rows?.length || 1) + 1;
+          await setCells(SETJIP_SCHEDULE_SHEET, [
+            { a1: `${SETJIP_SCHEDULE_TAB}!A${row}`, value: todayISO },
+            { a1: `${SETJIP_SCHEDULE_TAB}!B${row}`, value: work },
+            { a1: `${SETJIP_SCHEDULE_TAB}!C${row}`, value: pivoNum },
+            { a1: `${SETJIP_SCHEDULE_TAB}!D${row}`, value: apmName },
+            { a1: `${SETJIP_SCHEDULE_TAB}!E${row}`, value: submitDate },
+            { a1: `${SETJIP_SCHEDULE_TAB}!F${row}`, value: permalink || "" },
+            { a1: `${SETJIP_SCHEDULE_TAB}!G${row}`, value: reminded },
+            { a1: `${SETJIP_SCHEDULE_TAB}!I${row}`, value: deadlineISO },
+            { a1: `${SETJIP_SCHEDULE_TAB}!J${row}`, value: "FALSE" },
+          ]);
+          return { content: [{ type: "text", text: JSON.stringify({ registered: true, pivo: pivoNum, work, apm: apmName, submitDate, deadlineISO }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: false } }),
@@ -2106,7 +2431,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__register_setjip_schedule", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
@@ -2590,6 +2915,11 @@ app.message(async ({ message, say, client }) => {
     if (message.bot_id === RETAKE_BOT_ID && message.text) await handleRetakeWatch({ message, client });
     return;
   }
+  // 설정집 요청 채널 — 재상 님이 요청 스레드에 직접 댓글(수정요청+마감일)을 남기면 자동 감지
+  if (message.channel === SETJIP_CHANNEL && message.thread_ts && message.thread_ts !== message.ts && message.user === OWNER_ID && !message.bot_id) {
+    await handleSetjipRevisionComment({ message, client });
+    return;
+  }
   // 워치 채널 자동 링크 — 박재상 or 문의봇 메시지에서 작품명 감지 → 프로젝트/원본 링크(선제)
   if (WORK_LINK_WATCH.has(message.channel)) {
     const edited = message.subtype && !["file_share", "bot_message"].includes(message.subtype);   // 편집·삭제 제외
@@ -2614,6 +2944,11 @@ app.message(async ({ message, say, client }) => {
 
 // 멘션 (@봇) — 채널/스레드에서 소환
 app.event("app_mention", async ({ event, say, client }) => {
+  // ★자기호출 루프 방지(2026-07-28): 워커/자동알림이 올린 메시지 텍스트에 툰식이 자신에 대한
+  //  멘션이 literal하게 들어있으면(예: 예시문구로 "@툰식이 ...줘"), Slack은 그 글쓴이가 봇 자신이어도
+  //  app_mention을 그대로 쏜다 — message 리스너들의 bot_id 필터가 여기엔 없어서 자기 메시지를
+  //  새 사용자 요청으로 착각해 처리(앵무새처럼 그대로 반복)하는 사고가 있었음.
+  if (event.bot_id || (SELF_BOT_USER && event.user === SELF_BOT_USER)) return;
   await handle({
     text: event.text, channel: event.channel, ts: event.ts,
     threadTs: event.thread_ts || event.ts, inThread: Boolean(event.thread_ts),
@@ -2988,6 +3323,26 @@ app.action("setjip_run_review", async ({ ack, body, client }) => {
   } catch (e) {
     await reply(`❌ 검수 요청 실패: ${e?.message ?? e}`);
   }
+});
+
+// 설정집 수정요청 완료(고객사 제출) 버튼 — 완료(L열)+완료일(N열) 기록.
+app.action("setjip_revision_done", async ({ ack, body, client }) => {
+  await ack();
+  const pivo = String(body.actions?.[0]?.value || "").trim();
+  const channel = body.channel?.id, ts = body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel, thread_ts: ts, text: t, ...SENDER }).catch(() => {});
+  try {
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:N2000`);
+    const rowIdx = (rows || []).findIndex((r) => String(r[2] || "").trim() === pivo);
+    if (rowIdx < 0) return reply("⚠️ 해당 작품을 '설정집 일정' 시트에서 못 찾았어요(행이 지워졌을 수 있음).");
+    const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    await setCells(SETJIP_SCHEDULE_SHEET, [
+      { a1: `${SETJIP_SCHEDULE_TAB}!L${rowIdx + 2}`, value: "TRUE" },
+      { a1: `${SETJIP_SCHEDULE_TAB}!N${rowIdx + 2}`, value: today },
+    ]);
+    const work = rows[rowIdx][1] || pivo;
+    await client.chat.update({ channel, ts, text: `✅ 완료 — ${work}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: `✅ *완료(고객사 제출)* — *${work}* (${today})` } }] }).catch(() => reply(`✅ 완료 처리했어요 — ${work}`));
+  } catch (e) { await reply(`❌ 완료 처리 실패: ${e?.message ?? e}`); }
 });
 
 app.action("setjip_cancel", async ({ ack, body, client }) => {
@@ -3505,7 +3860,7 @@ function fmtInquiries(rows) {
   const CAP = 15;
   const shown = rows.slice(0, CAP).map((q) => {
     const head = `• [${q.source}${q.type ? `·${q.type}` : ""}] ${q.work}`;
-    const tail = [q.detail, `${q.daysOver}일째`, q.requester ? `요청:${q.requester}` : "", q.link ? `<${q.link}|🔗>` : ""].filter(Boolean).join(" · ");
+    const tail = [q.detail, `${q.daysOver}일째`, q.requester ? `요청:${q.requester}` : "", (q.link && q.link.indexOf("http") === 0) ? `<${q.link}|🔗링크>` : ""].filter(Boolean).join(" · ");
     return tail ? `${head} — ${tail}` : head;
   });
   const more = rows.length > CAP ? `\n…외 ${rows.length - CAP}건` : "";
@@ -3523,6 +3878,11 @@ async function checkNag() {
     let completions = [];
     try { completions = await dueCompletions(7); }   // 하루 1회 스캔(모듈 내부 게이트) + 7일 캐치업(봇 꺼짐 대비)
     catch (e) { console.error("[nag] 완결 스캔 실패:", e?.message ?? e); }
+    let setjipRevisions = [];
+    try {
+      const srRows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:N2000`);
+      setjipRevisions = overdueSetjipRevisions(srRows || [], 2);
+    } catch (e) { console.error("[nag] 설정집 수정요청 스캔 실패:", e?.message ?? e); }
     const parts = [];
     if (reminders.length) {
       const lines = reminders.map((x) => `${x.id}. ${x.text}${x.link ? ` <${x.link}|🔗요청스레드>` : ""}`).join("\n");
@@ -3532,9 +3892,11 @@ async function checkNag() {
     if (iq) parts.push(iq);
     const cp = fmtCompletions(completions);
     if (cp) parts.push(cp);
+    const sr = fmtSetjipRevisions(setjipRevisions);
+    if (sr) parts.push(sr);
     if (!parts.length) return;
     await postReminder(parts.join("\n\n"));
-    console.log(`[nag] 발송 — 재촉 ${reminders.length} · 문의/재수급 ${inquiries.length} · 완결 ${completions.length}`);
+    console.log(`[nag] 발송 — 재촉 ${reminders.length} · 문의/재수급 ${inquiries.length} · 완결 ${completions.length} · 설정집 수정요청 ${setjipRevisions.length}`);
   } catch (e) { console.error("[nag] 실패:", e?.message ?? e); }
 }
 async function checkScheduled() {
@@ -3773,7 +4135,7 @@ async function findTodayDeliveryThreadTs() {
 // 재상 님 요청(2026-07-15): 매일 오전 엑셀 파일 탭이 있는 날짜만, 2026-07-24까지 자동 발송.
 // 이미 그날 스레드가 있으면(다른 프로세스가 먼저 올렸거나 재기동 중복) 스킵 — findTodayDeliveryThreadTs 재사용.
 const DELIVERY_NOTICE_SEND_HOUR = Number(process.env.DELIVERY_NOTICE_SEND_HOUR ?? 9);
-const DELIVERY_NOTICE_CUTOFF = "2026-07-24";
+const DELIVERY_NOTICE_CUTOFF = "2026-07-23";   // 2026-07-23: 7/24자는 재상 님이 미리 수동 발송해서 자동발송 기한을 하루 당김(중복 방지)
 let _deliveryNoticeSentDate = null;
 async function checkDailyNoticePost() {
   try {
@@ -3844,7 +4206,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }

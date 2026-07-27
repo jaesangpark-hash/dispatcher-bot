@@ -33,6 +33,27 @@ async function getJSON(path, query) {
 
 // #56 PIVO ID → 프로젝트·견적(uuid·납품목표일·견적/작업 특이사항·작업량)
 export const quotationByPivo = (pivoId) => getJSON(`/quotations/by-pivo/${encodeURIComponent(pivoId)}`);
+// Content-Disposition에서 실제 파일명 추출(filename* RFC5987 우선, 없으면 filename=""). 못 읽으면 null.
+function parseContentDispositionFilename(header) {
+  if (!header) return null;
+  const star = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (star) { try { return decodeURIComponent(star[1].trim()); } catch { /* fallthrough */ } }
+  const plain = header.match(/filename\s*=\s*"?([^";]+)"?/i);
+  return plain ? plain[1].trim() : null;
+}
+
+// 설정집 xlsx 원본 다운로드(바이너리+실제 파일명) — Slack 공유용. getJSON과 달리 파싱 없이 반환.
+// TOTUS가 Content-Disposition으로 내려주는 실제 파일명({날짜}【設定集】{번역작품명}_{원본작품명}.xlsx)을 그대로 보존한다 — 임의로 재작명 금지.
+export async function setupXlsxBuffer(projectUuid, targetLanguageCode) {
+  const { url, tok } = creds();
+  const qs = new URLSearchParams({ format: "xlsx", targetLanguageCode: targetLanguageCode || "LGC0003" }).toString();
+  const full = `${url}/api/v1/setup/${encodeURIComponent(projectUuid)}?${qs}`;
+  const r = await fetch(full, { headers: { Authorization: `Bearer ${tok}` }, signal: AbortSignal.timeout(60000) });
+  if (!r.ok) throw new Error(`TOTUS ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  const filename = parseContentDispositionFilename(r.headers.get("content-disposition"));
+  const buffer = Buffer.from(await r.arrayBuffer());
+  return { buffer, filename };
+}
 // #1 작품명 검색 → projectUuid 등 어드민 목록
 export const findProject = (name) => getJSON(`/projects`, { name });
 // PIVO ID → 프로젝트(uuid). 신작은 ?pivoId= 로 바로 잡힘(검수 추출 체인용)
