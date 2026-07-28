@@ -72,6 +72,29 @@ export async function ensureTab(sheetId, title) {
   return { created: true };
 }
 
+// 탭에 헤더+데이터 일괄 append. 탭 없으면 생성+헤더부터, 있으면 기존 데이터 뒤에 이어씀(재실행 시 덮어쓰지 않음).
+// QA 대조용 텍스트(원문/번역문) 반영 전용 — 게이트 없이 바로 실행.
+export async function appendSheetRows(sheetId, tabTitle, headerRow, dataRows) {
+  if (!dataRows.length) return { appended: 0 };
+  const token = await getWriteToken();
+  await ensureTab(sheetId, tabTitle);
+  const colLetter = (n) => { let s = "", x = n; while (x > 0) { const m = (x - 1) % 26; s = String.fromCharCode(65 + m) + s; x = Math.floor((x - 1) / 26); } return s; };
+  const lastCol = colLetter(headerRow.length);
+  const checkUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(`'${tabTitle}'!A:A`)}`;
+  const check = await (await fetch(checkUrl, { headers: { Authorization: `Bearer ${token}` } })).json();
+  if (check.error) throw new Error(`탭 조회 실패: ${check.error.message}`);
+  const existingRows = (check.values || []).length;
+  const values = existingRows === 0 ? [headerRow, ...dataRows] : dataRows;
+  const startRow = existingRows === 0 ? 1 : existingRows + 1;
+  const endRow = startRow + values.length - 1;
+  const range = `'${tabTitle}'!A${startRow}:${lastCol}${endRow}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`;
+  const r = await fetch(url, { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ values }) });
+  const j = await r.json();
+  if (j.error) throw new Error(`쓰기 실패: ${j.error.message}`);
+  return { appended: dataRows.length, tabCreated: existingRows === 0 };
+}
+
 // 여러 셀 일괄 쓰기. updates = [{ a1, value }]. 1회 HTTP(values:batchUpdate).
 export async function setCells(sheetId, updates) {
   if (!updates.length) return { totalUpdatedCells: 0 };

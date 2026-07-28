@@ -12,7 +12,7 @@ import { lookupWork, koTitleIndex, listWorkNotes, setWorkNote, resolveTitleAlias
 import { norm } from "./sheets.js";
 import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
-import { setCell, getCell, setCells, getCells, ensureTab } from "./sheets-write.js";
+import { setCell, getCell, setCells, getCells, ensureTab, appendSheetRows } from "./sheets-write.js";
 import { readRange as readRangeRO } from "./sheets.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
@@ -443,6 +443,28 @@ const SETJIP_CHANNEL = process.env.SETJIP_CHANNEL || "C09AUQN8GEB";   // 설정�
 const SETJIP_SCHEDULE_SHEET = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
 const SETJIP_SCHEDULE_TAB = "설정집 일정";
 let _setjipTabEnsured = false;
+// ── 설정집 AI검수(번역가 자가검수 툴) 인증번호 발급(2026-07-28): 등록된 인증번호만 review-engine 호출 허용, n8n(sekkei-web-check)이 소비/폐기 처리 ──
+const SETJIP_AI_TOKEN_TAB = "설정집 AI검수 토큰";
+const SETJIP_AI_TOKEN_DEFAULT_LIMIT = 5;
+let _setjipAiTokenTabEnsured = false;
+// 번역 작업자에게 8자리 인증번호 발급 + 시트 등록. translator가 실제 이름일 때만(플레이스홀더/공란이면 호출하지 않음).
+async function issueSetjipAiToken({ translator, pivo, work }) {
+  if (!_setjipAiTokenTabEnsured) { await ensureTab(SETJIP_SCHEDULE_SHEET, SETJIP_AI_TOKEN_TAB); _setjipAiTokenTabEnsured = true; }
+  const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_AI_TOKEN_TAB}!A:A`);
+  const row = (rows?.length || 1) + 1;   // 헤더 다음 첫 빈 행
+  const code = String(Math.floor(10000000 + Math.random() * 90000000));   // 8자리(10000000~99999999)
+  const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  await setCells(SETJIP_SCHEDULE_SHEET, [
+    { a1: `${SETJIP_AI_TOKEN_TAB}!A${row}`, value: code },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!B${row}`, value: translator || "" },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!C${row}`, value: pivo || "" },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!D${row}`, value: today },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!E${row}`, value: "0" },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!G${row}`, value: "활성" },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!H${row}`, value: String(SETJIP_AI_TOKEN_DEFAULT_LIMIT) },
+  ]);
+  return { code, limit: SETJIP_AI_TOKEN_DEFAULT_LIMIT };
+}
 // "7/24(金) 오전 중" 같은 표시용 문자열 → 비교용 ISO 날짜("2026-07-24"). 이미 지난 월/일이면 내년으로 보정(연말 경계 대비).
 function submitDateToISO(s) {
   const m = String(s || "").match(/^(\d{1,2})\/(\d{1,2})/);
@@ -1000,32 +1022,46 @@ function makeReviewJob({ work, pivo, episode, lang, label, ctx }) {
 }
 // 텍스트 추출(범위) 잡 — 화별 추출, 예산(200s) 초과 시 그때까지 것 누적해두고 남은 화부터 자동 이어받기(resume).
 // 다 되면 누적 CSV 한 번에 업로드. 화별 오류/누락은 건너뛰고 '누락'으로 기록 → 조용히 죽지 않는다.
-function makeTextExportJob({ pivo, projectName, from, to, stage, label, ctx, accCsv = null, origFrom = null, accMissing = [] }) {
+function makeTextExportJob({ pivo, projectName, from, to, stage, label, ctx, accCsv = null, origFrom = null, accMissing = [], accSheetRows = [] }) {
   const of = origFrom ?? from;
   return { label: `${label} ${of}-${to}화 텍스트추출`, ctx, run: async () => {
     const r = await extractEpisodeRange({ pivo, projectName, from, to, stage, budgetMs: TEXT_EXPORT_BUDGET_MS });
     if (r.error) {
-      if (accCsv) { await uploadTextCsv(ctx, { work: label, pivo, of, to, csv: accCsv, missing: accMissing }); return `${label}: 이어받기 중 오류(${r.error}) — 그때까지 추출분만 업로드했어요`; }
+      if (accCsv) { await uploadTextCsv(ctx, { work: label, pivo, of, to, csv: accCsv, missing: accMissing, sheetRows: accSheetRows }); return `${label}: 이어받기 중 오류(${r.error}) — 그때까지 추출분만 업로드했어요`; }
       return `${label} ${from}~${to}화 텍스트 추출 실패: ${r.error}` + (r.candidates ? `\n후보: ${r.candidates.join(" / ")}` : "");
     }
     const body = accCsv ? r.csv.split("\n").slice(1).join("\n") : r.csv;       // 이어받기 청크는 헤더 제거
     const acc = accCsv ? (body ? accCsv + "\n" + body : accCsv) : r.csv;
     const missing = [...accMissing, ...r.missing];
+    const sheetRows = [...accSheetRows, ...r.sheetRows];
     if (!r.done && r.nextFrom && r.nextFrom <= parseInt(to, 10)) {              // 남음 → 진행 알림 + 자동 이어받기
       await workerPost(ctx, `⏳ ${r.work} ${of}~${to}화 텍스트 추출 중… ${r.nextFrom - 1}화까지 완료, 이어서 진행할게요`);
-      enqueueJob(makeTextExportJob({ pivo, projectName, from: String(r.nextFrom), to, stage, label: r.work || label, ctx, accCsv: acc, origFrom: of, accMissing: missing }));
+      enqueueJob(makeTextExportJob({ pivo, projectName, from: String(r.nextFrom), to, stage, label: r.work || label, ctx, accCsv: acc, origFrom: of, accMissing: missing, accSheetRows: sheetRows }));
       return null;
     }
-    await uploadTextCsv(ctx, { work: r.work || label, pivo: r.pivo || pivo, of, to, csv: acc, missing });   // 완료 → 최종 업로드
+    await uploadTextCsv(ctx, { work: r.work || label, pivo: r.pivo || pivo, of, to, csv: acc, missing, sheetRows });   // 완료 → 최종 업로드
     return null;
   } };
 }
-async function uploadTextCsv(ctx, { work, pivo, of, to, csv, missing }) {
+// QA 대조(원문/번역문) 참조 시트 — 작품별 탭에 0~20화 초도 텍스트를 CSV와 같은 형태로 반영. 게이트 없이 바로 실행.
+const QA_REFERENCE_SHEET_ID = "1S-uVQHqkiXFT9QOq7GO8RJHrz1xqb7Fw22sJZwB0grk";
+const QA_REFERENCE_HEADER = ["project_uuid", "project_name", "화수", "JOB명", "페이지번호", "텍박번호", "원문", "번역문"];
+async function uploadTextCsv(ctx, { work, pivo, of, to, csv, missing, sheetRows = [] }) {
   const rows = Math.max(0, String(csv || "").split("\n").length - 1);
   if (!rows) { await workerPost(ctx, `⚠️ ${work} ${of}~${to}화: 추출된 텍스트가 없어요${missing.length ? ` (누락 ${missing.length}화)` : ""}`); return; }
   const title = `PIVO_${pivo || "?"}_${of}-${to}화_텍스트`.replace(/[\\/:*?"<>|]/g, "_");
   const missingNote = missing.length ? `\n누락 ${missing.length}화: ${missing.map((m) => `${m.episode}(${m.reason})`).join(", ")}` : "";
   await ctx.client.files.uploadV2({ channel_id: ctx.channel, thread_ts: ctx.threadTs || ctx.ts, initial_comment: `📄 ${work} ${of}~${to}화 텍스트 (${rows}행)${missingNote}`, file_uploads: [{ file: Buffer.from(csv, "utf8"), filename: `${title}.csv` }] });
+  const ofN = parseInt(of, 10), toN = parseInt(to, 10);
+  if ((ofN === 0 || ofN === 1) && toN === 20 && sheetRows.length) {
+    try {
+      const tabTitle = String(work || "").replace(/[\[\]\\/?*]/g, "_").slice(0, 100);
+      const { tabCreated } = await appendSheetRows(QA_REFERENCE_SHEET_ID, tabTitle, QA_REFERENCE_HEADER, sheetRows);
+      await workerPost(ctx, `📋 QA 대조 시트 "${tabTitle}" 탭에 ${sheetRows.length}행 ${tabCreated ? "생성" : "추가"}했어요`);
+    } catch (e) {
+      await workerPost(ctx, `⚠️ QA 대조 시트 반영 실패: ${e?.message ?? e}`);
+    }
+  }
 }
 
 // findProject 검색 결과가 여럿일 때(동명/구표기 프로젝트 중복) 되묻지 않고 [PV-정식6자리] 태그 붙은 것 하나로 자동 특정.
@@ -3405,6 +3441,17 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
         { type: "actions", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "🔍 설정집 검수" }, action_id: "setjip_run_review", value: posted.ts }] },
       ],
     }).catch((e) => console.error("[setjip_confirm] 검수 버튼 게시 실패:", e?.message ?? e));
+    // 번역 작업자가 실제 지정돼 있을 때만 AI검수 툴용 인증번호 발급(플레이스홀더 "프리랜서 배정"이면 담당자 미확정이라 스킵).
+    const translatorName = (p.translator || "").trim();
+    if (translatorName && translatorName !== "프리랜서 배정") {
+      try {
+        const aiToken = await issueSetjipAiToken({ translator: translatorName, pivo: p.e?.pivo || "", work: p.work });
+        await client.chat.postMessage({
+          channel: p.channel, thread_ts: posted.ts, ...SENDER,
+          text: `🔑 *AI検査 認証番号*: \`${aiToken.code}\`\n設定集の自己検査ツールに入力してご利用ください（使用回数上限 ${aiToken.limit}回、超過後は無効になります）。`,
+        }).catch((e) => console.error("[setjip_confirm] AI검수 인증번호 안내 게시 실패:", e?.message ?? e));
+      } catch (e) { console.error("[setjip_confirm] AI검수 인증번호 발급 실패:", e?.message ?? e); }
+    }
     // ★요청 생성 시점부터 완료·원본체크 버튼을 바로 붙여둠(2026-07-28) — 나중에 댓글 키워드/파일공유로
     // 감지하는 것보다, 실제 그 일이 일어난 순간 재상 님이 직접 누르는 게 훨씬 결정적이라 트리거 자체가 필요없어짐.
     // (기존 스레드는 이 버튼이 없으니 그대로 댓글 키워드 감지 경로로 처리됨 — 그건 안 건드림)

@@ -160,6 +160,8 @@ export async function extractEpisodeRange({ pivo = null, projectName = null, fro
   const order = stage && STAGE_BY_NAME[stage] ? [{ code: STAGE_BY_NAME[stage], name: stage }] : STAGE_ORDER;
   // 스키마(사용자 지정): project_uuid, project_name(정제명), job_index, job_name, file_name, text_box_order, text(일본어 번역문)
   const rows = [["project_uuid", "project_name", "job_index", "job_name", "file_name", "text_box_order", "text"]];
+  // QA 대조 시트용 별도 스키마: project_uuid, project_name, 화수, JOB명, 페이지번호, 텍박번호, 원문, 번역문
+  const sheetRows = [];
   const episodes = [];
   const missing = [];
   const startedAt = Date.now();
@@ -179,11 +181,15 @@ export async function extractEpisodeRange({ pivo = null, projectName = null, fro
     for (const x of picked.arr) {
       rows.push([proj.uuid, proj.name, jobIndex ?? "", jobName ?? "", x.파일명 ?? "", x.파일내순서 ?? "", String(x.번역문 ?? "")]);
     }
+    for (const p of buildPairs(picked.arr)) {
+      const [page, tb] = p.pb.split("-");
+      sheetRows.push([proj.uuid, proj.name, ep, jobName ?? "", page, tb, p.src, p.tgt]);
+    }
     episodes.push({ episode: ep, stage: picked.stage, count: picked.arr.length });
   }
   const stopped = ep <= toN;   // 예산으로 중단됨(ep가 아직 남음)
   const csv = rows.map((r) => r.map(csvField).join(",")).join("\n");
-  return { work: proj.name, pivo: proj.pivo, from: fromN, to: toN, episodes, missing, totalRows: rows.length - 1, csv, done: !stopped, nextFrom: stopped ? ep : null };
+  return { work: proj.name, pivo: proj.pivo, from: fromN, to: toN, episodes, missing, totalRows: rows.length - 1, csv, sheetRows, done: !stopped, nextFrom: stopped ? ep : null };
 }
 
 // 브레인이 따를 검수 기준 + 출력 템플릿 (추출 결과 앞에 붙여 반환)
