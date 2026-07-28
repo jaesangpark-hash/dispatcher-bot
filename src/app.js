@@ -199,6 +199,7 @@ const DISPATCHER_PROMPT = [
   "- 설정집 검수 실행('이 설정집 검수 실행해줘/검수 돌려줘/검수해줘', 특히 버튼이 없는 옛 설정집 작성 요청 스레드에서): run_setjip_review([thread]). 그 스레드 안에서 부르면 thread 생략. 실제 검수 버튼 클릭과 동일하게 n8n을 직접 트리거하고, 동시에 그 시점 최신 설정집 xlsx도 같은 자리에 바로 첨부한다(file.shared:true). ★검수 판정 결과(문제점 리스트) 자체는 안 준다 — n8n이 잠시 후 개인채널에 직접 올린다. '검수를 요청했다 + 파일 보냈다'까지만 말하고 '검수했다/판정 결과 나왔다'고 단정하지 말 것.",
   "- 설정집 원본 파일 공유('엑셀 파일 줘/설정집 파일 공유해줘/원본 파일 올려줘', 설정집 작성 요청 스레드에서): share_setjip_file([thread]). 그 스레드 안에서 부르면 thread 생략. TOTUS에서 그 시점 최신 xlsx를 받아 스레드에 바로 첨부(게이트 없음, 읽기성 공유라 즉시 실행).",
   "- 설정집 일정 시트 수동 등록('이 PIVO 시트에 등록해줘/설정집 일정에 추가해줘', propose_setjip_request 흐름을 안 거치고 다른 경로로 요청 나갔을 때): register_setjip_schedule(pivo, [thread], [apm]). 설정집 요청 스레드 안에서 부르면 thread 생략. 스레드 본문에서 작품명·APM·제출희망일 자동 인식, 못 찾으면 apm 인자 필수. 이미 등록된 PIVO면 중복 스킵. 게이트 없이 즉시 실행.",
+  "- 설정집 AI검수 인증번호 재발급('OO 인증번호 재발급해줘/번역검수자 인증번호 발급해줘', 한도 초과로 폐기된 뒤 다시 필요할 때, 또는 요청 확인 시점엔 배정현황에 없어서 못 받은 역할 몫을 나중에 발급할 때): reissue_setjip_ai_token(pivo, role, [worker], [thread]). role은 '번역' 또는 '번역검수'. worker 생략하면 배정현황에서 그 역할 담당자를 다시 조회(없으면 에러 — worker로 이름 직접 줘야 함). 설정집 작성 요청 스레드 안에서 부르면 thread 생략, 그 스레드에 바로 게시. 게이트 없이 즉시 실행(발급은 되돌리기 쉬운 저위험 동작).",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
   "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 후 봇이 자동으로 이어서 처리하는 것: ①TOTUS 프로젝트명 가제→FIX 변경 ②출판사 드라이브 링크 시트 한국어 타이틀·APM 채움 ③납품 시트(중일 V5)에 초도 회차만큼 행(1~N화) 생성 — 이 세 가지는 확정 버튼('✅ 프로젝트명+시트 반영') 한 번으로 봇이 직접 쓴다. ④1-3화 번역검수 자동 모니터 등록. 그러니 propose_totus_project·register_translation_monitor를 따로 부르지 말 것(수동 등록 요청 때만 register). ★중요: '내부 시트(한국어 타이틀·납품 행)는 도구로 못 바꾼다/직접 채워야 한다'고 답하지 마라 — 위 버튼 체인으로 봇이 실제로 쓴다(버튼을 안 누르면 안 될 뿐). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★고객사 → APM 릴레이(재상 님이 고객사 메시지를 붙이며 'APM에게 전달/릴레이해줘'류로 요청할 때): 고객사 채널엔 툰식이가 못 들어가서, 재상 님이 고객사 메시지(보통 **일본어**)를 붙여주면 툰식이가 APM에게 대신 전달하는 흐름이다. ①작품 식별(메시지의 일/중 타이틀 → get_work_info로 **한국어 작품명·담당 APM** 확인) ②요청 유형 파악(원본 교체 / 식자본 선납품 / 번역 JPG 공유 등) → **재상 님 대화체 톤**으로 APM 릴레이 초안을 만들어 send_message로 발송 제안(target=재팬_요청 `C09B8QHP7D4`, 본문 맨 앞 `<@담당APM>` + 끝에 `cc <@U04463JR4HH>`). ★톤(엄수): 굵은 제목·불릿·정형 필드 금지, 자연스러운 대화체. 예 — `<@APM>` 줄 / `<작품> N화 {요청}이 필요합니다.` / `{맥락 한 줄}, …부탁 드립니다.` / `{마감/확인} 가능할까요?`. 링크는 슬랙 마스킹 `<url|라벨>`(생 URL 나열 금지). ★원본 교체 요청이면 원본 링크(고객사가 준 baidu 등)+프로젝트 링크(get_project_url)를 `<url|원본 링크> / <url|프로젝트 링크>`로, 식자·식자검수 담당(작업자 DB)도 함께. 그 외 유형은 요청 내용만 담백하게. 담당 APM이 애매하면 한 줄 되묻기. 게이트(버튼)—'보냈다' 단정 금지.",
@@ -444,11 +445,22 @@ const SETJIP_SCHEDULE_SHEET = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
 const SETJIP_SCHEDULE_TAB = "설정집 일정";
 let _setjipTabEnsured = false;
 // ── 설정집 AI검수(번역가 자가검수 툴) 인증번호 발급(2026-07-28): 등록된 인증번호만 review-engine 호출 허용, n8n(sekkei-web-check)이 소비/폐기 처리 ──
+// 열: A토큰 B작업자명 C역할 D pivo_id E작품명 F제출희망일 G완료여부 H발급일 I사용횟수 J최근사용일 K상태 L제한
 const SETJIP_AI_TOKEN_TAB = "설정집 AI검수 토큰";
 const SETJIP_AI_TOKEN_DEFAULT_LIMIT = 5;
+const ASSIGNMENT_TAB = "배정 현황";   // 매일 업데이트되는 파이프라인 배정표(같은 스프레드시트) — 번역(H열)/번역검수(J열)/pivo_id(R열)
 let _setjipAiTokenTabEnsured = false;
-// 번역 작업자에게 8자리 인증번호 발급 + 시트 등록. translator가 실제 이름일 때만(플레이스홀더/공란이면 호출하지 않음).
-async function issueSetjipAiToken({ translator, pivo, work }) {
+// pivo_id로 배정현황에서 현재 번역/번역검수 담당자명 조회(매일 갱신되므로 요청 확인 시점의 최신값).
+async function lookupAssignment(pivo) {
+  try {
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${ASSIGNMENT_TAB}!A2:R2000`);
+    const row = (rows || []).find((r) => String(r[17] || "").trim() === String(pivo || "").trim());
+    if (!row) return { translator: "", reviewer: "" };
+    return { translator: String(row[7] || "").trim(), reviewer: String(row[9] || "").trim() };
+  } catch (e) { console.error("[lookupAssignment] 배정현황 조회 실패:", e?.message ?? e); return { translator: "", reviewer: "" }; }
+}
+// 작업자(번역 또는 번역검수) 1명에게 8자리 인증번호 발급 + 시트 등록. 이름이 실제로 있을 때만 호출할 것.
+async function issueSetjipAiToken({ translator, role, pivo, work, submitDate }) {
   if (!_setjipAiTokenTabEnsured) { await ensureTab(SETJIP_SCHEDULE_SHEET, SETJIP_AI_TOKEN_TAB); _setjipAiTokenTabEnsured = true; }
   const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_AI_TOKEN_TAB}!A:A`);
   const row = (rows?.length || 1) + 1;   // 헤더 다음 첫 빈 행
@@ -457,13 +469,33 @@ async function issueSetjipAiToken({ translator, pivo, work }) {
   await setCells(SETJIP_SCHEDULE_SHEET, [
     { a1: `${SETJIP_AI_TOKEN_TAB}!A${row}`, value: code },
     { a1: `${SETJIP_AI_TOKEN_TAB}!B${row}`, value: translator || "" },
-    { a1: `${SETJIP_AI_TOKEN_TAB}!C${row}`, value: pivo || "" },
-    { a1: `${SETJIP_AI_TOKEN_TAB}!D${row}`, value: today },
-    { a1: `${SETJIP_AI_TOKEN_TAB}!E${row}`, value: "0" },
-    { a1: `${SETJIP_AI_TOKEN_TAB}!G${row}`, value: "활성" },
-    { a1: `${SETJIP_AI_TOKEN_TAB}!H${row}`, value: String(SETJIP_AI_TOKEN_DEFAULT_LIMIT) },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!C${row}`, value: role || "" },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!D${row}`, value: pivo || "" },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!E${row}`, value: work || "" },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!F${row}`, value: submitDate || "" },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!G${row}`, value: "FALSE" },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!H${row}`, value: today },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!I${row}`, value: "0" },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!K${row}`, value: "활성" },
+    { a1: `${SETJIP_AI_TOKEN_TAB}!L${row}`, value: String(SETJIP_AI_TOKEN_DEFAULT_LIMIT) },
   ]);
   return { code, limit: SETJIP_AI_TOKEN_DEFAULT_LIMIT };
+}
+// 설정집 작성 완료(고객사 제출) 시 그 pivo의 활성 토큰 전부 즉시 폐기. 반환: 폐기된 행 수.
+async function revokeSetjipAiTokens(pivo) {
+  try {
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_AI_TOKEN_TAB}!A2:L5000`);
+    if (!rows?.length) return 0;
+    const updates = [];
+    rows.forEach((r, i) => {
+      if (String(r[3] || "").trim() === String(pivo || "").trim() && String(r[10] || "").trim() === "활성") {
+        updates.push({ a1: `${SETJIP_AI_TOKEN_TAB}!K${i + 2}`, value: "폐기" });
+        updates.push({ a1: `${SETJIP_AI_TOKEN_TAB}!G${i + 2}`, value: "TRUE" });
+      }
+    });
+    if (updates.length) await setCells(SETJIP_SCHEDULE_SHEET, updates);
+    return updates.length / 2;
+  } catch (e) { console.error("[revokeSetjipAiTokens] 토큰 폐기 실패:", e?.message ?? e); return 0; }
 }
 // "7/24(金) 오전 중" 같은 표시용 문자열 → 비교용 ISO 날짜("2026-07-24"). 이미 지난 월/일이면 내년으로 보정(연말 경계 대비).
 function submitDateToISO(s) {
@@ -1888,6 +1920,50 @@ const apmTools = createSdkMcpServer({
             { a1: `${SETJIP_SCHEDULE_TAB}!J${row}`, value: "FALSE" },
           ]);
           return { content: [{ type: "text", text: JSON.stringify({ registered: true, pivo: pivoNum, work, apm: apmName, submitDate, deadlineISO }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: false } }),
+    tool("reissue_setjip_ai_token",
+      "설정집 AI검수 툴(自己検査) 인증번호를 새로 발급/재발급한다('OO 인증번호 재발급해줘/번역검수자 인증번호 발급해줘'). 한도 초과로 폐기된 뒤 다시 필요하다고 할 때, 또는 설정집 작성 요청 확인 시점엔 배정현황에 아직 없어서 못 준 역할(주로 번역검수) 몫을 나중에 발급할 때 사용. 설정집 작성 요청 스레드 안에서 부르면 thread 생략 가능(그 스레드에 바로 게시). 게이트 없이 즉시 실행(발급은 되돌리기 쉬운 저위험 동작).",
+      {
+        pivo: z.string().describe("작품 PIVO 번호(숫자만)"),
+        role: z.enum(["번역", "번역검수"]).describe("어느 역할에게 발급할지"),
+        worker: z.string().optional().describe("작업자명(생략하면 배정현황에서 그 역할 담당자를 다시 조회, 못 찾으면 에러)"),
+        thread: z.string().optional().describe("게시할 스레드의 슬랙 링크(permalink). 생략하면 지금 대화 중인 스레드를 그대로 쓴다."),
+      },
+      async ({ pivo, role, worker, thread }) => {
+        try {
+          const ctx = currentCtx;
+          let channel = ctx?.channel, ts = ctx?.ts;
+          if (thread) {
+            const p = parseSlackLink(thread);
+            if (!p) return { content: [{ type: "text", text: JSON.stringify({ error: `스레드 링크를 못 읽음: ${thread}` }) }] };
+            if (p.channel) channel = p.channel;
+            ts = p.ts;
+          }
+          const pivoNum = String(pivo).match(/\d{4,}/)?.[0] || String(pivo).trim();
+
+          let finalWorker = (worker || "").trim();
+          if (!finalWorker) {
+            const assign = await lookupAssignment(pivoNum);
+            finalWorker = role === "번역" ? assign.translator : assign.reviewer;
+          }
+          if (!finalWorker) return { content: [{ type: "text", text: JSON.stringify({ error: `배정현황에 ${role} 담당자가 아직 없음 — worker 인자로 이름을 직접 줘라.` }) }] };
+
+          const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:O2000`);
+          const row = (rows || []).find((r) => String(r[2] || "").trim() === pivoNum);
+          const work = row?.[1] || pivoNum;
+          const submitDate = row?.[4] || "";
+
+          const issued = await issueSetjipAiToken({ translator: finalWorker, role, pivo: pivoNum, work, submitDate });
+
+          if (channel && ts) {
+            await ctx.client.chat.postMessage({
+              channel, thread_ts: ts, ...SENDER,
+              text: `🔑 *AI検査 認証番号(再発給)*\n• ${role}(${finalWorker}) : \`${issued.code}\` (${issued.limit}회)\n設定集の自己検査ツールに入力してご利用ください。`,
+            }).catch((e) => console.error("[reissue_setjip_ai_token] 게시 실패:", e?.message ?? e));
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ issued: true, pivo: pivoNum, work, role, worker: finalWorker, code: issued.code, limit: issued.limit, posted: !!(channel && ts) }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: false } }),
@@ -3441,17 +3517,32 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
         { type: "actions", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "🔍 설정집 검수" }, action_id: "setjip_run_review", value: posted.ts }] },
       ],
     }).catch((e) => console.error("[setjip_confirm] 검수 버튼 게시 실패:", e?.message ?? e));
-    // 번역 작업자가 실제 지정돼 있을 때만 AI검수 툴용 인증번호 발급(플레이스홀더 "프리랜서 배정"이면 담당자 미확정이라 스킵).
-    const translatorName = (p.translator || "").trim();
-    if (translatorName && translatorName !== "프리랜서 배정") {
-      try {
-        const aiToken = await issueSetjipAiToken({ translator: translatorName, pivo: p.e?.pivo || "", work: p.work });
+    // AI검수 툴용 인증번호 발급 — 배정현황(매일 갱신)에서 번역/번역검수 담당자를 조회, 각각 있는 만큼만 발급.
+    // 번역은 배정현황에 없으면 요청 시 지정한 이름으로 대체(플레이스홀더 "프리랜서 배정"이면 스킵). 번역검수는 대체 소스가 없어 배정현황 미기재 시 스킵.
+    try {
+      const pivo = p.e?.pivo || "";
+      const translatorName = (p.translator || "").trim();
+      const assign = await lookupAssignment(pivo);
+      const finalTranslator = assign.translator || (translatorName && translatorName !== "프리랜서 배정" ? translatorName : "");
+      const finalReviewer = assign.reviewer || "";
+      const issuedLines = [];
+      if (finalTranslator) {
+        const t = await issueSetjipAiToken({ translator: finalTranslator, role: "번역", pivo, work: p.work, submitDate: p.e?.submit_date || "" });
+        issuedLines.push(`• 번역(${finalTranslator}) : \`${t.code}\` (${t.limit}회)`);
+      }
+      if (finalReviewer) {
+        const r = await issueSetjipAiToken({ translator: finalReviewer, role: "번역검수", pivo, work: p.work, submitDate: p.e?.submit_date || "" });
+        issuedLines.push(`• 번역검수(${finalReviewer}) : \`${r.code}\` (${r.limit}회)`);
+      }
+      if (issuedLines.length) {
         await client.chat.postMessage({
           channel: p.channel, thread_ts: posted.ts, ...SENDER,
-          text: `🔑 *AI検査 認証番号*: \`${aiToken.code}\`\n設定集の自己検査ツールに入力してご利用ください（使用回数上限 ${aiToken.limit}回、超過後は無効になります）。`,
+          text: `🔑 *AI検査 認証番号*\n${issuedLines.join("\n")}\n設定集の自己検査ツールに入力してご利用ください。「✅ 完了（顧客提出）」処理と同時に無効化されます。`,
         }).catch((e) => console.error("[setjip_confirm] AI검수 인증번호 안내 게시 실패:", e?.message ?? e));
-      } catch (e) { console.error("[setjip_confirm] AI검수 인증번호 발급 실패:", e?.message ?? e); }
-    }
+      } else {
+        console.log(`[setjip_confirm] AI검수 토큰 미발급(배정 미확정) — pivo=${pivo}`);
+      }
+    } catch (e) { console.error("[setjip_confirm] AI검수 인증번호 발급 실패:", e?.message ?? e); }
     // ★요청 생성 시점부터 완료·원본체크 버튼을 바로 붙여둠(2026-07-28) — 나중에 댓글 키워드/파일공유로
     // 감지하는 것보다, 실제 그 일이 일어난 순간 재상 님이 직접 누르는 게 훨씬 결정적이라 트리거 자체가 필요없어짐.
     // (기존 스레드는 이 버튼이 없으니 그대로 댓글 키워드 감지 경로로 처리됨 — 그건 안 건드림)
@@ -3512,8 +3603,10 @@ app.action("setjip_revision_done", async ({ ack, body, client }) => {
     ]);
     const r = rows[rowIdx];
     const work = r[1] || pivo;
+    const revokedCount = await revokeSetjipAiTokens(pivo);   // 설정집 작성 완료 시점 = AI검수 토큰 전부 즉시 폐기
     const blocks = buildSetjipProgressBlocks({ work, pivo, revisionDone: true, revisionDate: today, genkoDone: !!String(r[14] || "").trim(), genkoDate: r[14] || "" });
     await client.chat.update({ channel, ts, text: `설정집 진행 체크 — ${work}`, blocks }).catch(() => reply(`✅ 완료 처리했어요 — ${work}`));
+    if (revokedCount) await reply(`🔒 AI검수 인증번호 ${revokedCount}건 폐기 처리했어요.`);
   } catch (e) { await reply(`❌ 완료 처리 실패: ${e?.message ?? e}`); }
 });
 // 원본 체크리스트 확인(재상 님이 직접 확인) 버튼 — O열에 확인일 기록.
