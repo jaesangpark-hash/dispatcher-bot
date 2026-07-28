@@ -3695,8 +3695,15 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
               ] },
             ],
           });
+        } else {
+          // ★조용히 건너뛰지 않기(2026-07-28) — 사용자가 "왜 버튼이 안 나오지" 헷갈리는 사고 있었음.
+          const missing = [!d?.projectUuid && "TOTUS 견적 조회 실패(재시도 필요)", !ja && "일본어 가제 확인 안 됨", !ko && "한국어 타이틀 없음", ko?.startsWith("(미정") && "한국어 타이틀 미정"].filter(Boolean);
+          await reply(`⚠️ TOTUS 프로젝트명+시트 반영 제안을 못 만들었어요(${missing.join(", ") || "원인 불명"}) — propose_totus_project로 직접 요청하거나 다시 시도해줘.`);
         }
-      } catch (e) { console.error("[transstart→proj] 실패:", e?.message ?? e); }
+      } catch (e) {
+        console.error("[transstart→proj] 실패:", e?.message ?? e);
+        await reply(`⚠️ TOTUS 프로젝트명+시트 반영 제안 준비 중 오류: ${e?.message ?? e} — propose_totus_project로 직접 요청하거나 다시 시도해줘.`);
+      }
     }
     // 후속2: 1-3화 번역검수 자동 모니터 등록(n8n). PIVO 있고 N8N_WEBHOOK_BASE 설정 시.
     if (p.pivo && process.env.N8N_WEBHOOK_BASE) {
