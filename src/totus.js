@@ -75,6 +75,11 @@ export const jobProcesses = (projectUuid) => getJSON(`/projects/${projectUuid}/j
 export const deliveryWorkProcesses = (projectUuid) => getJSON(`/projects/${projectUuid}/delivery-work-processes`);
 // #24 에피소드별 원본(소스) 파일 + 다운로드URL(서명, cf.totus.pro). episodes="1" 또는 "1,2,3"
 export const deliverySourceGroups = (projectUuid, episodes) => getJSON(`/projects/${projectUuid}/delivery-source-groups`, { episodes });
+// ★delivery-source-groups는 s3URL(원시 S3 경로)만 주고 다운로드URL(서명)이 없음(2026-07-28 확인, API 변경으로 추정) — 원본 파일 링크는 아래 태스크 단위 엔드포인트로 받을 것.
+// #25 태스크(식자/식자검수)의 원본 파일 — 미납품(에디터 작업중)분. 다운로드URL(서명) 포함.
+export const editorFiles = (taskUuid) => getJSON(`/tasks/${taskUuid}/editor-files`);
+// #26 태스크(식자/식자검수)의 원본 파일 — 이미 납품된 분. format: psd|jpg|ori|all
+export const deliveryFiles = (taskUuid, format = "all") => getJSON(`/tasks/${taskUuid}/delivery-files`, { format });
 
 // ── 쓰기(MUTATION) — JobProcess 납품예정일 일괄 변경 ────────────────
 // ★실제 변경. 봇의 게이트(확인 버튼) 핸들러에서만 호출할 것 (LLM 도구로 직접 노출 금지).

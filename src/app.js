@@ -2669,6 +2669,15 @@ async function sourceFilesFor(work, episode, page) {
   }
   // ★서명 URL에 개행/공백이 섞여 오면 <url|라벨> 마스킹이 깨진다(그 링크만 raw로 튐) → URL 공백 전부 제거.
   const clean = (u) => String(u || "").replace(/\s+/g, "");
+  // ★TOTUS delivery-source-groups API가 다운로드URL 필드를 안 주는 경우 확인됨(2026-07-28, s3URL만 옴 — API 쪽 회귀로 추정).
+  // URL 없이 <|파일명> 형태로 깨진 링크를 그대로 포스트하지 않도록 방어.
+  const missingUrl = out.filter((f) => !clean(f.url));
+  if (missingUrl.length) {
+    return {
+      found: false, work: projName, episode,
+      msg: `${episode}화 원본 파일 ${missingUrl.length}건은 찾았는데 다운로드 링크를 못 받음(TOTUS API 문제로 보임 — s3URL만 오고 서명된 다운로드URL이 안 옴). 파일: ${missingUrl.map((f) => f.file).join(", ")}`,
+    };
+  }
   const slackLinks = out.map((f) => `<${clean(f.url)}|${f.file}>`).join(" · ");
   return { found: true, work: projName, episode, page: page || "전체", 파일수: out.length, slackLinks, files: out.map((f) => ({ ...f, url: clean(f.url) })) };
 }
