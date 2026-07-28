@@ -701,6 +701,45 @@ function toYMD(s) {
   const m = String(s ?? "").match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
   return m ? `${m[1]}-${String(+m[2]).padStart(2, "0")}-${String(+m[3]).padStart(2, "0")}` : "";
 }
+// TOTUS 프로젝트명 가제→FIX + 출판사 시트 + 납품 시트 초도행 — 한 번에 제안(게이트). 번역개시 발송 직후 자동 호출 + 수동 재시도(propose_totus_sheets_sync)에서도 공용.
+// 규칙: 이름=[PV-id] [Piccoma중일] {일본어 가제(仮제거)}(한국어). 실패해도 이유를 반드시 알려야 함(2026-07-28 조용히 스킵되던 사고).
+async function proposeTotusProjectAndSheets({ pivo, koTitle, apmId, firstEpisode, firstDeliveryRaw, firstDelivery, client, channel, threadTs }) {
+  try {
+    const w = await lookupWork(pivo);
+    const ja = String(w?.jaTitle || "").replace(/[（(]\s*仮\s*[）)]\s*$/, "").trim();
+    const ko = String(koTitle || "").trim();
+    const q = await quotationByPivo(pivo).catch(() => null);
+    const d = Array.isArray(q?.data) ? q.data[0] : null;
+    if (!(d?.projectUuid && ja && ko && !ko.startsWith("(미정"))) {
+      const missing = [!d?.projectUuid && "TOTUS 견적 조회 실패(재시도 필요)", !ja && "일본어 가제 확인 안 됨", !ko && "한국어 타이틀 없음", ko?.startsWith("(미정") && "한국어 타이틀 미정"].filter(Boolean);
+      return { ok: false, missing };
+    }
+    const newName = `[PV-${pivo}] [Piccoma중일] ${ja}(${ko})`;
+    const apmName = USER_NAMES[apmId] || "";   // 출판사/납품 시트 APM 이름용
+    const pjId = `proj_${++totusProjSeq}`;
+    // 납품 시트(중일 V5) 초도 회차 행 생성용 — 회차 수·초도납품일(YMD)이 확인될 때만.
+    const epN = parseInt(String(firstEpisode).replace(/[^\d]/g, ""), 10);
+    const deliveryYMD = toYMD(firstDeliveryRaw || firstDelivery);
+    const delivery = (Number.isFinite(epN) && epN >= 1 && epN <= 200 && deliveryYMD)
+      ? { publisher: "카카오픽코마", work: ko, pm: "박재상", apm: apmName, order: "ZH-CN2JA", deliveryYMD, episodes: epN } : null;
+    // sheet: 확정 시 TOTUS 이름 변경 → 출판사 시트 A(APM)·C(한국어) → 납품 시트 초도행까지.
+    pendingTotusProj.set(pjId, { projectUuid: d.projectUuid, projectName: d.projectName || "", steps: [{ name: newName }], label: `이름 → *${newName}*`, sheet: { pivo, apmName, koTitle: ko, delivery }, createdAt: Date.now() });
+    const delvLine = delivery
+      ? `\n• 납품 시트: *1~${epN}화* ${epN}개 행 생성 (고객사 카카오픽코마 · PM 박재상${apmName ? ` · APM ${apmName}` : ""} · 납품일 ${deliveryYMD})`
+      : "\n• 납품 시트: (초도 회차/납품일 미확인 — 행 생성 생략)";
+    await client.chat.postMessage({
+      channel, thread_ts: threadTs, ...SENDER, text: "TOTUS 프로젝트명 + 시트 반영 제안",
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: `🛠 *TOTUS 프로젝트명* + *출판사 시트* + *납품 시트*를 FIX로 반영할까요?\n• 프로젝트명: \`${newName}\`\n• 출판사 시트: 한국어 *${ko}*${apmName ? ` · 담당 APM *${apmName}*` : " · (APM 미상 — A열 생략)"}${delvLine}` } },
+        { type: "actions", elements: [
+          { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 프로젝트명+시트 반영" }, value: pjId, action_id: "proj_confirm" },
+          { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: pjId, action_id: "proj_cancel" },
+        ] },
+      ],
+    });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e?.message ?? String(e) }; }
+}
 // 번역 개시 요청 메시지 본문(고정 포맷). preview=true면 APM 멘션을 핑 안 가게 코드로 표기.
 function buildTransStartText(p, preview = false) {
   const head = p.apmId ? (preview ? `\`@${p.apmId}\` ` : `<@${p.apmId}> `) : "";
@@ -2141,6 +2180,35 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: String(e?.message ?? e), note: "전송 중 오류/타임아웃. 사용자에게 문제를 알리고 잠시 후 재시도 안내." }) }] }; }
       },
       { annotations: { readOnlyHint: false } }),
+    tool("propose_totus_sheets_sync",
+      "번역 개시 요청은 이미 보냈는데(propose_translation_start) 그 뒤에 자동으로 붙었어야 할 'TOTUS 프로젝트명+출판사 시트+납품 시트' 제안이 안 나왔거나 실패했을 때, 그 부분만 다시 단독으로 제안한다(게이트: 미리보기+✅). 번역 개시 요청을 다시 보낼 필요 없음. pivo와 ko_title(합의된 한국어 타이틀)만 있으면 되고, 초도 회차·납품일은 TOTUS 견적에서 자동 조회(수동 지정도 가능). '○○ TOTUS 프로젝트명이랑 시트 반영해줘/그 부분만 다시 보내줘' 류.",
+      {
+        pivo: z.string().describe("PIVO ID"),
+        ko_title: z.string().describe("합의된 한국어 타이틀"),
+        apm_user_id: z.string().optional().describe("담당 APM Slack ID(있으면 출판사 시트 APM 칸도 채움, 없으면 생략)"),
+        first_episode: z.string().optional().describe("초도 회차 수동 지정(생략 시 TOTUS 견적에서 자동)"),
+        first_delivery_date: z.string().optional().describe("초도 납품일 수동 지정(생략 시 TOTUS 견적에서 자동)"),
+      },
+      async ({ pivo, ko_title, apm_user_id, first_episode, first_delivery_date }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const ctx = currentCtx;
+          if (!ctx?.client || !ctx?.channel) return { content: [{ type: "text", text: JSON.stringify({ error: "맥락을 못 잡음. 다시 불러줘." }) }] };
+          let firstEpisode = first_episode?.trim() || "", firstDeliveryRaw = "";
+          if (!firstEpisode || !first_delivery_date) {
+            const q = await quotationByPivo(pivo).catch(() => null);
+            const d = Array.isArray(q?.data) ? q.data[0] : null;
+            if (d) {
+              firstDeliveryRaw = d["초도작업_납품목표일"] || "";
+              if (!firstEpisode) firstEpisode = String(d["초도작업_총작업량표시"] || d["초도작업_총작업량"] || "").replace(/화$/, "").trim();
+            }
+          }
+          const r = await proposeTotusProjectAndSheets({ pivo, koTitle: ko_title, apmId: apm_user_id, firstEpisode, firstDeliveryRaw, firstDelivery: first_delivery_date, client: ctx.client, channel: ctx.channel, threadTs: ctx.ts });
+          if (!r.ok) return { content: [{ type: "text", text: JSON.stringify({ error: r.error || `제안 생성 실패(${(r.missing || []).join(", ")})` }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, note: "제안+버튼을 보냈음. ✅ 눌러야 실제 반영. '반영했다'고 단정하지 말 것." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("propose_totus_project",
       "TOTUS 프로젝트의 이름(name) 또는 상태(action)를 변경하도록 '제안'한다(게이트형: 미리보기+✅버튼, 누르면 실제 변경). 작품(work) 또는 PIVO로 프로젝트를 찾고, action(상태) 또는 name(새 프로젝트명) 중 하나를 바꾼다(한 번에 하나). action: hold(홀드)·unhold(홀드해제)·process(진행)·pause(일시정지)·complete(완료)·cancel(취소). '○○ 홀드해줘/완료처리/취소', '○○ 프로젝트명 △△로 바꿔줘' 류. 프로젝트명 변경은 검수 후 가제→FIX 적용의 TOTUS 부분(시트는 별도). 절대 '바꿨다'고 단정하지 말 것(버튼 눌러야 반영).",
       {
@@ -2448,7 +2516,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__register_setjip_schedule", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__register_setjip_schedule", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
@@ -3663,47 +3731,10 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
     if (!attached) await client.chat.postMessage({ channel: p.channel, thread_ts: p.threadTs, text, ...SENDER });
     appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "transstart", channel: p.channel, threadTs: p.threadTs, pivo: p.pivo, files: attached, text }) + "\n");
     await reply(`✅ 번역 개시 요청을 <#${p.channel}> 설정집 스레드에 발송했어요.${attached ? ` (첨부 ${attached}개 포함)` : " (첨부 파일은 직접 올려 주세요)"}`);
-    // 후속: TOTUS 프로젝트명 가제→FIX 자동 제안(게이트). 규칙=[PV-id] [Piccoma중일] {일본어 가제(仮제거)}(한국어). PIVO 있을 때만.
+    // 후속: TOTUS 프로젝트명 가제→FIX + 출판사/납품 시트 자동 제안(게이트). PIVO 있을 때만.
     if (p.pivo) {
-      try {
-        const w = await lookupWork(p.pivo);
-        const ja = String(w?.jaTitle || "").replace(/[（(]\s*仮\s*[）)]\s*$/, "").trim();
-        const ko = String(p.koTitle || "").trim();
-        const q = await quotationByPivo(p.pivo).catch(() => null);
-        const d = Array.isArray(q?.data) ? q.data[0] : null;
-        if (d?.projectUuid && ja && ko && !ko.startsWith("(미정")) {
-          const newName = `[PV-${p.pivo}] [Piccoma중일] ${ja}(${ko})`;
-          const apmName = USER_NAMES[p.apmId] || "";   // 출판사/납품 시트 APM 이름용
-          const pjId = `proj_${++totusProjSeq}`;
-          // 납품 시트(중일 V5) 초도 회차 행 생성용 — 회차 수·초도납품일(YMD)이 확인될 때만.
-          const epN = parseInt(String(p.firstEpisode).replace(/[^\d]/g, ""), 10);
-          const deliveryYMD = toYMD(p.firstDeliveryRaw || p.firstDelivery);
-          const delivery = (Number.isFinite(epN) && epN >= 1 && epN <= 200 && deliveryYMD)
-            ? { publisher: "카카오픽코마", work: ko, pm: "박재상", apm: apmName, order: "ZH-CN2JA", deliveryYMD, episodes: epN } : null;
-          // sheet: 확정 시 TOTUS 이름 변경 → 출판사 시트 A(APM)·C(한국어) → 납품 시트 초도행까지.
-          pendingTotusProj.set(pjId, { projectUuid: d.projectUuid, projectName: d.projectName || "", steps: [{ name: newName }], label: `이름 → *${newName}*`, sheet: { pivo: p.pivo, apmName, koTitle: ko, delivery }, createdAt: Date.now() });
-          const delvLine = delivery
-            ? `\n• 납품 시트: *1~${epN}화* ${epN}개 행 생성 (고객사 카카오픽코마 · PM 박재상${apmName ? ` · APM ${apmName}` : ""} · 납품일 ${deliveryYMD})`
-            : "\n• 납품 시트: (초도 회차/납품일 미확인 — 행 생성 생략)";
-          await client.chat.postMessage({
-            channel: chan, thread_ts: thread, ...SENDER, text: "TOTUS 프로젝트명 + 시트 반영 제안",
-            blocks: [
-              { type: "section", text: { type: "mrkdwn", text: `🛠 이어서 *TOTUS 프로젝트명* + *출판사 시트* + *납품 시트*도 FIX로 반영할까요?\n• 프로젝트명: \`${newName}\`\n• 출판사 시트: 한국어 *${ko}*${apmName ? ` · 담당 APM *${apmName}*` : " · (APM 미상 — A열 생략)"}${delvLine}` } },
-              { type: "actions", elements: [
-                { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 프로젝트명+시트 반영" }, value: pjId, action_id: "proj_confirm" },
-                { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: pjId, action_id: "proj_cancel" },
-              ] },
-            ],
-          });
-        } else {
-          // ★조용히 건너뛰지 않기(2026-07-28) — 사용자가 "왜 버튼이 안 나오지" 헷갈리는 사고 있었음.
-          const missing = [!d?.projectUuid && "TOTUS 견적 조회 실패(재시도 필요)", !ja && "일본어 가제 확인 안 됨", !ko && "한국어 타이틀 없음", ko?.startsWith("(미정") && "한국어 타이틀 미정"].filter(Boolean);
-          await reply(`⚠️ TOTUS 프로젝트명+시트 반영 제안을 못 만들었어요(${missing.join(", ") || "원인 불명"}) — propose_totus_project로 직접 요청하거나 다시 시도해줘.`);
-        }
-      } catch (e) {
-        console.error("[transstart→proj] 실패:", e?.message ?? e);
-        await reply(`⚠️ TOTUS 프로젝트명+시트 반영 제안 준비 중 오류: ${e?.message ?? e} — propose_totus_project로 직접 요청하거나 다시 시도해줘.`);
-      }
+      const r = await proposeTotusProjectAndSheets({ pivo: p.pivo, koTitle: p.koTitle, apmId: p.apmId, firstEpisode: p.firstEpisode, firstDeliveryRaw: p.firstDeliveryRaw, firstDelivery: p.firstDelivery, client, channel: chan, threadTs: thread });
+      if (!r.ok) await reply(`⚠️ TOTUS 프로젝트명+시트 반영 제안을 못 만들었어요(${r.missing?.join(", ") || r.error || "원인 불명"}) — "{작품} TOTUS 프로젝트명이랑 시트 반영해줘"로 다시 요청하거나 propose_totus_project로 직접 요청해줘.`);
     }
     // 후속2: 1-3화 번역검수 자동 모니터 등록(n8n). PIVO 있고 N8N_WEBHOOK_BASE 설정 시.
     if (p.pivo && process.env.N8N_WEBHOOK_BASE) {
