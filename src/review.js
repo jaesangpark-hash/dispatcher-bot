@@ -120,7 +120,7 @@ function cleanName(s) { return String(s || "").replace(/\[[^\]]*\]\s*/g, "").tri
 
 function csvField(v) {
   const s = String(v ?? "");
-  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 
 // PIVO ID 또는 TOTUS 프로젝트명 "완전일치"로만 프로젝트 해석 — 납품시트 안 거침, fuzzy(contains) 매칭 없음.
