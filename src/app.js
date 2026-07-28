@@ -3684,10 +3684,16 @@ async function appendDeliveryRows({ publisher, work, pm, apm, order, deliveryYMD
   const TAB = "납품관리시트_Japan(중일 V5)";
   const n = parseInt(String(episodes), 10);
   if (!Number.isFinite(n) || n < 1 || n > 200) return { ok: false, msg: `초도 회차 수가 이상함(${episodes})` };
-  const rows = (await readRangeRO(DID, `${TAB}!A1:G5000`)) || [];
+  // ★2026-07-28 사고: 고정 범위(A1:G5000)가 실제 시트 크기보다 작아서 last를 5000으로 오판 → 5001행부터
+  // 이미 있던 다른 작품(장원 급제를 도와줘 흑표범!) 데이터를 덮어씀. 범위를 훨씬 넉넉히 늘리고,
+  // 실제 쓰기 전 그 구간이 비어있는지 재확인 — 조금이라도 차있으면 절대 쓰지 않고 에러로 중단.
+  const rows = (await readRangeRO(DID, `${TAB}!A1:G50000`)) || [];
   let last = 0;
   for (let i = 0; i < rows.length; i++) { if ((rows[i] || []).some((c) => String(c ?? "").trim() !== "")) last = i + 1; }
   const start = last + 1;   // 마지막 데이터 행 다음
+  const check = (await readRangeRO(DID, `${TAB}!A${start}:G${start + n - 1}`)) || [];
+  const occupied = check.some((r) => (r || []).some((c) => String(c ?? "").trim() !== ""));
+  if (occupied) return { ok: false, msg: `안전장치: ${start}~${start + n - 1}행에 이미 데이터가 있어서 쓰기를 중단함(범위 재확인 필요 — 시트가 5만 행을 넘었을 수 있음).` };
   const updates = [];
   for (let ep = 1; ep <= n; ep++) {
     const r = start + ep - 1;
