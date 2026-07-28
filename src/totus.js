@@ -75,7 +75,9 @@ export const jobProcesses = (projectUuid) => getJSON(`/projects/${projectUuid}/j
 export const deliveryWorkProcesses = (projectUuid) => getJSON(`/projects/${projectUuid}/delivery-work-processes`);
 // #24 에피소드별 원본(소스) 파일 + 다운로드URL(서명, cf.totus.pro). episodes="1" 또는 "1,2,3"
 export const deliverySourceGroups = (projectUuid, episodes) => getJSON(`/projects/${projectUuid}/delivery-source-groups`, { episodes });
-// ★delivery-source-groups는 s3URL(원시 S3 경로)만 주고 다운로드URL(서명)이 없음(2026-07-28 확인, API 변경으로 추정) — 원본 파일 링크는 아래 태스크 단위 엔드포인트로 받을 것.
+// ★delivery-source-groups는 이제 s3URL(원시 S3 경로)만 주고 다운로드URL은 안 줌(2026-07-28 API 변경 확인 — 회귀 아니라 의도된 변경, #26으로 개별 발급하는 방식으로 바뀜).
+// #26 다운로드용 Signed URL 발급 — s3Path(s3://...) 하나당 1시간짜리 서명 URL 1개 발급. 내부적으로 totus REST s3/downloadUrl 호출.
+export const filePresignUrl = (s3Path, fileName) => sendJSON("POST", `/files/download-url`, { s3Path, fileName: fileName || "" });
 // #25 태스크(식자/식자검수)의 원본 파일 — 미납품(에디터 작업중)분. 다운로드URL(서명) 포함.
 export const editorFiles = (taskUuid) => getJSON(`/tasks/${taskUuid}/editor-files`);
 // #26 태스크(식자/식자검수)의 원본 파일 — 이미 납품된 분. format: psd|jpg|ori|all

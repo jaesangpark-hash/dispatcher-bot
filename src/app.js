@@ -17,7 +17,7 @@ import { readRange as readRangeRO } from "./sheets.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, retakeTask, setTaskDates, setupXlsxBuffer } from "./totus.js";
+import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl } from "./totus.js";
 import { patchMinRowHeight } from "./xlsxRowHeight.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
@@ -2660,7 +2660,7 @@ async function sourceFilesFor(work, episode, page) {
   const groups = r?.data || [];
   if (!groups.length) return { found: false, work: projName, msg: `${episode}화 원본(소스) 파일을 못 찾음. 회차 표기 확인 필요.` };
   const pageOf = (name) => { const m = String(name).replace(/\.[^.]+$/, "").match(/\d+/g); return m ? parseInt(m[m.length - 1], 10) : null; };
-  const all = groups.flatMap((g) => (g.파일목록 || []).map((f) => ({ episode: g.에피소드, page: pageOf(f.파일이름), file: f.파일이름, ext: f.확장자, url: f.다운로드URL })));
+  const all = groups.flatMap((g) => (g.파일목록 || []).map((f) => ({ episode: g.에피소드, page: pageOf(f.파일이름), file: f.파일이름, ext: f.확장자, url: f.다운로드URL, s3url: f.s3URL })));
   let out = all;
   if (page != null && String(page).trim() !== "") {
     const want = String(page).split(/[,\s]+/).map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
@@ -2669,13 +2669,19 @@ async function sourceFilesFor(work, episode, page) {
   }
   // ★서명 URL에 개행/공백이 섞여 오면 <url|라벨> 마스킹이 깨진다(그 링크만 raw로 튐) → URL 공백 전부 제거.
   const clean = (u) => String(u || "").replace(/\s+/g, "");
-  // ★TOTUS delivery-source-groups API가 다운로드URL 필드를 안 주는 경우 확인됨(2026-07-28, s3URL만 옴 — API 쪽 회귀로 추정).
-  // URL 없이 <|파일명> 형태로 깨진 링크를 그대로 포스트하지 않도록 방어.
+  // ★2026-07-28 API 변경: delivery-source-groups가 더 이상 다운로드URL을 안 주고 s3URL(원시 경로)만 줌.
+  // 다운로드가 필요하면 s3URL을 /files/download-url(#26)에 개별 전달해 서명 URL을 받아야 함 — 파일별로 발급.
+  await Promise.all(out.map(async (f) => {
+    if (clean(f.url)) return;   // 이미 다운로드URL이 있으면(향후 API가 다시 포함시키는 경우 대비) 재발급 스킵
+    if (!f.s3url) return;
+    try { const pr = await filePresignUrl(f.s3url, f.file); f.url = pr?.data?.downloadUrl || ""; }
+    catch (e) { f.presignError = e?.message ?? String(e); }
+  }));
   const missingUrl = out.filter((f) => !clean(f.url));
   if (missingUrl.length) {
     return {
       found: false, work: projName, episode,
-      msg: `${episode}화 원본 파일 ${missingUrl.length}건은 찾았는데 다운로드 링크를 못 받음(TOTUS API 문제로 보임 — s3URL만 오고 서명된 다운로드URL이 안 옴). 파일: ${missingUrl.map((f) => f.file).join(", ")}`,
+      msg: `${episode}화 원본 파일 ${missingUrl.length}건은 찾았는데 다운로드 링크 발급에 실패함(${missingUrl[0]?.presignError || "사유 불명"}). 파일: ${missingUrl.map((f) => f.file).join(", ")}`,
     };
   }
   const slackLinks = out.map((f) => `<${clean(f.url)}|${f.file}>`).join(" · ");
