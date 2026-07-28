@@ -183,7 +183,8 @@ export async function extractEpisodeRange({ pivo = null, projectName = null, fro
     }
     for (const p of buildPairs(picked.arr)) {
       const [page, tb] = p.pb.split("-");
-      sheetRows.push([proj.uuid, proj.name, ep, jobName ?? "", page, tb, p.src, p.tgt]);
+      // TOTUS API가 원문/번역문 줄바꿈에 bare \r을 써서, 시트에 그대로 넣으면 줄바꿈으로 안 잡힘 → \n으로 정규화
+      sheetRows.push([proj.uuid, proj.name, ep, jobName ?? "", page, tb, p.src.replace(/\r\n?/g, "\n"), p.tgt.replace(/\r\n?/g, "\n")]);
     }
     episodes.push({ episode: ep, stage: picked.stage, count: picked.arr.length });
   }
