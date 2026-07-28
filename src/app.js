@@ -1196,9 +1196,13 @@ const apmTools = createSdkMcpServer({
           const base = process.env.N8N_WEBHOOK_BASE ?? "http://localhost:5678";
           const url  = `${base}/webhook/translation-monitor-register`;
           const num  = String(pivoId).match(/\d{4,}/)?.[0] || String(pivoId).trim();   // 'PV-201454' → '201454'
+          // ★모델이 직접 손으로 옮겨적은 workTitle(특히 일본어 원제)이 깨져서 저장된 사고 있었음(2026-07-28) —
+          // 모델 손글씨 대신 TOTUS/works.js에서 검증된 제목을 코드가 직접 조회해서 씀(모델 값은 최후 폴백만).
+          const w = await lookupWork(num).catch(() => null);
+          const verifiedTitle = w?.koTitle || w?.jaTitle || w?.zhTitle || null;
           const body = {
             pivoId:      num,
-            workTitle:   workTitle ?? num,
+            workTitle:   verifiedTitle || workTitle || num,
             episodes:    episodes ?? [1, 2, 3],
             slackUserId: process.env.DISPATCHER_USER_ID ?? "U04463JR4HH",
             ...(deadline ? { deadline } : {}),   // 있으면 전달, 없으면 n8n이 자동 계산
@@ -1214,7 +1218,7 @@ const apmTools = createSdkMcpServer({
             throw new Error(`n8n 응답 ${r.status}: ${t.slice(0, 200)}`);
           }
           const resp = await r.json().catch(() => ({}));
-          return { content: [{ type: "text", text: JSON.stringify({ ok: true, registered: { pivoId: num, workTitle: workTitle ?? num, episodes: episodes ?? [1, 2, 3], deadline: deadline || "(n8n 자동)" }, result: resp }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ ok: true, registered: { pivoId: num, workTitle: body.workTitle, episodes: episodes ?? [1, 2, 3], deadline: deadline || "(n8n 자동)" }, result: resp }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
