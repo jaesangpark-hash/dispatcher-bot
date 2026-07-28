@@ -590,23 +590,26 @@ async function detectSetjipRevisionForward() {
     if (hit) console.log(`[setjip-revision] 신규 감지 ${hit}건`);
   } catch (e) { console.error("[setjip-revision] 실패:", e?.message ?? e); }
 }
-// 요청 스레드에 재상 님이 직접 남긴 댓글이 "수정 요청"인지 LLM으로 판별 + 마감일(있으면) 추출.
-async function classifySetjipRevisionComment(text) {
+// 요청 스레드에 재상 님이 직접 남긴 댓글이 "수정 요청"인지는 LLM 판단(오탐 이력 있음, 2026-07-28) 대신
+// 명시적 키워드로만 감지 — 팀에서 수정 요청 시 실제로 이 표현들을 쓰는 관례라 훨씬 결정적이고 안전함.
+const SETJIP_REVISION_KEYWORDS = ["설정집 수정", "내부 수정", "고객사 수정"];
+function isSetjipRevisionComment(text) {
+  return SETJIP_REVISION_KEYWORDS.some((kw) => String(text || "").includes(kw));
+}
+// 키워드로 이미 수정요청 확정된 댓글에서 마감일만 추출(있으면). 판별 자체는 안 함.
+async function extractSetjipRevisionDeadline(text) {
   const todayISO = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
   const prompt = [
-    "다음은 '중일 설정집 작성 요청' 슬랙 스레드에 재상 님이 남긴 댓글이다.",
-    "이 댓글이 **설정집 파일 내용**(캐릭터명·용어·시스템 메시지·あらすじ 등 설정집 엑셀 안의 텍스트) 수정 요청인지 판단하고, 댓글에 마감일이 명시(또는 '이번주까지'처럼 상대적으로라도 언급)돼 있으면 오늘 날짜 기준으로 절대 날짜(YYYY-MM-DD)로 환산해 추출하라.",
+    "다음은 확정된 설정집 수정요청 댓글이다. 마감일이 명시(또는 '이번주까지'처럼 상대적으로라도 언급)돼 있으면 오늘 날짜 기준 절대 날짜(YYYY-MM-DD)로 환산해 추출하라. 없으면 null.",
     `오늘 날짜(KST): ${todayISO}`,
-    "단순 확인·감사·질문·잡담이면 수정요청이 아니다.",
-    "★같은 스레드라도 원본(원고/PSD 그림) 파일 확인·교체·수정 요청, 납품일/일정 얘기, 다른 화 관련 잡담 등 설정집 파일 내용과 무관한 건 수정요청이 아니다 — '수정'이라는 단어가 있어도 그림/원본/파일 얘기면 false.",
-    'JSON만 출력: {"isRevisionRequest": true|false, "deadline": "YYYY-MM-DD"|null, "reason": "짧게"}',
+    'JSON만 출력: {"deadline": "YYYY-MM-DD"|null}',
     "", "[댓글]", String(text || "").slice(0, 1500),
   ].join("\n");
-  const out = await toollessQuery(prompt, { label: "설정집 수정요청 판별" });
+  const out = await toollessQuery(prompt, { label: "설정집 수정요청 마감일 추출" });
   try {
     const j = JSON.parse((out || "").match(/\{[\s\S]*\}/)?.[0] || "{}");
-    return { isRevisionRequest: Boolean(j.isRevisionRequest), deadline: /^\d{4}-\d{2}-\d{2}$/.test(j.deadline) ? j.deadline : null, reason: j.reason || "" };
-  } catch { return { isRevisionRequest: false, deadline: null, reason: "파싱 실패" }; }
+    return /^\d{4}-\d{2}-\d{2}$/.test(j.deadline) ? j.deadline : null;
+  } catch { return null; }
 }
 // 재상 님이 설정집 요청 스레드(SETJIP_CHANNEL)에 직접 댓글 → 수정요청이면 K/M열 기록 + 완료버튼 알림.
 async function handleSetjipRevisionComment({ message, client }) {
@@ -614,6 +617,7 @@ async function handleSetjipRevisionComment({ message, client }) {
     if (processed.has("sr:" + message.ts)) return;
     processed.add("sr:" + message.ts);
     if (!message.text) return;
+    if (!isSetjipRevisionComment(message.text)) return;   // "설정집 수정"/"내부 수정"/"고객사 수정" 키워드 없으면 시트 조회도 안 함
     const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:N2000`);
     if (!rows?.length) return;
     const rowIdx = rows.findIndex((r) => {
@@ -625,15 +629,14 @@ async function handleSetjipRevisionComment({ message, client }) {
     });
     if (rowIdx < 0) return;   // 이 스레드는 추적 대상 아니거나 이미 감지됨
     const r = rows[rowIdx];
-    const cls = await classifySetjipRevisionComment(message.text);
-    if (!cls.isRevisionRequest) return;
+    const deadline = await extractSetjipRevisionDeadline(message.text);
     const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
     await setCells(SETJIP_SCHEDULE_SHEET, [
       { a1: `${SETJIP_SCHEDULE_TAB}!K${rowIdx + 2}`, value: today },
-      { a1: `${SETJIP_SCHEDULE_TAB}!M${rowIdx + 2}`, value: cls.deadline || "" },
+      { a1: `${SETJIP_SCHEDULE_TAB}!M${rowIdx + 2}`, value: deadline || "" },
     ]);
-    console.log(`[setjip-revision] ${r[1] || r[2]} 수정요청 감지(댓글, 마감:${cls.deadline || "기본"}) → K/M열 기록`);
-    await postSetjipRevisionAlert({ work: r[1] || r[2], pivo: r[2], threadLink: String(r[5] || "").trim(), deadline: cls.deadline });
+    console.log(`[setjip-revision] ${r[1] || r[2]} 수정요청 감지(댓글, 마감:${deadline || "기본"}) → K/M열 기록`);
+    await postSetjipRevisionAlert({ work: r[1] || r[2], pivo: r[2], threadLink: String(r[5] || "").trim(), deadline });
   } catch (e) { console.error("[setjip-revision] 댓글 처리 실패:", e?.message ?? e); }
 }
 // 완료(고객사 제출) 버튼이 붙은 알림 — REMINDER_CHANNEL에 게시.
