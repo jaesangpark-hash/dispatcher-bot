@@ -64,8 +64,8 @@ function buildPairs(arr) {
     prev = x.파일내순서;
     out.push({
       pb: `${page}-${(x.파일내순서 ?? 0) + 1}`,
-      src: String(x.원문 ?? "").replace(/[\r\n]+/g, "\\n"),
-      tgt: String(x.번역문 ?? "").replace(/[\r\n]+/g, "\\n"),
+      src: String(x.원문 ?? ""),
+      tgt: String(x.번역문 ?? ""),
     });
   }
   return out;
@@ -177,7 +177,7 @@ export async function extractEpisodeRange({ pivo = null, projectName = null, fro
     }
     if (!picked) { missing.push({ episode: ep, reason: "텍스트 있는 단계 없음" }); continue; }
     for (const x of picked.arr) {
-      rows.push([proj.uuid, proj.name, jobIndex ?? "", jobName ?? "", x.파일명 ?? "", x.파일내순서 ?? "", String(x.번역문 ?? "").replace(/[\r\n]+/g, "\\n")]);
+      rows.push([proj.uuid, proj.name, jobIndex ?? "", jobName ?? "", x.파일명 ?? "", x.파일내순서 ?? "", String(x.번역문 ?? "")]);
     }
     episodes.push({ episode: ep, stage: picked.stage, count: picked.arr.length });
   }
