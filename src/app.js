@@ -3333,6 +3333,13 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
         { type: "actions", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "🔍 설정집 검수" }, action_id: "setjip_run_review", value: posted.ts }] },
       ],
     }).catch((e) => console.error("[setjip_confirm] 검수 버튼 게시 실패:", e?.message ?? e));
+    // ★요청 생성 시점부터 완료·원본체크 버튼을 바로 붙여둠(2026-07-28) — 나중에 댓글 키워드/파일공유로
+    // 감지하는 것보다, 실제 그 일이 일어난 순간 재상 님이 직접 누르는 게 훨씬 결정적이라 트리거 자체가 필요없어짐.
+    // (기존 스레드는 이 버튼이 없으니 그대로 댓글 키워드 감지 경로로 처리됨 — 그건 안 건드림)
+    await client.chat.postMessage({
+      channel: p.channel, thread_ts: posted.ts, ...SENDER, text: `설정집 진행 체크 — ${p.work}`,
+      blocks: buildSetjipProgressBlocks({ work: p.work, pivo: String(p.e?.pivo || ""), revisionDone: false, revisionDate: "", genkoDone: false, genkoDate: "" }),
+    }).catch((e) => console.error("[setjip_confirm] 진행체크 버튼 게시 실패:", e?.message ?? e));
     const permalink = await client.chat.getPermalink({ channel: p.channel, message_ts: posted.ts }).then((r) => stripPermalinkQuery(r?.permalink)).catch(() => null);
     logSetjipSchedule({ work: p.work, pivo: p.e?.pivo, apmId: p.apmId, submitDate: p.e?.submit_date, threadLink: permalink });
     await reply(`✅ 설정집 작성 요청 게시 완료 → <#${p.channel}> (${p.work})`);
@@ -3357,6 +3364,18 @@ app.action("setjip_run_review", async ({ ack, body, client }) => {
   }
 });
 
+// setjip_revision_done/setjip_genko_check_done 공용 — 두 버튼이 한 메시지에 같이 있어서, 하나 누른다고
+// 메시지 전체를 지우면 안 됨(다른 버튼이 아직 안 눌렸을 수 있음). 현재 상태(L/N, O열) 기준으로 블록 재구성.
+function buildSetjipProgressBlocks({ work, pivo, revisionDone, revisionDate, genkoDone, genkoDate }) {
+  const line1 = revisionDone ? `✅ 완료(고객사 제출) — ${revisionDate}` : "⬜ 완료(고객사 제출) — 아직";
+  const line2 = genkoDone ? `✅ 원본 체크리스트 확인 — ${genkoDate}` : "⬜ 원본 체크리스트 확인 — 아직";
+  const blocks = [{ type: "section", text: { type: "mrkdwn", text: `*${work}*\n${line1}\n${line2}` } }];
+  const buttons = [];
+  if (!revisionDone) buttons.push({ type: "button", style: "primary", text: { type: "plain_text", text: "✅ 완료(고객사 제출)" }, action_id: "setjip_revision_done", value: pivo });
+  if (!genkoDone) buttons.push({ type: "button", text: { type: "plain_text", text: "✅ 원본 체크리스트 확인" }, action_id: "setjip_genko_check_done", value: pivo });
+  if (buttons.length) blocks.push({ type: "actions", elements: buttons });
+  return blocks;
+}
 // 설정집 수정요청 완료(고객사 제출) 버튼 — 완료(L열)+완료일(N열) 기록.
 app.action("setjip_revision_done", async ({ ack, body, client }) => {
   await ack();
@@ -3364,7 +3383,7 @@ app.action("setjip_revision_done", async ({ ack, body, client }) => {
   const channel = body.channel?.id, ts = body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel, thread_ts: ts, text: t, ...SENDER }).catch(() => {});
   try {
-    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:N2000`);
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:O2000`);
     const rowIdx = (rows || []).findIndex((r) => String(r[2] || "").trim() === pivo);
     if (rowIdx < 0) return reply("⚠️ 해당 작품을 '설정집 일정' 시트에서 못 찾았어요(행이 지워졌을 수 있음).");
     const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
@@ -3372,9 +3391,29 @@ app.action("setjip_revision_done", async ({ ack, body, client }) => {
       { a1: `${SETJIP_SCHEDULE_TAB}!L${rowIdx + 2}`, value: "TRUE" },
       { a1: `${SETJIP_SCHEDULE_TAB}!N${rowIdx + 2}`, value: today },
     ]);
-    const work = rows[rowIdx][1] || pivo;
-    await client.chat.update({ channel, ts, text: `✅ 완료 — ${work}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: `✅ *완료(고객사 제출)* — *${work}* (${today})` } }] }).catch(() => reply(`✅ 완료 처리했어요 — ${work}`));
+    const r = rows[rowIdx];
+    const work = r[1] || pivo;
+    const blocks = buildSetjipProgressBlocks({ work, pivo, revisionDone: true, revisionDate: today, genkoDone: !!String(r[14] || "").trim(), genkoDate: r[14] || "" });
+    await client.chat.update({ channel, ts, text: `설정집 진행 체크 — ${work}`, blocks }).catch(() => reply(`✅ 완료 처리했어요 — ${work}`));
   } catch (e) { await reply(`❌ 완료 처리 실패: ${e?.message ?? e}`); }
+});
+// 원본 체크리스트 확인(재상 님이 직접 확인) 버튼 — O열에 확인일 기록.
+app.action("setjip_genko_check_done", async ({ ack, body, client }) => {
+  await ack();
+  const pivo = String(body.actions?.[0]?.value || "").trim();
+  const channel = body.channel?.id, ts = body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel, thread_ts: ts, text: t, ...SENDER }).catch(() => {});
+  try {
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:O2000`);
+    const rowIdx = (rows || []).findIndex((r) => String(r[2] || "").trim() === pivo);
+    if (rowIdx < 0) return reply("⚠️ 해당 작품을 '설정집 일정' 시트에서 못 찾았어요(행이 지워졌을 수 있음).");
+    const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    await setCells(SETJIP_SCHEDULE_SHEET, [{ a1: `${SETJIP_SCHEDULE_TAB}!O${rowIdx + 2}`, value: today }]);
+    const r = rows[rowIdx];
+    const work = r[1] || pivo;
+    const blocks = buildSetjipProgressBlocks({ work, pivo, revisionDone: String(r[11] || "").trim().toUpperCase() === "TRUE", revisionDate: r[13] || "", genkoDone: true, genkoDate: today });
+    await client.chat.update({ channel, ts, text: `설정집 진행 체크 — ${work}`, blocks }).catch(() => reply(`✅ 원본 체크리스트 확인 처리했어요 — ${work}`));
+  } catch (e) { await reply(`❌ 처리 실패: ${e?.message ?? e}`); }
 });
 
 app.action("setjip_cancel", async ({ ack, body, client }) => {
