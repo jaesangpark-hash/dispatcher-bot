@@ -280,14 +280,32 @@ function findCategoryFolders(items, category, isDirFn) {
 const isKuaikanDir = (it) => it?.type === 1;
 const isArthubDir = (it) => it?.type === "directory";
 
-// 이 레벨에 fileType(psd/jpg) 카테고리 폴더가 있는지 확인.
-// 없으면(kind:"direct") 이 레벨 자체가 회차 폴더들의 집합일 수 있다는 뜻 — 호출부가 이어서 판단.
-// 여러 개 걸리면 애매하므로 needsHuman으로 즉시 반환.
-function findEpisodeContainer(list, fileType, isDirFn) {
+// 회차 폴더를 찾는다. 최우선은 "이 레벨 자체가 회차 폴더 집합인가"(직접 매칭) —
+// 폴더명에 "psd"/"jpg"가 접미사로 들어있어도(예: "哥哥第1话psd") 회차 매칭이 우선이라
+// 카테고리 폴더로 오인하지 않는다. 직접 매칭이 안 될 때만 카테고리 폴더/래퍼 폴더로 내려가며
+// 재시도(최대 2단계). 그래도 안 되면 절대 추측하지 않고 needsHuman으로 후보를 그대로 반환.
+async function findEpisodeFolder(listChildren, isDirFn, containerId, episode, fileType, depth = 0) {
+  const list = await listChildren(containerId);
+  const dirs = list.filter(isDirFn);
+
+  const direct = matchByNumber(dirs, episode);
+  if (direct.confident) return { ok: true, folder: direct.item };
+
+  if (depth >= 2) return { ok: false, needsHuman: true, reason: "회차 폴더를 특정 못 함(구조가 예상보다 깊거나 다름)", candidates: list };
+
   const cat = findCategoryFolders(list, fileType, isDirFn);
-  if (cat.length === 1) return { ok: true, kind: "category", folder: cat[0] };
-  if (cat.length > 1) return { ok: false, needsHuman: true, reason: `"${fileType}" 카테고리 폴더가 여러 개 걸림 — 확인 필요`, candidates: cat };
-  return { ok: true, kind: "direct", folder: null };
+  if (cat.length === 1) return findEpisodeFolder(listChildren, isDirFn, cat[0].id, episode, fileType, depth + 1);
+  if (cat.length > 1) {
+    // 카테고리 후보들 중에 혹시 회차번호로 바로 매칭되는 게 있으면(폴더명에 psd/jpg가 접미사로만 붙은 경우) 그걸 채택
+    const among = matchByNumber(cat, episode);
+    if (among.confident) return { ok: true, folder: among.item };
+    return { ok: false, needsHuman: true, reason: `"${fileType}" 카테고리 폴더가 여러 개 걸림 — 확인 필요`, candidates: cat };
+  }
+
+  // 카테고리도 없고 회차도 안 보이면, 하위 폴더가 딱 하나(래퍼, 예: "온라인 원고")일 때만 한 단계 더 내려가봄
+  if (dirs.length === 1) return findEpisodeFolder(listChildren, isDirFn, dirs[0].id, episode, fileType, depth + 1);
+
+  return { ok: false, needsHuman: true, reason: "회차 폴더를 특정 못 함(최상위 구조 확인 필요)", candidates: list };
 }
 
 /**
@@ -298,36 +316,11 @@ function findEpisodeContainer(list, fileType, isDirFn) {
  */
 async function resolveEpisodePage(adapter, rootId, episode, page, fileType = "psd") {
   const { listChildren, isDir, getFile } = adapter;
-  const top = await listChildren(rootId);
 
-  const container = findEpisodeContainer(top, fileType, isDir);
-  if (!container.ok) return container;
+  const epResult = await findEpisodeFolder(listChildren, isDir, rootId, episode, fileType);
+  if (!epResult.ok) return epResult;
 
-  let episodeList;
-  if (container.kind === "category") {
-    episodeList = await listChildren(container.folder.id);
-  } else {
-    const dirs = top.filter(isDir);
-    const tryTop = matchByNumber(dirs, episode);
-    if (tryTop.confident) {
-      episodeList = top; // 최상위가 바로 회차 폴더들 (예: 헤이냐오서 케이스)
-    } else if (dirs.length === 1) {
-      // 래퍼 폴더 하나뿐(예: "온라인 원고") — 한 단계 더 내려가서 재시도
-      const deeper = await listChildren(dirs[0].id);
-      const deeperContainer = findEpisodeContainer(deeper, fileType, isDir);
-      if (!deeperContainer.ok) return deeperContainer;
-      episodeList = deeperContainer.kind === "category" ? await listChildren(deeperContainer.folder.id) : deeper;
-    } else {
-      return { ok: false, needsHuman: true, reason: "회차 폴더를 특정 못 함(최상위 구조 확인 필요)", candidates: top };
-    }
-  }
-
-  const epMatch = matchByNumber(episodeList.filter(isDir), episode);
-  if (!epMatch.confident) {
-    return { ok: false, needsHuman: true, reason: `${episode}화 폴더 매칭 애매/실패`, candidates: epMatch.candidates.length ? epMatch.candidates : episodeList };
-  }
-
-  const pages = await listChildren(epMatch.item.id);
+  const pages = await listChildren(epResult.folder.id);
   const pgMatch = matchByNumber(pages.filter((it) => !isDir(it)), page);
   if (!pgMatch.confident) {
     return { ok: false, needsHuman: true, reason: `${page}페이지 매칭 애매/실패`, candidates: pgMatch.candidates.length ? pgMatch.candidates : pages };
