@@ -3769,7 +3769,8 @@ function buildSetjipText(e, { translator, typesetter, apmId, client_pm }, previe
   const linkify = (u, label) => (u && u.indexOf("http") === 0) ? `🔗 <${u}|${label}>` : (u ? `${label} : ${u}` : null);
   return [
     head, "[중일 설정집 작성 요청]", "다음 작품 설정집 작성 요청 드립니다.", "",
-    `${B}작품명 : ${e.work_title}`, `${B}원제 : ${e.original_title}`, "",
+    `${B}작품명 : ${e.work_title}`, `${B}원제 : ${e.original_title}`,
+    e.pivo ? `${B}PIVO : PV-${e.pivo}` : null, "",
     `${B}고객사 담당자 : ${cp}`,
     `${B}설정집 제출 희망일 : ${e.submit_date}`,
     `${B}초도 납품일 : ${e.delivery_date}`,
@@ -3886,6 +3887,8 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
     if (p.pivo) {
       const r = await proposeTotusProjectAndSheets({ pivo: p.pivo, koTitle: p.koTitle, apmId: p.apmId, firstEpisode: p.firstEpisode, firstDeliveryRaw: p.firstDeliveryRaw, firstDelivery: p.firstDelivery, client, channel: chan, threadTs: thread });
       if (!r.ok) await reply(`⚠️ TOTUS 프로젝트명+시트 반영 제안을 못 만들었어요(${r.missing?.join(", ") || r.error || "원인 불명"}) — "{작품} TOTUS 프로젝트명이랑 시트 반영해줘"로 다시 요청하거나 propose_totus_project로 직접 요청해줘.`);
+    } else {
+      await reply(`⚠️ 이 작품은 설정집 작성 요청 메시지에서 PIVO를 못 찾아서, 프로젝트명+시트 반영 단계는 건너뛰었어요 — "{작품} TOTUS 프로젝트명이랑 시트 반영해줘"로 PIVO 알려주면서 다시 요청해줘.`);
     }
     // 후속2: 1-3화 번역검수 자동 모니터 등록(n8n). PIVO 있고 N8N_WEBHOOK_BASE 설정 시.
     if (p.pivo && process.env.N8N_WEBHOOK_BASE) {
