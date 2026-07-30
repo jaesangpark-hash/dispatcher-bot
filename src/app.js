@@ -1900,7 +1900,8 @@ const apmTools = createSdkMcpServer({
           const adapter = platform === "arthub" ? makeArthubAdapter(token) : makeKuaikanAdapter();
           const r = await resolveEpisodePage(adapter, rootId, episode, page, file_type || "psd");
           if (r.ok) {
-            return { content: [{ type: "text", text: JSON.stringify({ found: true, name: r.name, url: r.url, expiresInSec: r.expiresInSec, note: sourceNote, warn: r.expiresInSec ? `이 링크는 ${r.expiresInSec}초 후 만료되니 바로 전달/사용할 것` : undefined }) }] };
+            const slackLink = `<${r.url}|${r.name || "원본 파일"}>`;
+            return { content: [{ type: "text", text: JSON.stringify({ found: true, name: r.name, url: r.url, slackLink, expiresInSec: r.expiresInSec, note: sourceNote, warn: r.expiresInSec ? `이 링크는 ${r.expiresInSec}초 후 만료되니 바로 전달/사용할 것` : undefined, instruction: "사용자에게 답할 땐 url을 그대로 붙여넣지 말고 slackLink 값을 그대로 사용할 것(Slack에서 파일명이 클릭 가능한 하이퍼링크로 보임)." }) }] };
           }
           const candidateNames = (r.candidates || []).slice(0, 25).map((c) => c.name).filter(Boolean);
           return { content: [{ type: "text", text: JSON.stringify({ found: false, reason: r.reason, candidates: candidateNames, msg: "자동으로 확정 못 했어. 후보 목록을 사용자에게 그대로 보여주고 어떤 게 맞는지 확인받아야 해 — 절대 임의로 하나 골라서 전달하지 말 것." }) }] };
