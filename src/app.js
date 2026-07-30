@@ -21,6 +21,7 @@ import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, t
 import { patchMinRowHeight } from "./xlsxRowHeight.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
+import { detectDrivePlatform, parseDriveUrl, kuaikanSearchRoot, resolveEpisodePage, makeArthubAdapter, makeKuaikanAdapter, KuaikanSessionExpiredError, DriveFileUnsupportedError } from "./drive-download.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
@@ -1858,6 +1859,61 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: false } }),
+    tool("fetch_original_from_drive",
+      "재수급 원본 파일(psd/jpg)을 baidu 제외 드라이브(Kuaikan/arthub)에서 직접 찾아 다운로드 링크를 가져온다('N화 M페이지 원본 psd/jpg 가져와'). work(작품명 또는 PIVO) 또는 url(드라이브 링크 직접 제공) 중 하나 필요 — url을 주면 그걸 우선 쓰고 시트 조회를 건너뜀. 회차/페이지 자동 매칭이 애매하면(후보가 여러 개거나 하나도 안 잡히면) 절대 추측하지 않고 후보 목록을 그대로 반환하니, 그때는 사용자에게 후보를 보여주고 어떤 게 맞는지 확인받은 다음 정확한 이름으로 다시 시도해야 한다 — 후보 중 아무거나 임의로 골라서 전달하면 안 됨. baidu이거나 자동화 대상이 아니면 수동 처리가 필요하다고 안내만 한다. 게이트 없이 즉시 실행(읽기성 조회).",
+      {
+        work: z.string().optional().describe("작품명 또는 PIVO — url이 없을 때 출판사 드라이브 링크 시트에서 찾을 키"),
+        url: z.string().optional().describe("드라이브 링크 직접 제공(Kuaikan/arthub). 있으면 work 없어도 됨, work의 시트 조회보다 우선함"),
+        episode: z.union([z.string(), z.number()]).describe("회차 번호"),
+        page: z.union([z.string(), z.number()]).describe("페이지 번호"),
+        file_type: z.enum(["psd", "jpg"]).optional().describe("파일 형식(생략 시 psd)"),
+      },
+      async ({ work, url, episode, page, file_type }) => {
+        try {
+          if (!work && !url) return { content: [{ type: "text", text: JSON.stringify({ error: "work(작품명/PIVO) 또는 url(드라이브 링크) 중 하나는 필요해." }) }] };
+          let platform, rootId, token, sourceNote;
+          if (url) {
+            const parsed = parseDriveUrl(url);
+            platform = parsed.platform; rootId = parsed.rootId; token = parsed.token;
+            if (!platform) return { content: [{ type: "text", text: JSON.stringify({ error: "이 URL이 어느 플랫폼인지 인식 못 함(Kuaikan/arthub만 지원)." }) }] };
+          } else {
+            const entry = await lookupDriveEntryForWork(work);
+            if (!entry) return { content: [{ type: "text", text: JSON.stringify({ error: `출판사 드라이브 링크 시트에서 '${work}'를 못 찾음.` }) }] };
+            if (entry.driveLink) {
+              const parsed = parseDriveUrl(entry.driveLink);
+              platform = parsed.platform; rootId = parsed.rootId; token = parsed.token;
+            } else if (/kuaikan/i.test(entry.publisher || "")) {
+              platform = "kuaikan";
+              const hits = await kuaikanSearchRoot(entry.originalTitleCH || work);
+              if (hits.length !== 1) {
+                return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: hits.length ? "Kuaikan 검색 결과가 여러 건이라 특정 못 함 — 사용자 확인 필요" : "Kuaikan에서 이 작품을 못 찾음", candidates: hits.slice(0, 5).map((h) => ({ id: h.id, name: h.name })) }) }] };
+              }
+              rootId = hits[0].id;
+              sourceNote = "시트에 링크가 없어서 Kuaikan 이름 검색으로 찾음";
+            } else {
+              return { content: [{ type: "text", text: JSON.stringify({ error: `이 작품 드라이브 링크가 시트에 없고, 자동 검색 대상(Kuaikan)도 아니야 — 판권사: ${entry.publisher || "미상"}. baidu/arthub면 실제 링크를 url로 직접 줘.` }) }] };
+            }
+          }
+          if (platform === "baidu") return { content: [{ type: "text", text: JSON.stringify({ error: "baidu는 웹에서 자동 다운로드가 안 돼(앱 전용) — 사람이 직접 받아야 해." }) }] };
+          if (platform !== "kuaikan" && platform !== "arthub") return { content: [{ type: "text", text: JSON.stringify({ error: `지원하지 않는 플랫폼: ${platform}` }) }] };
+
+          const adapter = platform === "arthub" ? makeArthubAdapter(token) : makeKuaikanAdapter();
+          const r = await resolveEpisodePage(adapter, rootId, episode, page, file_type || "psd");
+          if (r.ok) {
+            return { content: [{ type: "text", text: JSON.stringify({ found: true, name: r.name, url: r.url, expiresInSec: r.expiresInSec, note: sourceNote, warn: r.expiresInSec ? `이 링크는 ${r.expiresInSec}초 후 만료되니 바로 전달/사용할 것` : undefined }) }] };
+          }
+          const candidateNames = (r.candidates || []).slice(0, 25).map((c) => c.name).filter(Boolean);
+          return { content: [{ type: "text", text: JSON.stringify({ found: false, reason: r.reason, candidates: candidateNames, msg: "자동으로 확정 못 했어. 후보 목록을 사용자에게 그대로 보여주고 어떤 게 맞는지 확인받아야 해 — 절대 임의로 하나 골라서 전달하지 말 것." }) }] };
+        } catch (e) {
+          if (e instanceof KuaikanSessionExpiredError) {
+            await dmOwner(`⚠️ Kuaikan 드라이브 세션이 만료된 것 같아요 — 재로그인 후 KUAIKAN_SESSION_COOKIE를 갱신해주세요.`);
+            return { content: [{ type: "text", text: JSON.stringify({ error: "Kuaikan 세션이 만료됐어(재상님께 알림 보냄) — 재로그인 후 다시 시도해야 해." }) }] };
+          }
+          if (e instanceof DriveFileUnsupportedError) return { content: [{ type: "text", text: JSON.stringify({ error: e.message }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("register_setjip_schedule",
       "설정집 요청이 propose_setjip_request 흐름을 거치지 않고 다른 경로로 나갔을 때(재상 님이나 다른 사람이 직접 요청한 경우) '설정집 일정' 시트에 수동으로 등록한다('이 PIVO 시트에 등록해줘/설정집 일정에 추가해줘'). 이 시트에 있어야 마감 리마인드·TOTUS 완료 자동감지·자동검수·수정요청 추적이 전부 돌아간다. 이미 등록된 PIVO면 중복 등록하지 않고 알려준다. 게이트 없이 즉시 실행(추적용 기록 추가일 뿐이라 안전).",
       {
@@ -2632,7 +2688,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__register_setjip_schedule", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__fetch_original_from_drive", "mcp__apm__register_setjip_schedule", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
@@ -3819,6 +3875,33 @@ async function updatePublisherSheet(pivo, apmName, koTitle) {
   if (!updates.length) return { ok: false, msg: "채울 값(APM·한국어) 없음" };
   await setCells(OPS, updates);
   return { ok: true, row: rowNum };
+}
+
+// 출판사 드라이브 링크 시트에서 PIVO 또는 작품명(중/한/일/FIX타이틀)으로 행 찾기.
+// 드라이브 링크 칸에 "수정:" 등으로 URL이 여러 줄 들어있으면 가장 마지막 것을 최신으로 간주.
+async function lookupDriveEntryForWork(query) {
+  const OPS = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
+  const TAB = "출판사 드라이브 링크";
+  const rows = (await readRangeRO(OPS, `${TAB}!A1:I3000`)) || [];
+  const q = String(query || "").trim();
+  if (!q) return null;
+  const toEntry = (r) => {
+    const urls = String(r?.[7] ?? "").match(/https?:\/\/\S+/g) || [];
+    return { pivo: String(r?.[8] ?? "").trim(), publisher: r?.[6] || "", driveLink: urls[urls.length - 1] || "", originalTitleCH: r?.[1] || "" };
+  };
+  const num = q.match(/\d{4,}/)?.[0];
+  if (num) {
+    for (let i = 1; i < rows.length; i++) { if (String(rows[i]?.[8] ?? "").trim() === num) return toEntry(rows[i]); }
+  }
+  const norm = (s) => String(s ?? "").replace(/[\s~～〜〰（）()【】「」『』・,.\-—–:：_]/g, "").toLowerCase();
+  const nq = norm(q);
+  if (nq) {
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i] || [];
+      if ([r[1], r[2], r[3], r[4]].some((v) => v && norm(v).includes(nq))) return toEntry(r);
+    }
+  }
+  return null;
 }
 
 // 납품관리시트_Japan(중일 V5)에 초도 회차만큼 행(1~N화) 추가. 공용 prod 시트라 게이트 통과 후에만 호출.

@@ -93,7 +93,7 @@ function parseDriveUrl(url) {
 }
 
 // ── Kuaikan ──────────────────────────────────────────────
-// 폴더 하위 목록(파일+폴더 섞여서 나옴). type===2가 파일, 그 외는 폴더로 추정(실사용하며 보정 필요).
+// 폴더 하위 목록(파일+폴더 섞여서 나옴). 실측 확인: type:1=폴더, type:2=파일.
 async function kuaikanListChildren(folderId, page = 1, limit = 50) {
   const url = `${KUAIKAN_BASE}/list/new?id=${encodeURIComponent(folderId)}&page=${page}&limit=${limit}`;
   const r = await fetch(url, {
@@ -135,6 +135,28 @@ async function kuaikanGetDownloadUrl(fileId) {
   assertFileIsSafeToProcess({ name: item.name, size: item.size });
   const dlUrl = item.store_location.startsWith("//") ? "https:" + item.store_location : item.store_location;
   return { name: item.name, url: dlUrl, size: item.size || null };
+}
+
+// Kuaikan은 arthub처럼 작품별 공유링크가 없고, 하나의 드라이브(id=0) 안에 작품 폴더가 다 들어있음.
+// 우리 시트에 그 작품의 드라이브 링크가 비어있을 때, 원제(중국어)로 루트에서 이름 검색해 폴더를 찾는 용도.
+// 검색 결과가 1건이 아니면(0건 또는 여러 건) 호출부가 사람 확인으로 넘겨야 함 — 여기서 추측 안 함.
+async function kuaikanSearchRoot(query, page = 1, limit = 50) {
+  const url = `${KUAIKAN_BASE}/list/new?id=0&page=${page}&limit=${limit}&fuzzy_name=${encodeURIComponent(query)}`;
+  const r = await fetch(url, {
+    headers: {
+      accept: "application/json, text/plain, */*",
+      cookie: kuaikanCookie(),
+      language: "korean",
+      logintype: "web",
+      systemtype: "web",
+    },
+    signal: AbortSignal.timeout(15000),
+  });
+  const text = await r.text();
+  const j = assertKuaikanSessionAlive(r, text);
+  if (j.code === 401 || j.code === 403) throw new KuaikanSessionExpiredError(`응답 code=${j.code}`);
+  if (j.code !== 200) throw new Error(`Kuaikan 검색 실패: ${text.slice(0, 200)}`);
+  return (j.data && j.data.sub_dirs) || [];
 }
 
 // ── arthub (로그인 불필요, publictoken=공유링크의 token 값) ──────────
@@ -212,12 +234,24 @@ async function arthubGetDownloadSignature(objectId, token, downloadName, knownSi
   const item = j.result && j.result.items && j.result.items[0];
   if (!item) throw new Error(`arthub 서명URL 발급 실패: ${JSON.stringify(j).slice(0, 200)}`);
   const url = item.signed_url.startsWith("//") ? "https:" + item.signed_url : item.signed_url;
-  return { url, expiresInSec: item.expire || 1200 }; // 20분 정도로 짧음 — 발급 즉시 사용할 것
+  return { name: item.download_name || downloadName || String(objectId), url, expiresInSec: item.expire || 1200 }; // 20분 정도로 짧음 — 발급 즉시 사용할 것
 }
 
-// ── 회차 매칭 공통 ───────────────────────────────────────
-// 이름 맨 앞의 0채움 숫자를 회차/페이지 번호로 보고 매칭
-// (Kuaikan "022第二十二话", arthub "04" 등 접미사 유무와 무관하게 동작)
+// ── 회차/페이지 매칭 공통 ───────────────────────────────────────
+// "폴더마다 명명 규칙이 같을 것"이라고 가정하지 않는다. 대신 파일명 안에 그 번호가
+// "독립된 숫자 토큰"으로 정확히 몇 군데 나오는지 세서, 유일하게 하나에서만 나오면
+// 그때만 확정(confident:true)하고, 없거나 여러 곳에서 나오면 확정하지 않는다
+// (호출부가 candidates를 사람에게 보여주고 확인받아야 함 — 추측으로 고르지 않음).
+// 앞자리 0은 허용(01=1), "11"·"21" 같은 다른 숫자 안에 낀 건 매칭 안 됨.
+function matchByNumber(items, targetNum, nameKey = "name") {
+  const target = String(Number(targetNum));
+  const re = new RegExp(`(?<!\\d)0*${target}(?!\\d)`);
+  const candidates = items.filter((it) => re.test(String(it[nameKey] || "")));
+  return { confident: candidates.length === 1, item: candidates.length === 1 ? candidates[0] : null, candidates };
+}
+
+// 하위 호환용 — 맨 앞자리 숫자만 보는 단순 매칭(패턴이 명확히 확인된 상황에서만 쓸 것).
+// 새 코드는 matchByNumber를 우선 쓰고, confident:false면 사람 확인으로 넘길 것.
 function findByLeadingNumber(items, targetNum, nameKey = "name") {
   const target = String(Number(targetNum));
   return items.find((it) => {
@@ -227,14 +261,114 @@ function findByLeadingNumber(items, targetNum, nameKey = "name") {
   });
 }
 
+// 카테고리 폴더(PSD/JPG 등) 찾기. 두 단계로:
+// ① 이름이 정확히 일치(대소문자 무관, 예 "PSD")하는 것부터 우선 찾음
+// ② ①이 하나도 없을 때만 느슨한 포함 매칭으로 폴백(예 "본문_PSD 원파일_최종안")
+// "横竖封jpg+psd"처럼 표지용 소규모 폴더가 느슨한 매칭에 같이 걸려버리는 걸 막기 위함 —
+// 정확히 일치하는 폴더가 있으면 그게 항상 우선.
+const CATEGORY_EXACT = { psd: /^psd$/i, jpg: /^jpe?g$/i };
+const CATEGORY_LOOSE = { psd: /psd/i, jpg: /jpe?g/i };
+function findCategoryFolders(items, category, isDirFn) {
+  const exact = CATEGORY_EXACT[category], loose = CATEGORY_LOOSE[category];
+  if (!exact || !loose) throw new Error(`알 수 없는 카테고리: ${category}`);
+  const exactHits = items.filter((it) => isDirFn(it) && exact.test(String(it.name || "").trim()));
+  if (exactHits.length) return exactHits;
+  return items.filter((it) => isDirFn(it) && loose.test(String(it.name || "")));
+}
+
+// 플랫폼별 "이 항목이 폴더인가" 판별(실측 기준: Kuaikan은 type:1=폴더/2=파일, arthub는 type:"directory"/"asset")
+const isKuaikanDir = (it) => it?.type === 1;
+const isArthubDir = (it) => it?.type === "directory";
+
+// 이 레벨에 fileType(psd/jpg) 카테고리 폴더가 있는지 확인.
+// 없으면(kind:"direct") 이 레벨 자체가 회차 폴더들의 집합일 수 있다는 뜻 — 호출부가 이어서 판단.
+// 여러 개 걸리면 애매하므로 needsHuman으로 즉시 반환.
+function findEpisodeContainer(list, fileType, isDirFn) {
+  const cat = findCategoryFolders(list, fileType, isDirFn);
+  if (cat.length === 1) return { ok: true, kind: "category", folder: cat[0] };
+  if (cat.length > 1) return { ok: false, needsHuman: true, reason: `"${fileType}" 카테고리 폴더가 여러 개 걸림 — 확인 필요`, candidates: cat };
+  return { ok: true, kind: "direct", folder: null };
+}
+
+/**
+ * PIVO/작품 진입 링크부터 특정 회차+페이지 파일까지 자동 탐색(플랫폼 공통 로직).
+ * adapter: { listChildren(id) => Promise<items[]>, isDir(item) => bool, getFile(item) => Promise<{name,url,size}> }
+ * 확신 없는 단계(카테고리 폴더 여러 개, 회차/페이지 매칭 애매)에서는 절대 추측하지 않고
+ * { ok:false, needsHuman:true, reason, candidates } 형태로 그대로 반환 — 호출부(Slack)가 사람에게 보여주고 확인받아야 함.
+ */
+async function resolveEpisodePage(adapter, rootId, episode, page, fileType = "psd") {
+  const { listChildren, isDir, getFile } = adapter;
+  const top = await listChildren(rootId);
+
+  const container = findEpisodeContainer(top, fileType, isDir);
+  if (!container.ok) return container;
+
+  let episodeList;
+  if (container.kind === "category") {
+    episodeList = await listChildren(container.folder.id);
+  } else {
+    const dirs = top.filter(isDir);
+    const tryTop = matchByNumber(dirs, episode);
+    if (tryTop.confident) {
+      episodeList = top; // 최상위가 바로 회차 폴더들 (예: 헤이냐오서 케이스)
+    } else if (dirs.length === 1) {
+      // 래퍼 폴더 하나뿐(예: "온라인 원고") — 한 단계 더 내려가서 재시도
+      const deeper = await listChildren(dirs[0].id);
+      const deeperContainer = findEpisodeContainer(deeper, fileType, isDir);
+      if (!deeperContainer.ok) return deeperContainer;
+      episodeList = deeperContainer.kind === "category" ? await listChildren(deeperContainer.folder.id) : deeper;
+    } else {
+      return { ok: false, needsHuman: true, reason: "회차 폴더를 특정 못 함(최상위 구조 확인 필요)", candidates: top };
+    }
+  }
+
+  const epMatch = matchByNumber(episodeList.filter(isDir), episode);
+  if (!epMatch.confident) {
+    return { ok: false, needsHuman: true, reason: `${episode}화 폴더 매칭 애매/실패`, candidates: epMatch.candidates.length ? epMatch.candidates : episodeList };
+  }
+
+  const pages = await listChildren(epMatch.item.id);
+  const pgMatch = matchByNumber(pages.filter((it) => !isDir(it)), page);
+  if (!pgMatch.confident) {
+    return { ok: false, needsHuman: true, reason: `${page}페이지 매칭 애매/실패`, candidates: pgMatch.candidates.length ? pgMatch.candidates : pages };
+  }
+
+  const file = await getFile(pgMatch.item);
+  return { ok: true, name: file.name, url: file.url, size: file.size ?? null, expiresInSec: file.expiresInSec ?? null };
+}
+
+function makeArthubAdapter(token) {
+  return {
+    listChildren: (id) => arthubListChildren(id, token),
+    isDir: isArthubDir,
+    getFile: (item) => arthubGetDownloadSignature(item.id, token, item.name, item.capacity),
+  };
+}
+
+function makeKuaikanAdapter() {
+  return {
+    listChildren: (id) => kuaikanListChildren(id),
+    isDir: isKuaikanDir,
+    getFile: (item) => kuaikanGetDownloadUrl(item.id),
+  };
+}
+
 export {
   detectDrivePlatform,
   parseDriveUrl,
   kuaikanListChildren,
   kuaikanGetDownloadUrl,
+  kuaikanSearchRoot,
   arthubListChildren,
   arthubGetDownloadSignature,
   findByLeadingNumber,
+  matchByNumber,
+  findCategoryFolders,
+  isKuaikanDir,
+  isArthubDir,
+  resolveEpisodePage,
+  makeArthubAdapter,
+  makeKuaikanAdapter,
   KuaikanSessionExpiredError,
   DriveFileUnsupportedError,
 };
