@@ -78,6 +78,8 @@ export const deliverySourceGroups = (projectUuid, episodes) => getJSON(`/project
 // ★delivery-source-groups는 이제 s3URL(원시 S3 경로)만 주고 다운로드URL은 안 줌(2026-07-28 API 변경 확인 — 회귀 아니라 의도된 변경, #26으로 개별 발급하는 방식으로 바뀜).
 // #26 다운로드용 Signed URL 발급 — s3Path(s3://...) 하나당 1시간짜리 서명 URL 1개 발급. 내부적으로 totus REST s3/downloadUrl 호출.
 export const filePresignUrl = (s3Path, fileName) => sendJSON("POST", `/files/download-url`, { s3Path, fileName: fileName || "" });
+// 회차의 소스그룹(어드민 파일순서 관리 화면과 동일 — 리테이크 아님, files/reorder·source-groups/complete 대상 조회용)
+export const episodeSourceGroups = (projectUuid, episode) => getJSON(`/projects/${projectUuid}/source-groups`, { episode });
 // #25 태스크(식자/식자검수)의 원본 파일 — 미납품(에디터 작업중)분. 다운로드URL(서명) 포함.
 export const editorFiles = (taskUuid) => getJSON(`/tasks/${taskUuid}/editor-files`);
 // #26 태스크(식자/식자검수)의 원본 파일 — 이미 납품된 분. format: psd|jpg|ori|all
@@ -114,3 +116,9 @@ export const retakeTask = (taskUuid) =>
 // 응답 data: {성공,실패,succeededTaskUuids,failedTaskUuids,정규화된일정}. 일부 실패해도 success:true(부분 성공 허용).
 export const setTaskDates = (tasks) =>
   sendJSON("POST", `/tasks/dates`, { tasks }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
+// 파일 순서 변경(에디터 파일 관리 드래그 순서 반영). sources=[{sourceId, order}]
+export const reorderFiles = (sources) =>
+  sendJSON("POST", `/files/reorder`, { sources }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
+// 소스그룹(회차) 파일순서 확정 처리. sourceGroupIds=[id,...]
+export const completeSourceGroups = (sourceGroupIds) =>
+  sendJSON("POST", `/source-groups/complete`, { sourceGroupIds }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });

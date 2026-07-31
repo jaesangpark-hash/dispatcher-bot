@@ -17,11 +17,12 @@ import { readRange as readRangeRO } from "./sheets.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { quotationByPivo, findProject, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl } from "./totus.js";
+import { quotationByPivo, findProject, projectByPivo, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, episodeSourceGroups, reorderFiles, completeSourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl } from "./totus.js";
 import { patchMinRowHeight } from "./xlsxRowHeight.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
 import { detectDrivePlatform, parseDriveUrl, kuaikanSearchRoot, resolveEpisodePage, makeArthubAdapter, makeKuaikanAdapter, KuaikanSessionExpiredError, DriveFileUnsupportedError } from "./drive-download.js";
+import { analyzeOrder } from "./file-order.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
@@ -261,6 +262,7 @@ const pendingRetakes = new PersistMap("retakes");    // rkId → { target, heade
 const pendingTransStart = new PersistMap("transstart"); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
 const pendingSetjip = new PersistMap("setjip");      // sjId → { channel, text, work, createdAt } 설정집 작성 요청 게시
 const pendingTaskRetake = new PersistMap("taskretake"); // trId → { work, operation, items[{episode,taskUuid,status}], createdAt } TOTUS 태스크 리테이크(연결 태스크 생성)
+const pendingFileOrderBatch = new PersistMap("fileorderbatch"); // fobId → { work, projectUuid, episodes[{episode,status,sourceGroupId,groupName,files,fileMap,suggested,simpleGroups,resolvedByStartIndex,complexNote,error}], channel, ts, createdAt }
 let setjipSeq = 0;
 let editSeq = pendingEdits.maxSeq();
 let totusDateSeq = pendingTotusDates.maxSeq();
@@ -272,6 +274,7 @@ let feedbackSeq = pendingFeedback.maxSeq();
 let retakeSeq = pendingRetakes.maxSeq();
 let transStartSeq = pendingTransStart.maxSeq();
 let taskRetakeSeq = pendingTaskRetake.maxSeq();
+let fileOrderBatchSeq = pendingFileOrderBatch.maxSeq();
 // 원고수급 미발송 일괄전송 GAS 웹앱 호출(dryRun=건수만, 아니면 실제 전송+체크)
 async function wongoPost(dryRun) {
   const url = process.env.WONGO_UPDATE_URL, secret = process.env.WONGO_UPDATE_SECRET;
@@ -912,6 +915,76 @@ const POST_SIKJA_OPS = ["납품검수", "고객검수", "최종검수"];   // �
 const isPostSikjaOp = (op) => { const nm = String(op?.태스크?.[0]?.오퍼레이션유형명 || "").replace(/\s/g, ""); return !!nm && POST_SIKJA_OPS.some((e) => nm.includes(e)); };
 const trimJobsAtSikja = (j) => { for (const job of j?.data || []) if (Array.isArray(job.오퍼레이션)) job.오퍼레이션 = job.오퍼레이션.filter((op) => !isPostSikjaOp(op)); return j; };
 
+// ── 원본 파일 순서 일괄 점검·수정(check_and_fix_file_order) ──────────────────────
+// work(PIVO 또는 작품명) → projectUuid. PIVO 있는 CANCELED 아닌 프로젝트 우선(없으면 전체 중 첫 번째) — fileOrderFlow.js와 동일 로직.
+async function resolveProjectUuidForWork(work) {
+  const pivoNum = (String(work).match(/(\d{4,})/) || [])[1];
+  const json = pivoNum ? await projectByPivo(pivoNum) : await findProject(work);
+  if (!json.success) throw new Error(json.error?.message || "프로젝트 검색 실패");
+  const all = json.data || [];
+  const filtered = all.filter((p) => { const d = p._detail || p; return d.진행상태 !== "CANCELED" && d.pivoId != null; });
+  const result = filtered.length ? filtered : all;
+  return result[0]?.uuid || null;
+}
+// 파일 순서 확인 배치 미리보기 블록 — 회차별 상태 요약 + 애매한(simple_tie) 회차마다 확인 버튼
+function fileOrderBatchBlocks(batchId, rec) {
+  const byStatus = { clean: [], fix: [], simple_tie: [], complex_skip: [], not_found: [], error: [] };
+  for (const ep of rec.episodes) (byStatus[ep.status] || byStatus.error).push(ep);
+  const line = (eps, fmt) => eps.map(fmt).join("\n") || "-";
+  const sections = [
+    { type: "section", text: { type: "mrkdwn", text: `📁 *파일 순서 일괄 점검* — *${rec.work}*` } },
+  ];
+  if (byStatus.fix.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `✅ *즉시 수정될 회차* (${byStatus.fix.length})\n${line(byStatus.fix, (e) => `  ${e.episode}화`)}` } });
+  if (byStatus.clean.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `👌 *이미 정상* (${byStatus.clean.length})\n${line(byStatus.clean, (e) => `  ${e.episode}화`)}` } });
+  if (byStatus.complex_skip.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `⏭️ *건너뜀 — 수정본 표시 있어 수동확인 필요* (${byStatus.complex_skip.length})\n${line(byStatus.complex_skip, (e) => `  ${e.episode}화: ${e.complexNote}`)}` } });
+  if (byStatus.not_found.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `❓ *회차를 못 찾음* (${byStatus.not_found.length})\n${line(byStatus.not_found, (e) => `  ${e.episode}화`)}` } });
+  if (byStatus.error.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `⚠️ *조회 실패* (${byStatus.error.length})\n${line(byStatus.error, (e) => `  ${e.episode}화: ${e.error || ""}`)}` } });
+  if (byStatus.simple_tie.length) {
+    const remain = byStatus.simple_tie.filter((e) => !isEpisodeResolved(e));
+    sections.push({ type: "section", text: { type: "mrkdwn", text: `✏️ *순서 확인 필요* (${byStatus.simple_tie.length}, 남은 ${remain.length}) — 아래 버튼으로 하나씩 확인하면, 전부 확인되는 순간 이 배치 전체(위 ✅ 포함)가 한 번에 실행됩니다.` } });
+    for (const ep of byStatus.simple_tie) {
+      const done = isEpisodeResolved(ep);
+      sections.push({ type: "actions", elements: [
+        { type: "button", text: { type: "plain_text", text: done ? `✅ ${ep.episode}화 확인됨` : `✏️ ${ep.episode}화 순서 확인` }, value: JSON.stringify({ batchId, episode: ep.episode }), action_id: "fob_resolve_open", ...(done ? {} : { style: "primary" }) },
+      ] });
+    }
+  } else {
+    sections.push({ type: "context", elements: [{ type: "mrkdwn", text: "애매한 회차가 없어 바로 실행됩니다." }] });
+  }
+  return sections;
+}
+const isEpisodeResolved = (ep) => (ep.simpleGroups || []).every((g) => ep.resolvedByStartIndex && ep.resolvedByStartIndex[g.startIndex]);
+const allSimpleTiesResolved = (rec) => rec.episodes.filter((e) => e.status === "simple_tie").every(isEpisodeResolved);
+// 확정된 최종 순서(fix는 suggested 그대로, simple_tie는 resolvedByStartIndex를 그 자리에 끼워넣은 것)
+function finalOrderFor(ep) {
+  if (ep.status !== "simple_tie") return ep.suggested;
+  const out = [...ep.suggested];
+  for (const g of ep.simpleGroups) { const r = ep.resolvedByStartIndex[g.startIndex]; if (r) for (let i = 0; i < r.length; i++) out[g.startIndex + i] = r[i]; }
+  return out;
+}
+// 배치 실행 — fix + (전부 확인된) simple_tie만 반영, clean/complex_skip/not_found/error는 건너뜀
+async function executeFileOrderBatch(rec) {
+  const results = [];
+  for (const ep of rec.episodes) {
+    if (ep.status === "clean") { results.push(`👌 ${ep.episode}화: 이미 정상`); continue; }
+    if (ep.status === "complex_skip") { results.push(`⏭️ ${ep.episode}화: 건너뜀(수정본 표시 있음) — ${ep.complexNote}`); continue; }
+    if (ep.status === "not_found") { results.push(`❓ ${ep.episode}화: 회차를 못 찾음`); continue; }
+    if (ep.status === "error") { results.push(`⚠️ ${ep.episode}화: 조회 실패 — ${ep.error || ""}`); continue; }
+    try {
+      const order = finalOrderFor(ep);
+      const sources = order.map((name, idx) => { const sourceId = ep.fileMap[name]; if (!sourceId) throw new Error(`파일명 "${name}" id 없음`); return { sourceId, order: idx }; });
+      const r1 = await reorderFiles(sources);
+      if (!r1.success) throw new Error(r1.error?.message || "순서 변경 실패");
+      const r2 = await completeSourceGroups([ep.sourceGroupId]);
+      if (!r2.success) throw new Error(r2.error?.message || "확정 처리 실패");
+      results.push(`✅ ${ep.episode}화: 수정 완료`);
+    } catch (e) {
+      results.push(`⚠️ ${ep.episode}화: 실패 — ${String(e?.message ?? e)}`);
+    }
+  }
+  return results;
+}
+
 // ── 사용량·활동 로깅 + 데일리 리포트 ─────────────────────────
 function logUsage(rec) {
   try { appendFileSync("logs/usage.jsonl", JSON.stringify({ at: new Date().toISOString(), ...rec }) + "\n"); } catch { /* 로깅 실패는 무시 */ }
@@ -971,6 +1044,203 @@ async function checkDailyReport() {
     if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: report, ...SENDER });
     console.log(`[daily] ${yStr} 리포트 발송`);
   } catch (e) { console.error("[daily] 실패:", e?.message ?? e); }
+}
+
+// ── 견적 동기화 완료 행 점검 ─────────────────────────────────
+// 픽코마 견적 시트(한일/중일 ST_v2)는 단가가 채워지면 "완료"로 보고 자동화가 다시 안 건드린다.
+// 그 완료 행들의 원본(고객사 시트/TOTUS) 값이 "직전 확인 이후 새로 바뀐 것"만 채널에 리포트.
+// 감지 대상 행: 각 ST_v2의 2행(헤더 다음)부터 끝까지 스캔하되, 그중
+// (a) 단가가 채워진 "완료" 행 (b) "동기화 로그" 탭에 상태="검증제외(레거시)"로 마킹되지 않은 행
+// (한일 2~284행·중일 2~91행은 이 자동화 도입 이전 데이터라 2026-07-30에 일괄 마킹해둠)
+// (c) 고객사 사본 탭에서 pivo_id로 원본을 찾을 수 있는 행 — 이 세 조건을 만족하는 것만 비교한다.
+// 매일 QUOTE_SYNC_HOUR시(KST) 이후 1회, 주말·한국 공휴일은 스킵. ST_v2/동기화 로그엔 안 씀(읽기만) —
+// 베이스라인은 data/quote-sync-baseline.json에만 저장.
+const QUOTE_SYNC_SHEET_ID = "1mjUrj81QQ6pAdHFsHuCrh4m6oLcleTwO6phZVxs1bJ4";
+const QUOTE_SYNC_CHANNEL = "C01EWG2GZ0V";
+const QUOTE_SYNC_MENTION_MAIN = "U0BDAQBDFSB";
+const QUOTE_SYNC_MENTION_CC = "U06MUFY0JH3";
+const QUOTE_SYNC_EXCLUDE_STATUS = "검증제외(레거시)";
+const QUOTE_SYNC_HOUR = Number(process.env.QUOTE_SYNC_HOUR) || 12;
+
+// 2026년 한국 공휴일(대체공휴일 포함) — 연 1회 수동 갱신 필요
+const KR_HOLIDAYS_2026 = [
+  "2026-01-01", "2026-02-16", "2026-02-17", "2026-02-18", "2026-03-01", "2026-03-02",
+  "2026-05-01", "2026-05-05", "2026-05-24", "2026-05-25", "2026-06-06", "2026-07-17",
+  "2026-08-15", "2026-08-17", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27",
+  "2026-10-03", "2026-10-05", "2026-10-09", "2026-12-25", "2027-01-01",
+];
+
+function isWeekendOrKrHoliday(now) {
+  const kst = new Date(now.getTime() + 9 * 3600 * 1000);
+  const dow = kst.getUTCDay(); // 0=일 6=토
+  if (dow === 0 || dow === 6) return true;
+  return KR_HOLIDAYS_2026.includes(kst.toISOString().slice(0, 10));
+}
+
+const qsTrim = (v) => (v ?? "").toString().trim();
+const qsDigitsOnly = (v) => (v || "").replace(/[^\d]/g, "");
+
+function qsToMonthDay(v) {
+  const s = qsTrim(v);
+  if (!s) return "";
+  const m = s.match(/(\d{1,4})[\/\-](\d{1,2})(?:[\/\-](\d{1,2}))?/);
+  if (!m) return s;
+  if (m[3]) return `${parseInt(m[2], 10)}/${parseInt(m[3], 10)}`;
+  return `${parseInt(m[1], 10)}/${parseInt(m[2], 10)}`;
+}
+function qsBuildCustomerMap(rows, pivoIdx) {
+  const map = new Map();
+  for (const r of rows) {
+    const col0 = qsTrim(r[0]);
+    const pivo = qsTrim(r[pivoIdx]);
+    if (col0.includes("サンプル")) continue;
+    if (!/^\d+$/.test(pivo)) continue;
+    map.set(pivo, r);
+  }
+  return map;
+}
+async function qsMapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  async function worker() {
+    while (i < items.length) {
+      const idx = i++;
+      out[idx] = await fn(items[idx], idx);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+async function qsTotusExpected(pivoId) {
+  try {
+    const r = await quotationByPivo(pivoId);
+    const d = r?.data?.[0];
+    if (!d) return { ok: false };
+    const product = d.상품목록?.[0];
+    const volume = qsDigitsOnly(d.초도작업_총작업량 || product?.초도작업_총작업량);
+    return { ok: true, volume };
+  } catch {
+    return { ok: false };
+  }
+}
+// "동기화 로그" 탭에서 상태="검증제외(레거시)"로 마킹된 pivo_id 집합을 읽어옴(언어무관 — pivo_id는 전역 유일)
+async function qsLoadExcludedPivos() {
+  const rows = await readRangeRO(QUOTE_SYNC_SHEET_ID, "'동기화 로그'!A1:F5000");
+  const excluded = new Set();
+  for (const r of rows) {
+    if (qsTrim(r[3]) === QUOTE_SYNC_EXCLUDE_STATUS) excluded.add(qsTrim(r[0]));
+  }
+  return excluded;
+}
+
+function qsDiffAgainstBaseline(baseline, langKey, pivo, snapshot) {
+  baseline[langKey] ??= {};
+  const prev = baseline[langKey][pivo];
+  baseline[langKey][pivo] = snapshot;
+  if (!prev) return { firstSeen: true, changes: [] };
+  const changes = [];
+  for (const field of Object.keys(snapshot)) {
+    const was = qsTrim(prev[field]);
+    const nowVal = qsTrim(snapshot[field]);
+    if (was !== nowVal) changes.push({ field, was: was || "(공란)", now: nowVal || "(공란)" });
+  }
+  return { firstSeen: false, changes };
+}
+
+async function qsCheckHanil(baseline, excluded) {
+  const stRows = await readRangeRO(QUOTE_SYNC_SHEET_ID, "'Piccoma 한일ST_v2'!A2:T400");
+  const custRows = await readRangeRO(QUOTE_SYNC_SHEET_ID, "'고객사 견적 시트(한일 사본)'!A4:Y1000");
+  const custMap = qsBuildCustomerMap(custRows, 2);
+  const completed = stRows.filter((r) => qsTrim(r[3]) !== "" && qsTrim(r[8]) !== "" && !excluded.has(qsTrim(r[8])));
+  const matched = completed.filter((r) => custMap.has(qsTrim(r[8])));
+
+  const results = await qsMapLimit(matched, 5, async (r) => {
+    const pivo = qsTrim(r[8]);
+    const cust = custMap.get(pivo);
+    const totus = await qsTotusExpected(pivo);
+    const snapshot = {
+      "가제(작품명 JP)": qsTrim(cust[3]),
+      "원제(작품명 KR)": qsTrim(cust[4]),
+      "런칭일": qsToMonthDay(cust[7]),
+      "초도분량": totus.ok ? qsDigitsOnly(totus.volume) : "(TOTUS 조회 실패)",
+    };
+    const { firstSeen, changes } = qsDiffAgainstBaseline(baseline, "hanil", pivo, snapshot);
+    return { pivo, title: r[9] || r[10], firstSeen, changes, stNow: { "가제(작품명 JP)": r[9], "원제(작품명 KR)": r[10], "런칭일": r[16], "초도분량": r[18] } };
+  });
+  return { lang: "한일", results };
+}
+
+async function qsCheckJungil(baseline, excluded) {
+  const stRows = await readRangeRO(QUOTE_SYNC_SHEET_ID, "'Piccoma 중일ST_v2'!A2:Y400");
+  const custRows = await readRangeRO(QUOTE_SYNC_SHEET_ID, "'고객사 견적 시트(중일 사본)'!A4:Y1000");
+  const custMap = qsBuildCustomerMap(custRows, 2);
+  const completed = stRows.filter((r) => qsTrim(r[3]) !== "" && qsTrim(r[8]) !== "" && !excluded.has(qsTrim(r[8])));
+  const matched = completed.filter((r) => custMap.has(qsTrim(r[8])));
+
+  const results = await qsMapLimit(matched, 5, async (r) => {
+    const pivo = qsTrim(r[8]);
+    const cust = custMap.get(pivo);
+    const totus = await qsTotusExpected(pivo);
+    const snapshot = {
+      "가제(작품명 JP)": qsTrim(cust[3]),
+      "원제(작품명 CH)": qsTrim(cust[4]),
+      "런칭일": qsToMonthDay(cust[7]),
+      "초도분량": totus.ok ? qsDigitsOnly(totus.volume) : "(TOTUS 조회 실패)",
+      "국가설정(참고, 背景設定 원문)": qsTrim(cust[10]),
+    };
+    const { firstSeen, changes } = qsDiffAgainstBaseline(baseline, "jungil", pivo, snapshot);
+    return {
+      pivo, title: r[9] || r[10], firstSeen, changes,
+      stNow: { "가제(작품명 JP)": r[9], "원제(작품명 CH)": r[10], "런칭일": r[17], "초도분량": r[19], "국가설정(참고, 背景設定 원문)": r[21] },
+    };
+  });
+  return { lang: "중일", results };
+}
+
+function qsFormatSlackMessage(report) {
+  const changed = report.results.filter((x) => !x.firstSeen && x.changes.length > 0);
+  const lines = [`*[${report.lang}] 견적 동기화 완료 행 — 신규 변경 감지* (베이스라인 대비)`];
+  for (const item of changed) {
+    lines.push(`• *PIVO ${item.pivo}* (${item.title})`);
+    for (const c of item.changes) {
+      lines.push(`   ﹒${c.field}: \`${c.was}\` → \`${c.now}\`  (ST_v2 현재값: \`${qsTrim(item.stNow[c.field]) || "(공란)"}\`)`);
+    }
+  }
+  return lines.join("\n");
+}
+
+async function checkQuoteSyncDiff() {
+  try {
+    const nowDate = new Date();
+    if (kstHourNow() < QUOTE_SYNC_HOUR) return;
+    if (isWeekendOrKrHoliday(nowDate)) return;
+    const today = kstDateOf();
+    let state = {};
+    try { state = JSON.parse(readFileSync("data/quote-sync-check.json", "utf8")); } catch { /* 첫 실행 */ }
+    if (state.lastDate === today) return; // 오늘 이미 확인함
+    state.lastDate = today;
+    try { writeFileSync("data/quote-sync-check.json", JSON.stringify(state)); } catch { /* 무시 */ }
+
+    let baseline = {};
+    try { baseline = JSON.parse(readFileSync("data/quote-sync-baseline.json", "utf8")); } catch { /* 첫 실행 */ }
+    const excluded = await qsLoadExcludedPivos();
+
+    const reports = [await qsCheckHanil(baseline, excluded), await qsCheckJungil(baseline, excluded)];
+    try { writeFileSync("data/quote-sync-baseline.json", JSON.stringify(baseline)); } catch { /* 무시 */ }
+
+    const totalChanges = reports.reduce((n, r) => n + r.results.filter((x) => !x.firstSeen && x.changes.length > 0).length, 0);
+    if (totalChanges === 0) { console.log(`[quote-sync] ${today} 신규 변경 없음`); return; }
+
+    const parent = await app.client.chat.postMessage({ channel: QUOTE_SYNC_CHANNEL, text: "```" + `${today} 픽코마 견적 시트 점검 스레드` + "```", ...SENDER });
+    const perLangSummary = reports.map((r) => `${r.lang} ${r.results.filter((x) => !x.firstSeen && x.changes.length > 0).length}건`).join(" / ");
+    await app.client.chat.postMessage({ channel: QUOTE_SYNC_CHANNEL, thread_ts: parent.ts, text: `<@${QUOTE_SYNC_MENTION_MAIN}> cc <@${QUOTE_SYNC_MENTION_CC}>\n신규 변경 감지 — ${perLangSummary}`, ...SENDER });
+    for (const r of reports) {
+      const changed = r.results.filter((x) => !x.firstSeen && x.changes.length > 0);
+      if (!changed.length) continue;
+      await app.client.chat.postMessage({ channel: QUOTE_SYNC_CHANNEL, thread_ts: parent.ts, text: qsFormatSlackMessage(r), ...SENDER });
+    }
+    console.log(`[quote-sync] ${today} 신규 변경 ${totalChanges}건 발송`);
+  } catch (e) { console.error("[quote-sync] 실패:", e?.message ?? e); }
 }
 
 // ── 범용 워커 풀 ─────────────────────────────────────────────
@@ -1915,6 +2185,60 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("check_and_fix_file_order",
+      "TOTUS 원본 파일 순서를 회차 범위 단위로 일괄 점검하고 고친다('1~20화 파일 순서 체크하고 고쳐줘'). 설정집 요청 스레드 등에서 APM이 직접 호출 가능. 파일명 규칙(주번호-부번호.서브페이지, 예: 36-9.2.psd)으로 올바른 순서를 판정해 TOTUS 파일순서(에디터 파일관리 탭)에 반영하고 회차를 확정 처리한다. 원칙: 확인 게이트 없이 즉시 실행하되, 애매한 회차가 하나라도 있으면 전체를 멈추고 그 회차만 버튼/모달로 확인받은 뒤 배치 전체를 한 번에 실행한다. 애매함은 두 종류 — ①단순 동률(같은 순번으로 해석되는 파일 2개 이상, 수정본 표시 없음): 순서 확인 버튼을 보내고, 확인되면 그 회차까지 포함해 실행. ②수정본/교체본 표시가 섞인 동률(예: 汉字3话1 / 汉字3话1_改): 순서 문제가 아니라 어느 파일을 지울지의 별개 판단이라 이 도구가 처리하지 않음 — 건너뛰고 보고만 함. 단순 동률이 하나도 없으면 곧바로 전체 실행하고 결과 요약을 스레드에 올린다. 있으면 미리보기+버튼만 보내고 아직 아무 것도 반영 안 됐다고 답해야 한다(반영했다고 단정 금지).",
+      {
+        work: z.string().describe("작품 PIVO ID 또는 작품명(견적/설정집 스레드의 [PV-xxxxxx] 등에서 추출)"),
+        episodes: z.string().describe("점검할 회차 범위. 예: '1-20' 또는 '1,3,5-10'"),
+      },
+      async ({ work, episodes }) => {
+        try {
+          const ctx = currentCtx;
+          const epNums = parseEpisodeSpec(episodes);
+          if (!epNums.length) return { content: [{ type: "text", text: JSON.stringify({ error: "회차 범위를 못 읽음(예: '1-20')" }) }] };
+          const projectUuid = await resolveProjectUuidForWork(work);
+          if (!projectUuid) return { content: [{ type: "text", text: JSON.stringify({ error: `'${work}' 프로젝트를 TOTUS에서 못 찾음` }) }] };
+
+          const epRecords = [];
+          for (const ep of epNums) {
+            try {
+              const json = await episodeSourceGroups(projectUuid, ep);
+              if (!json.success) throw new Error(json.error?.message || "source-groups 조회 실패");
+              const group = (json.data || [])[0] || null;
+              const fileList = (group?.파일목록 || []);
+              if (!group || !fileList.length) { epRecords.push({ episode: ep, status: "not_found" }); continue; }
+              const files = fileList.map((f) => f.파일이름);
+              const fileMap = {}; for (const f of fileList) fileMap[f.파일이름] = f.id;
+              const a = analyzeOrder(files);
+              const status = a.complexGroups.length ? "complex_skip" : (a.simpleAmbiguousGroups.length ? "simple_tie" : (a.isDifferent ? "fix" : "clean"));
+              epRecords.push({
+                episode: ep, status, sourceGroupId: group.id, groupName: group.이름, files, fileMap,
+                suggested: a.suggested, simpleGroups: a.simpleAmbiguousGroups, resolvedByStartIndex: {},
+                complexNote: a.complexGroups.length ? a.complexGroups.map((g) => g.files.join("/")).join(", ") : undefined,
+              });
+            } catch (e) {
+              epRecords.push({ episode: ep, status: "error", error: String(e?.message ?? e) });
+            }
+          }
+
+          if (allSimpleTiesResolved({ episodes: epRecords })) {
+            // 애매한 회차가 없음(또는 전부 처리 불필요) → 게이트 없이 즉시 전체 실행
+            const results = await executeFileOrderBatch({ episodes: epRecords });
+            return { content: [{ type: "text", text: JSON.stringify({ executed: true, work, episodeCount: epNums.length, results, note: "애매한 회차가 없어 바로 실행했다. 아래 results를 회차별로 요약해서 답해라." }) }] };
+          }
+
+          const batchId = `fob_${++fileOrderBatchSeq}`;
+          const rec = { work, projectUuid, episodes: epRecords, channel: ctx?.channel, ts: ctx?.ts, createdAt: Date.now() };
+          pendingFileOrderBatch.set(batchId, rec);
+          if (ctx?.client && ctx?.channel) {
+            const posted = await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `파일 순서 일괄 점검 — ${work}`, blocks: fileOrderBatchBlocks(batchId, rec) });
+            if (posted?.ts) { rec.previewChannel = ctx.channel; rec.previewTs = posted.ts; pendingFileOrderBatch.save(); }
+          }
+          const tieCount = epRecords.filter((e) => e.status === "simple_tie").length;
+          return { content: [{ type: "text", text: JSON.stringify({ executed: false, gated: true, tieEpisodeCount: tieCount, note: `순서가 애매한 회차 ${tieCount}건이 있어 아직 아무 것도 반영 안 했다 — 확인 버튼을 스레드에 보냈다. '반영했다/고쳤다'고 단정하지 말고 '확인이 필요한 회차가 있어 버튼을 보냈다'고만 답해라.` }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: false } }),
     tool("register_setjip_schedule",
       "설정집 요청이 propose_setjip_request 흐름을 거치지 않고 다른 경로로 나갔을 때(재상 님이나 다른 사람이 직접 요청한 경우) '설정집 일정' 시트에 수동으로 등록한다('이 PIVO 시트에 등록해줘/설정집 일정에 추가해줘'). 이 시트에 있어야 마감 리마인드·TOTUS 완료 자동감지·자동검수·수정요청 추적이 전부 돌아간다. 이미 등록된 PIVO면 중복 등록하지 않고 알려준다. 게이트 없이 즉시 실행(추적용 기록 추가일 뿐이라 안전).",
       {
@@ -2689,7 +3013,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__fetch_original_from_drive", "mcp__apm__register_setjip_schedule", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
@@ -3501,6 +3825,66 @@ app.action("task_retake_cancel", async ({ ack, body, client }) => {
   await ack();
   pendingTaskRetake.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+// ── 파일 순서 일괄 점검: 애매한(simple_tie) 회차 하나 순서 확인 모달 → 전부 확인되면 배치 전체 실행 ──
+app.action("fob_resolve_open", async ({ ack, body, client }) => {
+  await ack();
+  const { batchId, episode } = JSON.parse(body.actions?.[0]?.value || "{}");
+  const rec = pendingFileOrderBatch.get(batchId);
+  const ep = rec?.episodes.find((e) => e.episode === episode);
+  if (!rec || !ep) return;
+  const blocks = [{ type: "section", text: { type: "mrkdwn", text: `*${rec.work} ${episode}화* — 그룹마다 올바른 순서를 번호로 입력해줘(스페이스 구분).` } }];
+  ep.simpleGroups.forEach((g, gi) => {
+    const listTxt = g.files.map((f, i) => `${i + 1}. ${f.length > 45 ? f.slice(0, 45) + "…" : f}`).join("\n");
+    blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: `*그룹 ${gi + 1}*\n\`\`\`${listTxt}\`\`\`` }] });
+    blocks.push({ type: "input", block_id: `fob_group_${gi}`, label: { type: "plain_text", text: `그룹 ${gi + 1} 올바른 순서` },
+      element: { type: "plain_text_input", action_id: "value", placeholder: { type: "plain_text", text: `예: ${g.files.map((_, i) => i + 1).join(" ")}` } } });
+  });
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: "modal", callback_id: "fob_resolve_submit",
+      private_metadata: JSON.stringify({ batchId, episode }),
+      title: { type: "plain_text", text: `${episode}화 순서 확인` },
+      submit: { type: "plain_text", text: "확인" },
+      close: { type: "plain_text", text: "취소" },
+      blocks,
+    },
+  });
+});
+app.view("fob_resolve_submit", async ({ ack, view, client }) => {
+  const { batchId, episode } = JSON.parse(view.private_metadata || "{}");
+  const rec = pendingFileOrderBatch.get(batchId);
+  const ep = rec?.episodes.find((e) => e.episode === episode);
+  if (!rec || !ep) { await ack(); return; }
+
+  const errors = {}; const resolved = {};
+  ep.simpleGroups.forEach((g, gi) => {
+    const raw = view.state.values[`fob_group_${gi}`]?.value?.value?.trim() || "";
+    const idxs = raw.split(/\s+/).map((n) => parseInt(n, 10));
+    const k = g.files.length;
+    const valid = idxs.length === k && idxs.every((n) => Number.isInteger(n) && n >= 1 && n <= k) && new Set(idxs).size === k;
+    if (!valid) { errors[`fob_group_${gi}`] = `1~${k} 숫자를 중복없이 ${k}개 입력해줘`; return; }
+    resolved[gi] = idxs.map((n) => g.files[n - 1]);
+  });
+  if (Object.keys(errors).length) { await ack({ response_action: "errors", errors }); return; }
+  await ack();
+
+  ep.simpleGroups.forEach((g, gi) => { ep.resolvedByStartIndex[g.startIndex] = resolved[gi]; });
+  pendingFileOrderBatch.set(batchId, rec);
+
+  if (allSimpleTiesResolved(rec)) {
+    const results = await executeFileOrderBatch(rec);
+    pendingFileOrderBatch.delete(batchId);
+    if (rec.previewChannel && rec.previewTs) {
+      await client.chat.update({ channel: rec.previewChannel, ts: rec.previewTs, text: `✅ 파일 순서 일괄 처리 완료 — ${rec.work}`, blocks: [
+        { type: "section", text: { type: "mrkdwn", text: `✅ *파일 순서 일괄 처리 완료* — *${rec.work}*\n${results.join("\n")}` } },
+      ] }).catch(() => {});
+    }
+  } else if (rec.previewChannel && rec.previewTs) {
+    await client.chat.update({ channel: rec.previewChannel, ts: rec.previewTs, text: `파일 순서 일괄 점검 — ${rec.work}`, blocks: fileOrderBatchBlocks(batchId, rec) }).catch(() => {});
+  }
 });
 
 // ── 발송 확인/취소 (실제 발송은 LLM 밖, 여기서만) ──────────────────
@@ -4553,7 +4937,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
