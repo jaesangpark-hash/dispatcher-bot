@@ -22,7 +22,7 @@ import { patchMinRowHeight } from "./xlsxRowHeight.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
 import { detectDrivePlatform, parseDriveUrl, kuaikanSearchRoot, resolveEpisodePage, makeArthubAdapter, makeKuaikanAdapter, KuaikanSessionExpiredError, DriveFileUnsupportedError } from "./drive-download.js";
-import { analyzeOrder } from "./file-order.js";
+import { analyzeOrder, detectMissingPages } from "./file-order.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
@@ -931,12 +931,15 @@ function fileOrderBatchBlocks(batchId, rec) {
   const byStatus = { clean: [], fix: [], simple_tie: [], complex_skip: [], not_found: [], error: [] };
   for (const ep of rec.episodes) (byStatus[ep.status] || byStatus.error).push(ep);
   const line = (eps, fmt) => eps.map(fmt).join("\n") || "-";
+  const mpSuffix = (e) => e.missingPages ? ` ⚠️(페이지 ${e.missingPages.join(",")} 빠진 것 같음, 확인 필요)` : "";
+  const missingCount = rec.episodes.filter((e) => e.missingPages).length;
   const sections = [
     { type: "section", text: { type: "mrkdwn", text: `📁 *파일 순서 일괄 점검* — *${rec.work}*` } },
   ];
-  if (byStatus.fix.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `✅ *즉시 수정될 회차* (${byStatus.fix.length})\n${line(byStatus.fix, (e) => `  ${e.episode}화`)}` } });
-  if (byStatus.clean.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `👌 *이미 정상* (${byStatus.clean.length})\n${line(byStatus.clean, (e) => `  ${e.episode}화`)}` } });
-  if (byStatus.complex_skip.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `⏭️ *건너뜀 — 수정본 표시 있어 수동확인 필요* (${byStatus.complex_skip.length})\n${line(byStatus.complex_skip, (e) => `  ${e.episode}화: ${e.complexNote}`)}` } });
+  if (missingCount) sections.push({ type: "context", elements: [{ type: "mrkdwn", text: `⚠️ 페이지 번호가 빠진 것 같은 회차 ${missingCount}건 있음(휴리스틱 — 아래 회차별 표시 참고, 직접 확인 필요)` }] });
+  if (byStatus.fix.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `✅ *즉시 수정될 회차* (${byStatus.fix.length})\n${line(byStatus.fix, (e) => `  ${e.episode}화${mpSuffix(e)}`)}` } });
+  if (byStatus.clean.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `👌 *이미 정상* (${byStatus.clean.length})\n${line(byStatus.clean, (e) => `  ${e.episode}화${mpSuffix(e)}`)}` } });
+  if (byStatus.complex_skip.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `⏭️ *건너뜀 — 수정본 표시 있어 수동확인 필요* (${byStatus.complex_skip.length})\n${line(byStatus.complex_skip, (e) => `  ${e.episode}화: ${e.complexNote}${mpSuffix(e)}`)}` } });
   if (byStatus.not_found.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `❓ *회차를 못 찾음* (${byStatus.not_found.length})\n${line(byStatus.not_found, (e) => `  ${e.episode}화`)}` } });
   if (byStatus.error.length) sections.push({ type: "section", text: { type: "mrkdwn", text: `⚠️ *조회 실패* (${byStatus.error.length})\n${line(byStatus.error, (e) => `  ${e.episode}화: ${e.error || ""}`)}` } });
   if (byStatus.simple_tie.length) {
@@ -966,8 +969,9 @@ function finalOrderFor(ep) {
 async function executeFileOrderBatch(rec) {
   const results = [];
   for (const ep of rec.episodes) {
-    if (ep.status === "clean") { results.push(`👌 ${ep.episode}화: 이미 정상`); continue; }
-    if (ep.status === "complex_skip") { results.push(`⏭️ ${ep.episode}화: 건너뜀(수정본 표시 있음) — ${ep.complexNote}`); continue; }
+    const mpNote = ep.missingPages ? ` (⚠️ 페이지번호 ${ep.missingPages.join(",")} 빠진 것 같음 — 휴리스틱, 직접 확인 필요)` : "";
+    if (ep.status === "clean") { results.push(`👌 ${ep.episode}화: 이미 정상${mpNote}`); continue; }
+    if (ep.status === "complex_skip") { results.push(`⏭️ ${ep.episode}화: 건너뜀(수정본 표시 있음) — ${ep.complexNote}${mpNote}`); continue; }
     if (ep.status === "not_found") { results.push(`❓ ${ep.episode}화: 회차를 못 찾음`); continue; }
     if (ep.status === "error") { results.push(`⚠️ ${ep.episode}화: 조회 실패 — ${ep.error || ""}`); continue; }
     try {
@@ -977,7 +981,7 @@ async function executeFileOrderBatch(rec) {
       if (!r1.success) throw new Error(r1.error?.message || "순서 변경 실패");
       const r2 = await completeSourceGroups([ep.sourceGroupId]);
       if (!r2.success) throw new Error(r2.error?.message || "확정 처리 실패");
-      results.push(`✅ ${ep.episode}화: 수정 완료`);
+      results.push(`✅ ${ep.episode}화: 수정 완료${mpNote}`);
     } catch (e) {
       results.push(`⚠️ ${ep.episode}화: 실패 — ${String(e?.message ?? e)}`);
     }
@@ -2186,7 +2190,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("check_and_fix_file_order",
-      "TOTUS 원본 파일 순서를 회차 범위 단위로 일괄 점검하고 고친다('1~20화 파일 순서 체크하고 고쳐줘'). 설정집 요청 스레드 등에서 APM이 직접 호출 가능. 파일명 규칙(주번호-부번호.서브페이지, 예: 36-9.2.psd)으로 올바른 순서를 판정해 TOTUS 파일순서(에디터 파일관리 탭)에 반영하고 회차를 확정 처리한다. 원칙: 확인 게이트 없이 즉시 실행하되, 애매한 회차가 하나라도 있으면 전체를 멈추고 그 회차만 버튼/모달로 확인받은 뒤 배치 전체를 한 번에 실행한다. 애매함은 두 종류 — ①단순 동률(같은 순번으로 해석되는 파일 2개 이상, 수정본 표시 없음): 순서 확인 버튼을 보내고, 확인되면 그 회차까지 포함해 실행. ②수정본/교체본 표시가 섞인 동률(예: 汉字3话1 / 汉字3话1_改): 순서 문제가 아니라 어느 파일을 지울지의 별개 판단이라 이 도구가 처리하지 않음 — 건너뛰고 보고만 함. 단순 동률이 하나도 없으면 곧바로 전체 실행하고 결과 요약을 스레드에 올린다. 있으면 미리보기+버튼만 보내고 아직 아무 것도 반영 안 됐다고 답해야 한다(반영했다고 단정 금지).",
+      "TOTUS 원본 파일 순서를 회차 범위 단위로 일괄 점검하고 고친다('1~20화 파일 순서 체크하고 고쳐줘'). 설정집 요청 스레드 등에서 APM이 직접 호출 가능. 파일명 규칙(주번호-부번호.서브페이지, 예: 36-9.2.psd)으로 올바른 순서를 판정해 TOTUS 파일순서(에디터 파일관리 탭)에 반영하고 회차를 확정 처리한다. 원칙: 확인 게이트 없이 즉시 실행하되, 애매한 회차가 하나라도 있으면 전체를 멈추고 그 회차만 버튼/모달로 확인받은 뒤 배치 전체를 한 번에 실행한다. 애매함은 두 종류 — ①단순 동률(같은 순번으로 해석되는 파일 2개 이상, 수정본 표시 없음): 순서 확인 버튼을 보내고, 확인되면 그 회차까지 포함해 실행. ②수정본/교체본 표시가 섞인 동률(예: 汉字3话1 / 汉字3话1_改): 순서 문제가 아니라 어느 파일을 지울지의 별개 판단이라 이 도구가 처리하지 않음 — 건너뛰고 보고만 함. 단순 동률이 하나도 없으면 곧바로 전체 실행하고 결과 요약을 스레드에 올린다. 있으면 미리보기+버튼만 보내고 아직 아무 것도 반영 안 됐다고 답해야 한다(반영했다고 단정 금지). ★순서와 별개로 회차 내 페이지 번호 누락(빠진 페이지)도 함께 탐지해 results/미리보기에 표시한다 — 이건 휴리스틱(파일명에서 페이지 카운터로 보이는 자리의 연속성만 확인)이라 확정이 아니니, 있으면 반드시 '~페이지가 빠진 것 같다, 직접 확인 필요'로만 전달하고 실제로 빠졌다고 단정하지 말 것.",
       {
         work: z.string().describe("작품 PIVO ID 또는 작품명(견적/설정집 스레드의 [PV-xxxxxx] 등에서 추출)"),
         episodes: z.string().describe("점검할 회차 범위. 예: '1-20' 또는 '1,3,5-10'"),
@@ -2211,10 +2215,12 @@ const apmTools = createSdkMcpServer({
               const fileMap = {}; for (const f of fileList) fileMap[f.파일이름] = f.id;
               const a = analyzeOrder(files);
               const status = a.complexGroups.length ? "complex_skip" : (a.simpleAmbiguousGroups.length ? "simple_tie" : (a.isDifferent ? "fix" : "clean"));
+              const mp = detectMissingPages(files);
               epRecords.push({
                 episode: ep, status, sourceGroupId: group.id, groupName: group.이름, files, fileMap,
                 suggested: a.suggested, simpleGroups: a.simpleAmbiguousGroups, resolvedByStartIndex: {},
                 complexNote: a.complexGroups.length ? a.complexGroups.map((g) => g.files.join("/")).join(", ") : undefined,
+                missingPages: mp.missing.length ? mp.missing : undefined,
               });
             } catch (e) {
               epRecords.push({ episode: ep, status: "error", error: String(e?.message ?? e) });

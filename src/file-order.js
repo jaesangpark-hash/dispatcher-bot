@@ -59,4 +59,24 @@ function analyzeOrder(fileNames) {
   };
 }
 
-export { extractSeqFromFilename, looksLikeRevisionVariant, analyzeOrder };
+/**
+ * 회차 내 페이지 번호 누락(빠진 페이지) 탐지 — 휴리스틱, 확정 아님(사람 확인 필요로 보고만 함).
+ * 파일마다 [주번호,부번호,서브페이지]를 추출한 뒤, "주번호가 파일마다 다르면 주번호가 실제 페이지 카운터,
+ * 그렇지 않으면(한 회차 내내 고정, 예: 챕터ID처럼 쓰임) 부번호가 페이지 카운터"로 데이터 기반 판단한다
+ * (작품마다 파일명 규칙이 달라 어느 자리가 페이지인지 하드코딩하지 않음 — matchByNumber와 동일한 원칙).
+ * 서브페이지(3번째 값, 예: 9.1/9.2 분할컷)는 같은 페이지로 취급해 중복 카운트하지 않는다.
+ */
+function detectMissingPages(fileNames) {
+  const seqs = fileNames.map((f) => extractSeqFromFilename(f));
+  const mainVals = new Set(seqs.map((s) => s[0]));
+  const counterIdx = mainVals.size > 1 ? 0 : 1;
+  const counters = [...new Set(seqs.map((s) => s[counterIdx]))].filter((n) => n < 9999).sort((a, b) => a - b);
+  if (counters.length < 2) return { missing: [], min: counters[0] ?? null, max: counters[0] ?? null };
+  const min = counters[0], max = counters[counters.length - 1];
+  const present = new Set(counters);
+  const missing = [];
+  for (let n = min; n <= max; n++) if (!present.has(n)) missing.push(n);
+  return { missing, min, max };
+}
+
+export { extractSeqFromFilename, looksLikeRevisionVariant, analyzeOrder, detectMissingPages };
