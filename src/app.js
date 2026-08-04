@@ -211,7 +211,7 @@ const DISPATCHER_PROMPT = [
   "- 완결 작품 처리('○○ 완결 작품 처리해줘/완결처리'): propose_totus_complete(work나 pivo). 프로젝트명 뒤 '(완)' + 상태 완료를 한 번에(게이트). 이미 (완) 있으면 상태만. '처리했다' 단정 금지.",
   "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
   "- TOTUS 태스크 리테이크(연결 태스크 생성, '○○ N화 [오퍼레이션] task 열어줘/리테이크해줘'): propose_task_retake(work, episode, operation, [startDate], [endDate]). 대상은 COMPLETED 태스크만 가능하고, 실행하면 그 태스크+하위 오퍼레이션이 전부 새로 생성됨(진행중 하위는 닫힘, 완료된 하위는 유지)+새 태스크들에 일정도 같이 입력됨. ★일정 기본값=오늘 하루(시작·마감 둘 다 오늘, KST) — 사용자가 날짜/기간을 말하면 그걸로(예 '4/15~4/20으로 잡아줘'는 startDate=4/15,endDate=4/20; '4/20까지'처럼 하나만 말하면 그 문맥에 맞게). 여러 회차가 **같은 오퍼레이션·같은 일정**이면 episode에 범위/목록으로 한 번에 담아라(회차마다 도구 나눠 부르지 말 것) — 단 **회차 그룹마다 일정이 다르면** 그건 그룹별로 도구를 따로 호출하는 게 맞다(예 '1-10화는 4/15~4/17, 11-20화는 4/18~4/20'이면 2번 호출, 확인 버튼도 그룹마다 따로 뜸). COMPLETED 아닌 회차는 자동 제외되고 미리보기에 표시됨. 게이트형(버튼)—'열었다/리테이크했다/일정 잡았다' 단정 금지.",
-  "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, apm, [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 담당 APM 이름만 받아라(번역/식자는 사용자가 주면 반영, 없으면 기본값). 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. 게이트(버튼)—'게시했다' 단정 금지. APM 이름이 안 나오면 누구 담당인지 한 줄 되묻기. 게시하면 그 스레드에 '🔍 설정집 검수' 버튼도 자동으로 붙는다(신규 요청만 — 이 기능 이전에 만든 옛 요청 스레드엔 버튼이 없음).",
+  "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, [apm], [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 번역/식자/APM은 사용자가 이 대화에서 이미 줬으면 반영하고 없으면 전부 생략. 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. ★APM을 몰라도 절대 되묻지 말고 그냥 apm 생략하고 호출할 것 — 미리보기 메시지에 'APM 멘션 없음' 경고가 자동으로 뜨고, 재상 님이 그 자리에서 ✏️수정 모달로 직접 입력한다(이게 원래 설계된 입력 경로). 게이트(버튼)—'게시했다' 단정 금지. 게시하면 그 스레드에 '🔍 설정집 검수' 버튼도 자동으로 붙는다(신규 요청만 — 이 기능 이전에 만든 옛 요청 스레드엔 버튼이 없음).",
   "- 설정집 검수 실행('이 설정집 검수 실행해줘/검수 돌려줘/검수해줘', 특히 버튼이 없는 옛 설정집 작성 요청 스레드에서): run_setjip_review([thread]). 그 스레드 안에서 부르면 thread 생략. 실제 검수 버튼 클릭과 동일하게 n8n을 직접 트리거하고, 동시에 그 시점 최신 설정집 xlsx도 같은 자리에 바로 첨부한다(file.shared:true). ★검수 판정 결과(문제점 리스트) 자체는 안 준다 — n8n이 잠시 후 개인채널에 직접 올린다. '검수를 요청했다 + 파일 보냈다'까지만 말하고 '검수했다/판정 결과 나왔다'고 단정하지 말 것.",
   "- 설정집 원본 파일 공유('엑셀 파일 줘/설정집 파일 공유해줘/원본 파일 올려줘', 설정집 작성 요청 스레드에서): share_setjip_file([thread]). 그 스레드 안에서 부르면 thread 생략. TOTUS에서 그 시점 최신 xlsx를 받아 스레드에 바로 첨부(게이트 없음, 읽기성 공유라 즉시 실행).",
   "- 설정집 일정 시트 수동 등록('이 PIVO 시트에 등록해줘/설정집 일정에 추가해줘', propose_setjip_request 흐름을 안 거치고 다른 경로로 요청 나갔을 때): register_setjip_schedule(pivo, [thread], [apm]). 설정집 요청 스레드 안에서 부르면 thread 생략. 스레드 본문에서 작품명·APM·제출희망일 자동 인식, 못 찾으면 apm 인자 필수. 이미 등록된 PIVO면 중복 스킵. 게이트 없이 즉시 실행.",
@@ -2138,10 +2138,10 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("propose_setjip_request",
-      "설정집 작성 요청을 만들어 작업요청 채널에 게시하도록 '제안'한다(미리보기+✅). 견적요청 스레드에서 수주확정된 작품의 PIVO로 호출 — 작품명·원제·설정집 제출 희망일(자동 계산)·초도 납품일/회차·국가설정·기대치·특이사항·링크를 **견적+내부시트에서 자동**으로 채우고, **번역 작업자·식자 작업자·담당 APM만** 인자로 받는다(번역/식자는 기본값 있어 생략 가능, APM은 필수). 스레드에 여러 작품(PIVO)이 있으면 각 PIVO마다 한 번씩 호출. 절대 '게시했다'고 단정하지 말 것(버튼 눌러야 게시).",
+      "설정집 작성 요청을 만들어 작업요청 채널에 게시하도록 '제안'한다(미리보기+✅). 견적요청 스레드에서 수주확정된 작품의 PIVO로 호출 — 작품명·원제·설정집 제출 희망일(자동 계산)·초도 납품일/회차·국가설정·기대치·특이사항·링크를 **견적+내부시트에서 자동**으로 채우고, **번역 작업자·식자 작업자·담당 APM**은 전부 선택 인자다(전부 생략 가능, 생략 시 기본값 또는 미지정). ★APM을 모르면 절대 사용자에게 되묻지 말고 apm 생략하고 바로 호출할 것 — 미리보기에 'APM 멘션 없음' 경고가 뜨고 ✏️수정 모달에서 직접 입력하는 게 원래 입력 경로다. 스레드에 여러 작품(PIVO)이 있으면 각 PIVO마다 한 번씩 호출. 절대 '게시했다'고 단정하지 말 것(버튼 눌러야 게시).",
       {
         pivo: z.string().describe("작품 PIVO ID(견적요청 스레드 본문의 [PV-xxxxxx])"),
-        apm: z.string().describe("담당 APM 이름(서주원/정태영/박재상) 또는 Slack ID(U…)"),
+        apm: z.string().optional().describe("담당 APM 이름(서주원/정태영/박재상) 또는 Slack ID(U…). 모르면 절대 묻지 말고 생략 — 미리보기의 ✏️수정 모달에서 직접 입력하는 게 정상 경로"),
         translator: z.string().optional().describe("번역 작업자(생략 시 '프리랜서 배정')"),
         typesetter: z.string().optional().describe("식자 작업자(생략 시 '강연재 우선 배정/안되면 프리랜서')"),
       },
@@ -2157,7 +2157,8 @@ const apmTools = createSdkMcpServer({
           const p = { channel: SETJIP_CHANNEL, e, translator: translator || "", typesetter: typesetter || "", apmId, work: e.work_title, createdAt: Date.now() };
           pendingSetjip.set(id, p);
           const warn = [];
-          if (!apmId) warn.push(`APM '${apm}' Slack ID 못 찾음 — 멘션 없이 나감(이름 확인)`);
+          if (apm && !apmId) warn.push(`APM '${apm}' Slack ID 못 찾음 — 멘션 없이 나감(이름 확인 필요)`);
+          else if (!apmId) warn.push("APM 미지정 — 미리보기에서 ✏️수정으로 직접 입력");
           if (!e.sheetOk) warn.push("내부시트 미접근(견적값만) — 오리지널/원작링크/드라이브 누락 가능, 기대치/국가는 견적특이사항 기준");
           const posted = await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `설정집 작성 요청 확인 — ${e.work_title}`, blocks: setjipBlocks(id, p) });
           if (posted?.ts) { p.previewChannel = ctx.channel; p.previewTs = posted.ts; pendingSetjip.save(); }
@@ -4138,6 +4139,7 @@ app.action("setjip_edit", async ({ ack, body, client }) => {
   const p = pendingSetjip.get(id);
   if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정 불가. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
   const e = p.e || {};
+  const apmDisplay = p.apmId ? await resolveUserName(client, p.apmId) || p.apmId : "";
   const inp = (b, label, init, ml = false) => ({ type: "input", block_id: b, optional: true, label: { type: "plain_text", text: label }, element: { type: "plain_text_input", action_id: "v", multiline: ml, initial_value: init || "" } });
   await client.views.open({
     trigger_id: body.trigger_id,
@@ -4145,7 +4147,7 @@ app.action("setjip_edit", async ({ ack, body, client }) => {
       type: "modal", callback_id: "setjip_edit_modal", private_metadata: id,
       title: { type: "plain_text", text: "설정집 요청 수정" }, submit: { type: "plain_text", text: "적용" }, close: { type: "plain_text", text: "닫기" },
       blocks: [
-        inp("apm", "담당 APM(이름 또는 U…ID)", p.apmId ? (USER_NAMES[p.apmId] || p.apmId) : ""),
+        inp("apm", "담당 APM(이름 또는 U…ID)", apmDisplay),
         inp("translator", "번역 작업자", p.translator || "프리랜서 배정"),
         inp("typesetter", "식자 작업자", p.typesetter || "강연재 우선 배정\n배정 안될 경우 프리랜서 배정", true),
         inp("expectation", "기대치", e.expectation),
