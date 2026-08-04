@@ -217,7 +217,7 @@ const DISPATCHER_PROMPT = [
   "- 설정집 일정 시트 수동 등록('이 PIVO 시트에 등록해줘/설정집 일정에 추가해줘', propose_setjip_request 흐름을 안 거치고 다른 경로로 요청 나갔을 때): register_setjip_schedule(pivo, [thread], [apm]). 설정집 요청 스레드 안에서 부르면 thread 생략. 스레드 본문에서 작품명·APM·제출희망일 자동 인식, 못 찾으면 apm 인자 필수. 이미 등록된 PIVO면 중복 스킵. 게이트 없이 즉시 실행.",
   "- 설정집 AI검수 인증번호 재발급('OO 인증번호 재발급해줘/번역검수자 인증번호 발급해줘', 한도 초과로 폐기된 뒤 다시 필요할 때, 또는 요청 확인 시점엔 배정현황에 없어서 못 받은 역할 몫을 나중에 발급할 때): reissue_setjip_ai_token(pivo, role, [worker], [thread]). role은 '번역' 또는 '번역검수'. worker 생략하면 배정현황에서 그 역할 담당자를 다시 조회(없으면 에러 — worker로 이름 직접 줘야 함). 설정집 작성 요청 스레드 안에서 부르면 thread 생략, 그 스레드에 바로 게시. 게이트 없이 즉시 실행(발급은 되돌리기 쉬운 저위험 동작).",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
-  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 후 봇이 자동으로 이어서 처리하는 것: ①TOTUS 프로젝트명 가제→FIX 변경 ②출판사 드라이브 링크 시트 한국어 타이틀·APM 채움 ③납품 시트(중일 V5)에 초도 회차만큼 행(1~N화) 생성 — 이 세 가지는 확정 버튼('✅ 프로젝트명+시트 반영') 한 번으로 봇이 직접 쓴다. ④1-3화 번역검수 자동 모니터 등록. 그러니 propose_totus_project·register_translation_monitor를 따로 부르지 말 것(수동 등록 요청 때만 register). ★중요: '내부 시트(한국어 타이틀·납품 행)는 도구로 못 바꾼다/직접 채워야 한다'고 답하지 마라 — 위 버튼 체인으로 봇이 실제로 쓴다(버튼을 안 누르면 안 될 뿐). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
+  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 버튼 한 번으로 봇이 이어서 게이트 없이 바로 다 처리한다(2026-08-04부터 — 별도 확인 버튼 없음): ①TOTUS 프로젝트명 가제→FIX 변경 ②출판사 드라이브 링크 시트 한국어 타이틀·APM 채움 ③납품 시트(중일 V5)에 초도 회차만큼 행(1~N화) 생성 ④1-3화 번역검수 자동 모니터 등록. 그러니 propose_totus_project·propose_totus_sheets_sync·register_translation_monitor를 따로 부르지 말 것(그 체인이 실패했을 때의 수동 재시도 용도로만 남아있음). ★중요: '내부 시트(한국어 타이틀·납품 행)는 도구로 못 바꾼다/직접 채워야 한다'고 답하지 마라 — 위 버튼 체인으로 봇이 실제로 쓴다(버튼을 안 누르면 안 될 뿐). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★고객사 → APM 릴레이(재상 님이 고객사 메시지를 붙이며 'APM에게 전달/릴레이해줘'류로 요청할 때): 고객사 채널엔 툰식이가 못 들어가서, 재상 님이 고객사 메시지(보통 **일본어**)를 붙여주면 툰식이가 APM에게 대신 전달하는 흐름이다. ①작품 식별(메시지의 일/중 타이틀 → get_work_info로 **한국어 작품명·담당 APM** 확인) ②요청 유형 파악(원본 교체 / 식자본 선납품 / 번역 JPG 공유 등) → **재상 님 대화체 톤**으로 APM 릴레이 초안을 만들어 send_message로 발송 제안(target=재팬_요청 `C09B8QHP7D4`, 본문 맨 앞 `<@담당APM>` + 끝에 `cc <@U04463JR4HH>`). ★톤(엄수): 굵은 제목·불릿·정형 필드 금지, 자연스러운 대화체. 예 — `<@APM>` 줄 / `<작품> N화 {요청}이 필요합니다.` / `{맥락 한 줄}, …부탁 드립니다.` / `{마감/확인} 가능할까요?`. 링크는 슬랙 마스킹 `<url|라벨>`(생 URL 나열 금지). ★원본 교체 요청이면 원본 링크(고객사가 준 baidu 등)+프로젝트 링크(get_project_url)를 `<url|원본 링크> / <url|프로젝트 링크>`로, 식자·식자검수 담당(작업자 DB)도 함께. 그 외 유형은 요청 내용만 담백하게. 담당 APM이 애매하면 한 줄 되묻기. 게이트(버튼)—'보냈다' 단정 금지.",
   "★작품 특이사항(비고) 등록: '이 작품 특이사항으로 ~ 적어둬/기억해둬'류 요청은 propose_work_note(work, note)로 출판사 드라이브 링크 시트 비고란에 즉시 기록(확인 버튼 없이 바로 반영). 저장해두면 그 작품 납품일마다 시스템이 자동으로 스캔해 그날 재팬_공지의 'Toon_Japan 납품스레드'(하루 1개, 결정적으로 찾음)에 리마인드를 직접 게시한다 — 이건 브레인(너) 개입 없이 스케줄러가 처리하니, 이 흐름 자체를 네가 따로 신경 쓸 필요는 없다(등록만 propose_work_note로 확실히 해주면 됨).",
   "★납품 '체크/완료 여부'를 물으면 반드시 check_undelivered_episodes를 호출해서 답하라 — 스레드에 첨부된 이미지·과거 대화 맥락에서 유추해 답하지 마라(실제로 스레드 내용으로 지어내 틀린 적 있음, 2026-07-15). 도구 호출 없이 '체크 컬럼을 확인할 수 없다'고 답하는 것도 금지 — 그 도구가 정확히 그 체크박스를 읽는다.",
@@ -782,36 +782,80 @@ function toYMD(s) {
   const m = String(s ?? "").match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
   return m ? `${m[1]}-${String(+m[2]).padStart(2, "0")}-${String(+m[3]).padStart(2, "0")}` : "";
 }
-// TOTUS 프로젝트명 가제→FIX + 출판사 시트 + 납품 시트 초도행 — 한 번에 제안(게이트). 번역개시 발송 직후 자동 호출 + 수동 재시도(propose_totus_sheets_sync)에서도 공용.
+// TOTUS 프로젝트명 가제→FIX + 출판사 시트 + 납품 시트 초도행 — 계획만 계산(쓰기 없음). 게이트형(propose_totus_sheets_sync)과
+// 무게이트 자동실행(번역개시 체인) 둘 다 이 계획을 공용으로 쓴다.
 // 규칙: 이름=[PV-id] [Piccoma중일] {일본어 가제(仮제거)}(한국어). 실패해도 이유를 반드시 알려야 함(2026-07-28 조용히 스킵되던 사고).
+async function buildTotusProjectPlan({ pivo, koTitle, apmId, firstEpisode, firstDeliveryRaw, firstDelivery, client }) {
+  const w = await lookupWork(pivo);
+  const ja = String(w?.jaTitle || "").replace(/[（(]\s*仮\s*[）)]\s*$/, "").trim();
+  const ko = String(koTitle || "").trim();
+  const q = await quotationByPivo(pivo).catch(() => null);
+  const d = Array.isArray(q?.data) ? q.data[0] : null;
+  if (!(d?.projectUuid && ja && ko && !ko.startsWith("(미정"))) {
+    const missing = [!d?.projectUuid && "TOTUS 견적 조회 실패(재시도 필요)", !ja && "일본어 가제 확인 안 됨", !ko && "한국어 타이틀 없음", ko?.startsWith("(미정") && "한국어 타이틀 미정"].filter(Boolean);
+    return { ok: false, missing };
+  }
+  const newName = `[PV-${pivo}] [Piccoma중일] ${ja}(${ko})`;
+  const apmName = apmId ? await resolveUserName(client, apmId) : "";   // 출판사/납품 시트 APM 이름용 — 하드코딩 3명 외엔 Slack에서 실시간 조회
+  // 납품 시트(중일 V5) 초도 회차 행 생성용 — 회차 수·초도납품일(YMD)이 확인될 때만.
+  const epN = parseInt(String(firstEpisode).replace(/[^\d]/g, ""), 10);
+  const deliveryYMD = toYMD(firstDeliveryRaw || firstDelivery);
+  const delivery = (Number.isFinite(epN) && epN >= 1 && epN <= 200 && deliveryYMD)
+    ? { publisher: "카카오픽코마", work: ko, pm: "박재상", apm: apmName, order: "ZH-CN2JA", deliveryYMD, episodes: epN } : null;
+  const delvLine = delivery
+    ? `\n• 납품 시트: *1~${epN}화* ${epN}개 행 생성 (고객사 카카오픽코마 · PM 박재상${apmName ? ` · APM ${apmName}` : ""} · 납품일 ${deliveryYMD})`
+    : "\n• 납품 시트: (초도 회차/납품일 미확인 — 행 생성 생략)";
+  return {
+    ok: true, projectUuid: d.projectUuid, projectName: d.projectName || "", steps: [{ name: newName }],
+    label: `이름 → *${newName}*`, sheet: { pivo, apmName, koTitle: ko, delivery },
+    newName, ko, apmName, delvLine,
+  };
+}
+// 계획 실행(실제 쓰기) — TOTUS 이름 변경 → 출판사 시트 A(APM)·C(한국어) → 납품 시트 초도행. proj_confirm과
+// 번역개시 체인(무게이트 자동실행) 둘 다 이 함수를 공용으로 쓴다. userId는 로그용.
+async function applyTotusProjectAndSheets(plan, { userId } = {}) {
+  const steps = plan.steps || [];
+  const done = [], failed = [];
+  for (const ch of steps) {
+    try {
+      const res = await setProjectSettings(plan.projectUuid, ch);
+      appendFileSync("logs/totus-proj.jsonl", JSON.stringify({ at: new Date().toISOString(), user: userId, projectUuid: plan.projectUuid, projectName: plan.projectName, change: ch, ok: res?.success, resp: res?.data }) + "\n");
+      if (res?.success) done.push(ch); else failed.push({ ch, resp: res });
+    } catch (e) { failed.push({ ch, err: String(e?.message ?? e) }); }
+  }
+  const desc = (c) => c.action ? `상태 ${TOTUS_ACTION_KO[c.action] || c.action}` : `이름 변경`;
+  let sheetMsg = "";
+  if (plan.sheet?.pivo) {   // 번역개시 체인: TOTUS 이름 변경 후 출판사 시트 A(APM)·C(한국어) 채움
+    try {
+      const sr = await updatePublisherSheet(plan.sheet.pivo, plan.sheet.apmName, plan.sheet.koTitle);
+      sheetMsg = sr.ok ? `\n📄 출판사 시트 ${sr.row}행 반영(한국어${plan.sheet.apmName ? "·APM" : ""})` : `\n⚠️ 출판사 시트 미반영: ${sr.msg}`;
+      appendFileSync("logs/totus-proj.jsonl", JSON.stringify({ at: new Date().toISOString(), user: userId, kind: "publisher_sheet", pivo: plan.sheet.pivo, apm: plan.sheet.apmName, ko: plan.sheet.koTitle, result: sr }) + "\n");
+    } catch (e) { sheetMsg = `\n⚠️ 출판사 시트 반영 실패: ${e?.message ?? e}`; }
+  }
+  if (plan.sheet?.delivery) {   // 번역개시 체인: 납품 시트에 초도 회차(1~N) 행 생성
+    try {
+      const dr = await appendDeliveryRows(plan.sheet.delivery);
+      sheetMsg += dr.ok ? `\n📦 납품 시트 ${dr.fromRow}행부터 1~${dr.count}화 ${dr.count}개 생성` : `\n⚠️ 납품 시트 미반영: ${dr.msg}`;
+      appendFileSync("logs/totus-proj.jsonl", JSON.stringify({ at: new Date().toISOString(), user: userId, kind: "delivery_rows", pivo: plan.sheet.pivo, result: dr }) + "\n");
+    } catch (e) { sheetMsg += `\n⚠️ 납품 시트 반영 실패: ${e?.message ?? e}`; }
+  }
+  const summary = !failed.length
+    ? `✅ TOTUS 변경 완료 — ${plan.projectName || plan.projectUuid}: ${done.map(desc).join(" + ")}${sheetMsg}`
+    : `⚠️ 일부 실패 — 성공: ${done.map(desc2).join(", ") || "없음"} / 실패: ${failed.map((f) => desc(f.ch)).join(", ")}. 실패분만 다시 시도해줘.${sheetMsg}`;
+  return { ok: !failed.length, done, failed, sheetMsg, summary };
+}
+// TOTUS 프로젝트명 가제→FIX + 출판사 시트 + 납품 시트 초도행 — 계획을 세워 게이트(미리보기+✅)로 제안.
+// propose_totus_sheets_sync(수동 재시도)에서 쓴다. 번역개시 체인은 무게이트 자동실행(applyTotusProjectAndSheets 직접 호출)이라 이 함수를 안 씀.
 async function proposeTotusProjectAndSheets({ pivo, koTitle, apmId, firstEpisode, firstDeliveryRaw, firstDelivery, client, channel, threadTs }) {
   try {
-    const w = await lookupWork(pivo);
-    const ja = String(w?.jaTitle || "").replace(/[（(]\s*仮\s*[）)]\s*$/, "").trim();
-    const ko = String(koTitle || "").trim();
-    const q = await quotationByPivo(pivo).catch(() => null);
-    const d = Array.isArray(q?.data) ? q.data[0] : null;
-    if (!(d?.projectUuid && ja && ko && !ko.startsWith("(미정"))) {
-      const missing = [!d?.projectUuid && "TOTUS 견적 조회 실패(재시도 필요)", !ja && "일본어 가제 확인 안 됨", !ko && "한국어 타이틀 없음", ko?.startsWith("(미정") && "한국어 타이틀 미정"].filter(Boolean);
-      return { ok: false, missing };
-    }
-    const newName = `[PV-${pivo}] [Piccoma중일] ${ja}(${ko})`;
-    const apmName = apmId ? await resolveUserName(client, apmId) : "";   // 출판사/납품 시트 APM 이름용 — 하드코딩 3명 외엔 Slack에서 실시간 조회
+    const plan = await buildTotusProjectPlan({ pivo, koTitle, apmId, firstEpisode, firstDeliveryRaw, firstDelivery, client });
+    if (!plan.ok) return plan;
     const pjId = `proj_${++totusProjSeq}`;
-    // 납품 시트(중일 V5) 초도 회차 행 생성용 — 회차 수·초도납품일(YMD)이 확인될 때만.
-    const epN = parseInt(String(firstEpisode).replace(/[^\d]/g, ""), 10);
-    const deliveryYMD = toYMD(firstDeliveryRaw || firstDelivery);
-    const delivery = (Number.isFinite(epN) && epN >= 1 && epN <= 200 && deliveryYMD)
-      ? { publisher: "카카오픽코마", work: ko, pm: "박재상", apm: apmName, order: "ZH-CN2JA", deliveryYMD, episodes: epN } : null;
-    // sheet: 확정 시 TOTUS 이름 변경 → 출판사 시트 A(APM)·C(한국어) → 납품 시트 초도행까지.
-    pendingTotusProj.set(pjId, { projectUuid: d.projectUuid, projectName: d.projectName || "", steps: [{ name: newName }], label: `이름 → *${newName}*`, sheet: { pivo, apmName, koTitle: ko, delivery }, createdAt: Date.now() });
-    const delvLine = delivery
-      ? `\n• 납품 시트: *1~${epN}화* ${epN}개 행 생성 (고객사 카카오픽코마 · PM 박재상${apmName ? ` · APM ${apmName}` : ""} · 납품일 ${deliveryYMD})`
-      : "\n• 납품 시트: (초도 회차/납품일 미확인 — 행 생성 생략)";
+    pendingTotusProj.set(pjId, { projectUuid: plan.projectUuid, projectName: plan.projectName, steps: plan.steps, label: plan.label, sheet: plan.sheet, createdAt: Date.now() });
     await client.chat.postMessage({
       channel, thread_ts: threadTs, ...SENDER, text: "TOTUS 프로젝트명 + 시트 반영 제안",
       blocks: [
-        { type: "section", text: { type: "mrkdwn", text: `🛠 *TOTUS 프로젝트명* + *출판사 시트* + *납품 시트*를 FIX로 반영할까요?\n• 프로젝트명: \`${newName}\`\n• 출판사 시트: 한국어 *${ko}*${apmName ? ` · 담당 APM *${apmName}*` : " · (APM 미상 — A열 생략)"}${delvLine}` } },
+        { type: "section", text: { type: "mrkdwn", text: `🛠 *TOTUS 프로젝트명* + *출판사 시트* + *납품 시트*를 FIX로 반영할까요?\n• 프로젝트명: \`${plan.newName}\`\n• 출판사 시트: 한국어 *${plan.ko}*${plan.apmName ? ` · 담당 APM *${plan.apmName}*` : " · (APM 미상 — A열 생략)"}${plan.delvLine}` } },
         { type: "actions", elements: [
           { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 프로젝트명+시트 반영" }, value: pjId, action_id: "proj_confirm" },
           { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: pjId, action_id: "proj_cancel" },
@@ -3785,34 +3829,9 @@ app.action("proj_confirm", async ({ ack, body, client }) => {
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 변경이에요.");
   pendingTotusProj.delete(id);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
-  const steps = p.steps || [p.change];   // 단일/복수 변경 공용(완결=이름+상태 2단계). API는 한 번에 하나라 순차 PATCH.
   try {
-    const done = [], failed = [];
-    for (const ch of steps) {
-      try {
-        const res = await setProjectSettings(p.projectUuid, ch);
-        appendFileSync("logs/totus-proj.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, projectUuid: p.projectUuid, projectName: p.projectName, change: ch, ok: res?.success, resp: res?.data }) + "\n");
-        if (res?.success) done.push(ch); else failed.push({ ch, resp: res });
-      } catch (e) { failed.push({ ch, err: String(e?.message ?? e) }); }
-    }
-    const desc = (c) => c.action ? `상태 ${TOTUS_ACTION_KO[c.action] || c.action}` : `이름 변경`;
-    let sheetMsg = "";
-    if (p.sheet?.pivo) {   // 번역개시 체인: TOTUS 이름 변경 후 출판사 시트 A(APM)·C(한국어) 채움
-      try {
-        const sr = await updatePublisherSheet(p.sheet.pivo, p.sheet.apmName, p.sheet.koTitle);
-        sheetMsg = sr.ok ? `\n📄 출판사 시트 ${sr.row}행 반영(한국어${p.sheet.apmName ? "·APM" : ""})` : `\n⚠️ 출판사 시트 미반영: ${sr.msg}`;
-        appendFileSync("logs/totus-proj.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "publisher_sheet", pivo: p.sheet.pivo, apm: p.sheet.apmName, ko: p.sheet.koTitle, result: sr }) + "\n");
-      } catch (e) { sheetMsg = `\n⚠️ 출판사 시트 반영 실패: ${e?.message ?? e}`; }
-    }
-    if (p.sheet?.delivery) {   // 번역개시 체인: 납품 시트에 초도 회차(1~N) 행 생성
-      try {
-        const dr = await appendDeliveryRows(p.sheet.delivery);
-        sheetMsg += dr.ok ? `\n📦 납품 시트 ${dr.fromRow}행부터 1~${dr.count}화 ${dr.count}개 생성` : `\n⚠️ 납품 시트 미반영: ${dr.msg}`;
-        appendFileSync("logs/totus-proj.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "delivery_rows", pivo: p.sheet.pivo, result: dr }) + "\n");
-      } catch (e) { sheetMsg += `\n⚠️ 납품 시트 반영 실패: ${e?.message ?? e}`; }
-    }
-    if (!failed.length) await reply(`✅ TOTUS 변경 완료 — ${p.projectName || p.projectUuid}: ${done.map(desc).join(" + ")}${sheetMsg}`);
-    else await reply(`⚠️ 일부 실패 — 성공: ${done.map(desc).join(", ") || "없음"} / 실패: ${failed.map((f) => desc(f.ch)).join(", ")}. 실패분만 다시 시도해줘.${sheetMsg}`);
+    const r = await applyTotusProjectAndSheets(p, { userId: body.user?.id });
+    await reply(r.summary);
   } catch (e) { await reply(`❌ 변경 실패: ${e?.message ?? e}`); }
 });
 
@@ -4387,10 +4406,17 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
     if (!attached) await client.chat.postMessage({ channel: p.channel, thread_ts: p.threadTs, text, ...SENDER });
     appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "transstart", channel: p.channel, threadTs: p.threadTs, pivo: p.pivo, files: attached, text }) + "\n");
     await reply(`✅ 번역 개시 요청을 <#${p.channel}> 설정집 스레드에 발송했어요.${attached ? ` (첨부 ${attached}개 포함)` : " (첨부 파일은 직접 올려 주세요)"}`);
-    // 후속: TOTUS 프로젝트명 가제→FIX + 출판사/납품 시트 자동 제안(게이트). PIVO 있을 때만.
+    // 후속: TOTUS 프로젝트명 가제→FIX + 출판사/납품 시트 — 번역개시 발송에 묶어 게이트 없이 바로 실행(2026-08-04, 재상 님 요청: 한 번에 처리).
     if (p.pivo) {
-      const r = await proposeTotusProjectAndSheets({ pivo: p.pivo, koTitle: p.koTitle, apmId: p.apmId, firstEpisode: p.firstEpisode, firstDeliveryRaw: p.firstDeliveryRaw, firstDelivery: p.firstDelivery, client, channel: chan, threadTs: thread });
-      if (!r.ok) await reply(`⚠️ TOTUS 프로젝트명+시트 반영 제안을 못 만들었어요(${r.missing?.join(", ") || r.error || "원인 불명"}) — "{작품} TOTUS 프로젝트명이랑 시트 반영해줘"로 다시 요청하거나 propose_totus_project로 직접 요청해줘.`);
+      try {
+        const plan = await buildTotusProjectPlan({ pivo: p.pivo, koTitle: p.koTitle, apmId: p.apmId, firstEpisode: p.firstEpisode, firstDeliveryRaw: p.firstDeliveryRaw, firstDelivery: p.firstDelivery, client });
+        if (!plan.ok) {
+          await reply(`⚠️ TOTUS 프로젝트명+시트 반영을 못 했어요(${plan.missing?.join(", ") || "원인 불명"}) — "{작품} TOTUS 프로젝트명이랑 시트 반영해줘"로 다시 요청하거나 propose_totus_project로 직접 요청해줘.`);
+        } else {
+          const r = await applyTotusProjectAndSheets(plan, { userId: body.user?.id });
+          await reply(r.summary);
+        }
+      } catch (e) { await reply(`⚠️ TOTUS 프로젝트명+시트 반영 실패: ${e?.message ?? e} — "{작품} TOTUS 프로젝트명이랑 시트 반영해줘"로 다시 요청해줘.`); }
     } else {
       await reply(`⚠️ 이 작품은 설정집 작성 요청 메시지에서 PIVO를 못 찾아서, 프로젝트명+시트 반영 단계는 건너뛰었어요 — "{작품} TOTUS 프로젝트명이랑 시트 반영해줘"로 PIVO 알려주면서 다시 요청해줘.`);
     }
