@@ -217,7 +217,7 @@ const DISPATCHER_PROMPT = [
   "- 설정집 일정 시트 수동 등록('이 PIVO 시트에 등록해줘/설정집 일정에 추가해줘', propose_setjip_request 흐름을 안 거치고 다른 경로로 요청 나갔을 때): register_setjip_schedule(pivo, [thread], [apm]). 설정집 요청 스레드 안에서 부르면 thread 생략. 스레드 본문에서 작품명·APM·제출희망일 자동 인식, 못 찾으면 apm 인자 필수. 이미 등록된 PIVO면 중복 스킵. 게이트 없이 즉시 실행.",
   "- 설정집 AI검수 인증번호 재발급('OO 인증번호 재발급해줘/번역검수자 인증번호 발급해줘', 한도 초과로 폐기된 뒤 다시 필요할 때, 또는 요청 확인 시점엔 배정현황에 없어서 못 받은 역할 몫을 나중에 발급할 때): reissue_setjip_ai_token(pivo, role, [worker], [thread]). role은 '번역' 또는 '번역검수'. worker 생략하면 배정현황에서 그 역할 담당자를 다시 조회(없으면 에러 — worker로 이름 직접 줘야 함). 설정집 작성 요청 스레드 안에서 부르면 thread 생략, 그 스레드에 바로 게시. 게이트 없이 즉시 실행(발급은 되돌리기 쉬운 저위험 동작).",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
-  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 버튼 한 번으로 봇이 이어서 게이트 없이 바로 다 처리한다(2026-08-04부터 — 별도 확인 버튼 없음): ①TOTUS 프로젝트명 가제→FIX 변경 ②출판사 드라이브 링크 시트 한국어 타이틀·APM 채움 ③납품 시트(중일 V5)에 초도 회차만큼 행(1~N화) 생성 ④1-3화 번역검수 자동 모니터 등록. 그러니 propose_totus_project·propose_totus_sheets_sync·register_translation_monitor를 따로 부르지 말 것(그 체인이 실패했을 때의 수동 재시도 용도로만 남아있음). ★중요: '내부 시트(한국어 타이틀·납품 행)는 도구로 못 바꾼다/직접 채워야 한다'고 답하지 마라 — 위 버튼 체인으로 봇이 실제로 쓴다(버튼을 안 누르면 안 될 뿐). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
+  "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). ★사용자가 요청 문장에 PIVO를 직접 언급했으면(숫자만이든 'PIVO 123456'이든) 반드시 pivo 인자로도 같이 넘겨라 — 설정집 요청 메시지 자체엔 PIVO가 안 찍혀있는 경우가 있어서(오래된 스레드 등) work만으로는 검색은 되도 뒤의 TOTUS 프로젝트명+시트 반영 단계가 PIVO를 못 찾아 건너뛰어질 수 있다. DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 버튼 한 번으로 봇이 이어서 게이트 없이 바로 다 처리한다(2026-08-04부터 — 별도 확인 버튼 없음): ①TOTUS 프로젝트명 가제→FIX 변경 ②출판사 드라이브 링크 시트 한국어 타이틀·APM 채움 ③납품 시트(중일 V5)에 초도 회차만큼 행(1~N화) 생성 ④1-3화 번역검수 자동 모니터 등록. 그러니 propose_totus_project·propose_totus_sheets_sync·register_translation_monitor를 따로 부르지 말 것(그 체인이 실패했을 때의 수동 재시도 용도로만 남아있음). ★중요: '내부 시트(한국어 타이틀·납품 행)는 도구로 못 바꾼다/직접 채워야 한다'고 답하지 마라 — 위 버튼 체인으로 봇이 실제로 쓴다(버튼을 안 누르면 안 될 뿐). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
   "★고객사 → APM 릴레이(재상 님이 고객사 메시지를 붙이며 'APM에게 전달/릴레이해줘'류로 요청할 때): 고객사 채널엔 툰식이가 못 들어가서, 재상 님이 고객사 메시지(보통 **일본어**)를 붙여주면 툰식이가 APM에게 대신 전달하는 흐름이다. ①작품 식별(메시지의 일/중 타이틀 → get_work_info로 **한국어 작품명·담당 APM** 확인) ②요청 유형 파악(원본 교체 / 식자본 선납품 / 번역 JPG 공유 등) → **재상 님 대화체 톤**으로 APM 릴레이 초안을 만들어 send_message로 발송 제안(target=재팬_요청 `C09B8QHP7D4`, 본문 맨 앞 `<@담당APM>` + 끝에 `cc <@U04463JR4HH>`). ★톤(엄수): 굵은 제목·불릿·정형 필드 금지, 자연스러운 대화체. 예 — `<@APM>` 줄 / `<작품> N화 {요청}이 필요합니다.` / `{맥락 한 줄}, …부탁 드립니다.` / `{마감/확인} 가능할까요?`. 링크는 슬랙 마스킹 `<url|라벨>`(생 URL 나열 금지). ★원본 교체 요청이면 원본 링크(고객사가 준 baidu 등)+프로젝트 링크(get_project_url)를 `<url|원본 링크> / <url|프로젝트 링크>`로, 식자·식자검수 담당(작업자 DB)도 함께. 그 외 유형은 요청 내용만 담백하게. 담당 APM이 애매하면 한 줄 되묻기. 게이트(버튼)—'보냈다' 단정 금지.",
   "★작품 특이사항(비고) 등록: '이 작품 특이사항으로 ~ 적어둬/기억해둬'류 요청은 propose_work_note(work, note)로 출판사 드라이브 링크 시트 비고란에 즉시 기록(확인 버튼 없이 바로 반영). 저장해두면 그 작품 납품일마다 시스템이 자동으로 스캔해 그날 재팬_공지의 'Toon_Japan 납품스레드'(하루 1개, 결정적으로 찾음)에 리마인드를 직접 게시한다 — 이건 브레인(너) 개입 없이 스케줄러가 처리하니, 이 흐름 자체를 네가 따로 신경 쓸 필요는 없다(등록만 propose_work_note로 확실히 해주면 됨).",
   "★납품 '체크/완료 여부'를 물으면 반드시 check_undelivered_episodes를 호출해서 답하라 — 스레드에 첨부된 이미지·과거 대화 맥락에서 유추해 답하지 마라(실제로 스레드 내용으로 지어내 틀린 적 있음, 2026-07-15). 도구 호출 없이 '체크 컬럼을 확인할 수 없다'고 답하는 것도 금지 — 그 도구가 정확히 그 체크박스를 읽는다.",
@@ -2669,6 +2669,7 @@ const apmTools = createSdkMcpServer({
       {
         work: z.string().optional().describe("작품명(한/일/중) 또는 PIVO ID — 설정집 작성 요청 채널을 검색할 키. thread를 주면 생략 가능"),
         thread: z.string().optional().describe("설정집 작성 요청 메시지의 슬랙 링크(검색이 안 잡힐 때 폴백). 주면 검색 대신 그 스레드에 바로 발송"),
+        pivo: z.string().optional().describe("PIVO ID 직접 지정. ★사용자가 요청 문장에 PIVO를 직접 언급했으면(숫자만이든 'PIVO 123456'이든) 반드시 이 인자로 넘겨라 — 설정집 작성 요청 메시지 자체에 PIVO가 안 찍혀있어서(오래된 스레드 등) 자동추출이 실패해도, 이걸로 TOTUS 프로젝트명+시트 반영·검수 시작일 계산이 그대로 된다."),
         ko_title: z.string().optional().describe("한국어 타이틀(이 대화에서 정한 합의 제목). 생략 시 견적의 한국어 제목 사용"),
         revision_note: z.string().optional().describe("수정 사항 문구. 생략 시 '위에서 언급해드린 수정 사항 외에는 변동 없습니다.' (✏️수정 모달로도 입력 가능)"),
         first_delivery_date: z.string().optional().describe("초도 납품일 수동 지정(생략 시 견적에서 자동, 예 '8/24(월)')"),
@@ -2676,7 +2677,7 @@ const apmTools = createSdkMcpServer({
         apm_user_id: z.string().optional().describe("담당 APM Slack ID 수동 지정(생략 시 설정집 메시지에서 자동)"),
         review_start_date: z.string().optional().describe("검수 시작일 M/D 수동 지정(생략 시 자동, 요청일+11일)"),
       },
-      async ({ work, thread, ko_title, revision_note, first_delivery_date, first_episode, apm_user_id, review_start_date }) => {
+      async ({ work, thread, pivo: pivoHint, ko_title, revision_note, first_delivery_date, first_episode, apm_user_id, review_start_date }) => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
@@ -2701,7 +2702,7 @@ const apmTools = createSdkMcpServer({
             if (hits.length > 1) return { content: [{ type: "text", text: JSON.stringify({ found: true, multiple: true, msg: "설정집 작성 요청이 여러 건 잡혔어. 어느 건지 확인 필요.", candidates: hits.slice(0, 5).map((h) => ({ ts: h.ts, pivoId: h.pivoId, preview: String(h.text).replace(/\n/g, " ").slice(0, 80) })) }) }] };
             hit = hits[0];
           }
-          const pivo = hit.pivoId;
+          const pivo = hit.pivoId || String(pivoHint || "").match(/\d{4,}/)?.[0] || null;   // 스레드에서 못 찾아도 사용자가 직접 준 PIVO는 살림
           let firstDelivery = first_delivery_date?.trim() || "", firstEpisode = first_episode?.trim() || "", koFromQuote = "", firstDeliveryRaw = "";
           if (pivo) {
             try {
