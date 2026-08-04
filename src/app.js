@@ -95,6 +95,20 @@ const ALLOWED_USERS = new Set([OWNER_ID, ...APM_USER_IDS.split(",").map((s) => s
 // 요청자 Slack ID → 이름. 턴 맥락에 [요청자: 이름]으로 주입해 '내/내가'를 봇이 정확히 알게 한다.
 const USER_NAMES = { [OWNER_ID]: "박재상", "U07E0QPL8MV": "서주원", "U05CE8HFA6B": "정태영" };
 let currentUser = null;   // 지금 처리 중인 턴의 요청자 Slack ID (재상 전용 가드용)
+// USER_NAMES(3명 하드코딩)에 없는 사람의 이름 표시용 — 설정집 요청 스레드의 APM @멘션 자체는 항상 정확한
+// Slack ID라, 이름만 못 찾아서 "APM 미상"으로 시트 반영이 빠지던 문제를 실시간 Slack 조회로 해결.
+const _slackNameCache = new Map();
+async function resolveUserName(client, userId) {
+  if (!userId) return "";
+  if (USER_NAMES[userId]) return USER_NAMES[userId];
+  if (_slackNameCache.has(userId)) return _slackNameCache.get(userId);
+  try {
+    const r = await client.users.info({ user: userId });
+    const name = r?.user?.profile?.display_name || r?.user?.real_name || r?.user?.name || "";
+    if (name) _slackNameCache.set(userId, name);
+    return name;
+  } catch (e) { console.error("[resolveUserName] 실패:", e?.data?.error || e?.message); return ""; }
+}
 
 // 채널별 행동 지침(임시 대책). 성격이 고정된 채널에서 라우팅을 확정 — 그 채널 메시지 앞에
 // [이 채널 규칙]으로 주입돼 LLM이 최우선으로 따른다. .env CHANNEL_POLICY_JSON(JSON)으로 덮어쓰기 가능.
@@ -513,17 +527,18 @@ function submitDateToISO(s) {
   return `${year}-${String(mo).padStart(2, "0")}-${String(da).padStart(2, "0")}`;
 }
 // 설정집 작성 요청 게시 직후 이력 한 줄 기록(실패해도 요청 게시 자체는 막지 않음 — 게시가 우선).
-async function logSetjipSchedule({ work, pivo, apmId, submitDate, threadLink }) {
+async function logSetjipSchedule({ client, work, pivo, apmId, submitDate, threadLink }) {
   try {
     if (!_setjipTabEnsured) { await ensureTab(SETJIP_SCHEDULE_SHEET, SETJIP_SCHEDULE_TAB); _setjipTabEnsured = true; }
     const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A:A`);
     const row = (rows?.length || 1) + 1;   // 헤더 다음 첫 빈 행
     const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    const apmName = apmId ? await resolveUserName(client, apmId) : "";
     await setCells(SETJIP_SCHEDULE_SHEET, [
       { a1: `${SETJIP_SCHEDULE_TAB}!A${row}`, value: today },
       { a1: `${SETJIP_SCHEDULE_TAB}!B${row}`, value: work || "" },
       { a1: `${SETJIP_SCHEDULE_TAB}!C${row}`, value: pivo || "" },
-      { a1: `${SETJIP_SCHEDULE_TAB}!D${row}`, value: apmId ? (USER_NAMES[apmId] || apmId) : "" },
+      { a1: `${SETJIP_SCHEDULE_TAB}!D${row}`, value: apmName || apmId || "" },
       { a1: `${SETJIP_SCHEDULE_TAB}!E${row}`, value: submitDate || "" },
       { a1: `${SETJIP_SCHEDULE_TAB}!F${row}`, value: threadLink || "" },
       { a1: `${SETJIP_SCHEDULE_TAB}!G${row}`, value: "FALSE" },
@@ -740,10 +755,18 @@ function fmtSetjipRevisions(rows) {
 const SEARCH_CHANNELS = (process.env.SEARCH_CHANNELS || "").split(",").map((s) => s.trim()).filter(Boolean).map((s) => { const [id, ...n] = s.split(":"); return { id: id.trim(), name: (n.join(":").trim() || id.trim()) }; });
 const KO_WD = ["일", "월", "화", "수", "목", "금", "토"];
 
-// 고객 번역 검수 시작일 = 요청일(오늘 KST) + days(주말 포함 달력일, 기본 11). "M/D" 반환.
+// 고객 번역 검수 시작일 = 요청일(오늘 KST) + days(달력일, 기본 11), 그 날이 주말·한국·일본 공휴일이면
+// 다음 영업일로 넘김(재상 님 확인 2026-07-31 — 한/일 둘 다 봐야 함). "M/D" 반환.
+function isWeekendOrKrJpHoliday(d) {
+  const dow = d.getUTCDay();
+  if (dow === 0 || dow === 6) return true;
+  const iso = d.toISOString().slice(0, 10);
+  return KR_HOLIDAYS_2026.includes(iso) || JP_HOLIDAYS_2026.includes(iso);
+}
 function reviewStartMD(days = 11) {
   const kst = new Date(Date.now() + 9 * 3600 * 1000);
   kst.setUTCDate(kst.getUTCDate() + days);
+  while (isWeekendOrKrJpHoliday(kst)) kst.setUTCDate(kst.getUTCDate() + 1);
   return `${kst.getUTCMonth() + 1}/${kst.getUTCDate()}`;
 }
 // "2026.09.09" / "2026-09-09" → "9/9(수)". 해석 불가면 원문 그대로.
@@ -773,7 +796,7 @@ async function proposeTotusProjectAndSheets({ pivo, koTitle, apmId, firstEpisode
       return { ok: false, missing };
     }
     const newName = `[PV-${pivo}] [Piccoma중일] ${ja}(${ko})`;
-    const apmName = USER_NAMES[apmId] || "";   // 출판사/납품 시트 APM 이름용
+    const apmName = apmId ? await resolveUserName(client, apmId) : "";   // 출판사/납품 시트 APM 이름용 — 하드코딩 3명 외엔 Slack에서 실시간 조회
     const pjId = `proj_${++totusProjSeq}`;
     // 납품 시트(중일 V5) 초도 회차 행 생성용 — 회차 수·초도납품일(YMD)이 확인될 때만.
     const epN = parseInt(String(firstEpisode).replace(/[^\d]/g, ""), 10);
@@ -1072,6 +1095,13 @@ const KR_HOLIDAYS_2026 = [
   "2026-05-01", "2026-05-05", "2026-05-24", "2026-05-25", "2026-06-06", "2026-07-17",
   "2026-08-15", "2026-08-17", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27",
   "2026-10-03", "2026-10-05", "2026-10-09", "2026-12-25", "2027-01-01",
+];
+// 2026년 일본 공휴일(振替休日·国民の休日 포함) — 연 1회 수동 갱신 필요
+const JP_HOLIDAYS_2026 = [
+  "2026-01-01", "2026-01-12", "2026-02-11", "2026-02-23", "2026-03-20", "2026-04-29",
+  "2026-05-03", "2026-05-04", "2026-05-05", "2026-05-06", "2026-07-20", "2026-08-11",
+  "2026-09-21", "2026-09-22", "2026-09-23", "2026-10-12", "2026-11-03", "2026-11-23",
+  "2027-01-01",
 ];
 
 function isWeekendOrKrHoliday(now) {
@@ -2277,7 +2307,7 @@ const apmTools = createSdkMcpServer({
           const submitM = rootText.match(/설정집 제출 희망일\s*[:：]\s*([^\n]+)/);
 
           let work = workM?.[1]?.trim() || "";
-          let apmName = (apm && apm.trim()) || (apmM ? (USER_NAMES[apmM[1]] || apmM[1]) : "");
+          let apmName = (apm && apm.trim()) || (apmM ? await resolveUserName(ctx.client, apmM[1]) : "");
           const submitDate = submitM?.[1]?.trim() || "";
 
           if (!work) {
@@ -2590,7 +2620,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("propose_translation_start",
-      "설정집 검수가 끝난 작품의 '번역 개시 요청' 메시지를 고정 템플릿으로 만들어, 그 작품의 '설정집 작성 요청' 스레드(채널 검색으로 자동 탐색)에 답글로 발송하도록 '제안'한다(미리보기+✏️수정+버튼). DM에서 호출해도 됨. work(작품명 한/일/중 또는 PIVO)로 설정집 작성 요청 채널을 검색→그 메시지에서 담당 APM 멘션과 PIVO를 추출하고, PIVO로 TOTUS 견적을 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 (보통 이 대화에서 함께 정한) 합의된 제목을 ko_title로 준다(생략 시 견적의 한국어 제목). 검수 시작일은 자동(요청일+11일, 주말 포함). 후보가 여러 건이면 되묻는다. 절대 '보냈다'고 단정하지 말 것(버튼 눌러야 발송).",
+      "설정집 검수가 끝난 작품의 '번역 개시 요청' 메시지를 고정 템플릿으로 만들어, 그 작품의 '설정집 작성 요청' 스레드(채널 검색으로 자동 탐색)에 답글로 발송하도록 '제안'한다(미리보기+✏️수정+버튼). DM에서 호출해도 됨. work(작품명 한/일/중 또는 PIVO)로 설정집 작성 요청 채널을 검색→그 메시지에서 담당 APM 멘션과 PIVO를 추출하고, PIVO로 TOTUS 견적을 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 (보통 이 대화에서 함께 정한) 합의된 제목을 ko_title로 준다(생략 시 견적의 한국어 제목). 검수 시작일은 자동(요청일+11일, 주말·한국·일본 공휴일이면 다음 영업일로 넘김). 후보가 여러 건이면 되묻는다. 절대 '보냈다'고 단정하지 말 것(버튼 눌러야 발송).",
       {
         work: z.string().optional().describe("작품명(한/일/중) 또는 PIVO ID — 설정집 작성 요청 채널을 검색할 키. thread를 주면 생략 가능"),
         thread: z.string().optional().describe("설정집 작성 요청 메시지의 슬랙 링크(검색이 안 잡힐 때 폴백). 주면 검색 대신 그 스레드에 바로 발송"),
@@ -3998,7 +4028,7 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
       blocks: buildSetjipProgressBlocks({ work: p.work, pivo: String(p.e?.pivo || ""), revisionDone: false, revisionDate: "", genkoDone: false, genkoDate: "" }),
     }).catch((e) => console.error("[setjip_confirm] 진행체크 버튼 게시 실패:", e?.message ?? e));
     const permalink = await client.chat.getPermalink({ channel: p.channel, message_ts: posted.ts }).then((r) => stripPermalinkQuery(r?.permalink)).catch(() => null);
-    logSetjipSchedule({ work: p.work, pivo: p.e?.pivo, apmId: p.apmId, submitDate: p.e?.submit_date, threadLink: permalink });
+    logSetjipSchedule({ client, work: p.work, pivo: p.e?.pivo, apmId: p.apmId, submitDate: p.e?.submit_date, threadLink: permalink });
     await reply(`✅ 설정집 작성 요청 게시 완료 → <#${p.channel}> (${p.work})`);
   } catch (e) {
     await reply(`❌ 게시 실패: ${e?.message ?? e}\n(봇이 그 채널 멤버인지 확인)`);
