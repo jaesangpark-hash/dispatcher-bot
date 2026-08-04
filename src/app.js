@@ -2669,7 +2669,7 @@ const apmTools = createSdkMcpServer({
       {
         work: z.string().optional().describe("작품명(한/일/중) 또는 PIVO ID — 설정집 작성 요청 채널을 검색할 키. thread를 주면 생략 가능"),
         thread: z.string().optional().describe("설정집 작성 요청 메시지의 슬랙 링크(검색이 안 잡힐 때 폴백). 주면 검색 대신 그 스레드에 바로 발송"),
-        pivo: z.string().optional().describe("PIVO ID 직접 지정. ★사용자가 요청 문장에 PIVO를 직접 언급했으면(숫자만이든 'PIVO 123456'이든) 반드시 이 인자로 넘겨라 — 설정집 작성 요청 메시지 자체에 PIVO가 안 찍혀있어서(오래된 스레드 등) 자동추출이 실패해도, 이걸로 TOTUS 프로젝트명+시트 반영·검수 시작일 계산이 그대로 된다."),
+        pivo: z.string().optional().describe("PIVO ID 직접 지정. ★사용자가 요청 문장에 PIVO를 직접 언급했으면(숫자만이든 'PIVO 123456'이든) 반드시 이 인자로 넘겨라 — 설정집 작성 요청 메시지 자체에 PIVO가 안 찍혀있어서(오래된 스레드 등) 자동추출이 실패해도, 이걸로 TOTUS 프로젝트명+시트 반영·검수 시작일 계산이 그대로 된다. 생략해도 스레드 추출 실패 시 '출판사 드라이브 링크' 시트를 제목으로 마지막 조회한다."),
         ko_title: z.string().optional().describe("한국어 타이틀(이 대화에서 정한 합의 제목). 생략 시 견적의 한국어 제목 사용"),
         revision_note: z.string().optional().describe("수정 사항 문구. 생략 시 '위에서 언급해드린 수정 사항 외에는 변동 없습니다.' (✏️수정 모달로도 입력 가능)"),
         first_delivery_date: z.string().optional().describe("초도 납품일 수동 지정(생략 시 견적에서 자동, 예 '8/24(월)')"),
@@ -2702,7 +2702,14 @@ const apmTools = createSdkMcpServer({
             if (hits.length > 1) return { content: [{ type: "text", text: JSON.stringify({ found: true, multiple: true, msg: "설정집 작성 요청이 여러 건 잡혔어. 어느 건지 확인 필요.", candidates: hits.slice(0, 5).map((h) => ({ ts: h.ts, pivoId: h.pivoId, preview: String(h.text).replace(/\n/g, " ").slice(0, 80) })) }) }] };
             hit = hits[0];
           }
-          const pivo = hit.pivoId || String(pivoHint || "").match(/\d{4,}/)?.[0] || null;   // 스레드에서 못 찾아도 사용자가 직접 준 PIVO는 살림
+          let pivo = hit.pivoId || String(pivoHint || "").match(/\d{4,}/)?.[0] || null;   // 스레드에서 못 찾아도 사용자가 직접 준 PIVO는 살림
+          if (!pivo) {   // 스레드에도 없고 사용자도 안 줬으면 마지막으로 "출판사 드라이브 링크" 시트에서 제목으로 조회
+            const tryKeys = [ko_title, work, ...(currentFileRefs || []).flatMap((f) => filenameKeys(f.name))].map((k) => String(k || "").trim()).filter(Boolean);
+            for (const k of tryKeys) {
+              const entry = await lookupDriveEntryForWork(k).catch(() => null);
+              if (entry?.pivo) { pivo = entry.pivo; break; }
+            }
+          }
           let firstDelivery = first_delivery_date?.trim() || "", firstEpisode = first_episode?.trim() || "", koFromQuote = "", firstDeliveryRaw = "";
           if (pivo) {
             try {
