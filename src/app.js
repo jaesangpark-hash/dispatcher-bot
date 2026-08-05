@@ -3531,7 +3531,7 @@ async function handleRetakeWatch({ message, client }) {
 
 // ── 수급 안내(설정집/타이틀 로고) 자동 감지 → 배정 작업자 + 채널 링크(+설정집이면 프로젝트 링크) 스레드 답글 ──
 const SUPPLY_NOTICE_CHANNEL = process.env.SUPPLY_NOTICE_CHANNEL || "C09B8QLR5FG";
-const SUPPLY_BOTS = { "B0B77NK250T": "FIX 설정집", "B0B103Z57T9": "타이틀 로고" };   // 도착 안내 봇 → 종류
+const SUPPLY_BOTS = { "B0B77NK250T": "FIX 설정집", "B0B103Z57T9": "타이틀 로고" };   // 도착 안내를 보내는 봇 목록(게이트용) — 종류 판별엔 안 씀, 같은 봇이 여러 종류를 보낼 수 있어 본문 내용으로 판별(아래 kind)
 const WORKER_DB_SHEET = "1lvHDrNCiBplWlfIdAgI2iYNPAFWGrHYlqxjjebnFpE8";              // 작업자 DB!A:F (A이름 C slack D channel)
 const SUPPLY_ROLES = [["번역", "번역 skip"], ["번역검수", "번역검수 skip"], ["식자", "식자 skip"], ["식번검", "식번검 skip"], ["식자검수", "식자검수 skip"]];
 // 타이틀 로고는 식자 작업 관련만(식자·식자검수), 설정집은 전 역할
@@ -3553,7 +3553,12 @@ async function handleSupplyNotice({ message, client }) {
     const ts = message.ts;
     if (processed.has("sn:" + ts)) return; processed.add("sn:" + ts);
     const text = blockText(message);
-    const kind = SUPPLY_BOTS[message.bot_id] || (/설정집.{0,6}도착\s*안내/.test(text) ? "FIX 설정집" : /타이틀.{0,6}도착\s*안내/.test(text) ? "타이틀 로고" : null);
+    // ★본문 내용을 봇ID보다 먼저 확인 — 같은 봇(중일PM Secretary, B0B77NK250T)이 FIX 설정집·타이틀 로고 안내를
+    // 둘 다 보내게 되면서, 봇ID만으로 분류하면 실제로 "타이틀 로고 도착 안내"인 메시지도 무조건 "FIX 설정집"으로
+    // 잘못 분류돼 역할 목록(식자·식자검수만이 아니라 번역·번역검수·식번검까지)이 통째로 틀리던 사고 발견(2026-08-05).
+    const kind = /타이틀\s*로고.{0,10}도착/.test(text) ? "타이틀 로고"
+      : /설정집.{0,10}도착/.test(text) ? "FIX 설정집"
+      : SUPPLY_BOTS[message.bot_id] || null;
     if (!kind) return;
     const work = (text.match(/타이틀\s*[:：]\s*(.+)/) || [])[1]?.trim();
     if (!work) { console.log("[supply] 작품명 못 찾음"); return; }
