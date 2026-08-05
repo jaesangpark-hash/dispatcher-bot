@@ -39,6 +39,7 @@ const EXPIRE_MS  = 48 * 3600 * 1000;          // 무응답 만료 기준
 const CHECK_EVERY_MS = 3 * 3600 * 1000;       // 트래킹 체크 주기(3~6시간 중 하한으로 고정, tick 자체는 더 촘촘히 불려도 내부에서 스킵)
 
 const PROMPT_JA = "上記の指摘事項をご確認いただき、修正が必要な箇所はこちらのスレッドにコメントで残してください。";
+const READ_TOKEN = () => get("SLACK_BOT_TOKEN"); // files:read 있는 툰식이 토큰 — REVIEW_BOT_TOKEN엔 없음, 원본 파일 다운로드에만 사용
 
 // ── Google Sheets JWT(쓰기 스코프) ───────────────────────
 const b64url = (b) => Buffer.from(b).toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
@@ -133,6 +134,36 @@ async function fetchThreadReplies(channel, ts) {
   return res.json();
 }
 
+// 원본 AI검사 결과 파일을 그대로 재첨부(링크가 아니라 실제 파일) — REVIEW_BOT_TOKEN엔 files:read가 없어 다운로드만 SLACK_BOT_TOKEN(툰식이) 사용, 업로드/게시는 검수봇 정체성 유지
+async function reshareAnchorFile(anchorFile, channel, threadTs) {
+  if (!anchorFile?.url_private) return false;
+  try {
+    const fileRes = await fetch(anchorFile.url_private, { headers: { Authorization: `Bearer ${READ_TOKEN()}` } });
+    if (!fileRes.ok) throw new Error(`다운로드 실패 ${fileRes.status}`);
+    const buf = Buffer.from(await fileRes.arrayBuffer());
+    const filename = anchorFile.name || "review.xlsx";
+
+    const params = new URLSearchParams({ filename, length: String(buf.length) });
+    const getUrlRes = await fetch(`https://slack.com/api/files.getUploadURLExternal?${params}`, { method: "POST", headers: { Authorization: `Bearer ${REVIEW_BOT_TOKEN()}` } });
+    const getUrlJson = await getUrlRes.json();
+    if (!getUrlJson.ok) throw new Error(`getUploadURLExternal 실패: ${JSON.stringify(getUrlJson).slice(0, 200)}`);
+
+    const upRes = await fetch(getUrlJson.upload_url, { method: "POST", body: buf });
+    if (!upRes.ok) throw new Error(`업로드 실패 ${upRes.status}`);
+
+    const completeRes = await reviewBotCall("files.completeUploadExternal", {
+      files: [{ id: getUrlJson.file_id, title: filename }],
+      channel_id: channel,
+      thread_ts: threadTs,
+    });
+    if (!completeRes.ok) throw new Error(`completeUploadExternal 실패: ${JSON.stringify(completeRes).slice(0, 200)}`);
+    return true;
+  } catch (e) {
+    console.error("[reviewFollowup] 파일 재첨부 실패:", e.message);
+    return false;
+  }
+}
+
 // ── 메인 처리 ──────────────────────────────────────────────
 let _lastRunAt = 0;
 
@@ -206,11 +237,14 @@ export async function tickReviewFollowup(slackClient) {
         const workerMap = await loadWorkerMap();
         const nextInfo = workerMap.get(nextEmail.toLowerCase());
         const japaneseTitle = row.get("japaneseTitle") || row.get("workTitle");
-        const relayText = `📩 *${japaneseTitle}* 1-3話 修正内容を反映してください\n\n本文：\n${combinedComment}`;
+        const anchorFile = (replies.messages || []).find((m) => m.ts === messageTs)?.files?.[0];
+        const mentionPart = nextInfo?.slackId ? `<@${nextInfo.slackId}> ` : "";
+        const relayText = `${mentionPart}📩 *${japaneseTitle}* 1-3話 修正内容を反映してください\n\n本文：\n${combinedComment}`;
 
         if (nextInfo?.channelId) {
           const r = await reviewBotCall("chat.postMessage", { channel: nextInfo.channelId, text: relayText });
           if (!r.ok) console.error("[reviewFollowup] v2 릴레이 발송 실패:", r.error);
+          else if (anchorFile) await reshareAnchorFile(anchorFile, nextInfo.channelId, r.ts);
         } else {
           try {
             const dm = await slackClient.conversations.open({ users: PM_SLACK_ID() });
