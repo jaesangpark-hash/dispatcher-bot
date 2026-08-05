@@ -1834,7 +1834,6 @@ const apmTools = createSdkMcpServer({
       },
       async ({ work, episode, operation, startDate, endDate }) => {
         try {
-          const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
           const fp = await findProject(work);
           const candidates = fp?.data || [];
@@ -3861,7 +3860,7 @@ app.action("task_retake_confirm", async ({ ack, body, client }) => {
   const id = body.actions?.[0]?.value;
   const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
-  if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
+  if (!ALLOWED_USERS.has(body.user?.id)) return reply("권한 없는 사용자예요.");
   const p = pendingTaskRetake.get(id);
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 요청이에요.");
   pendingTaskRetake.delete(id);
