@@ -2638,7 +2638,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("outline_children",
-      "Outline에서 특정 부모 문서의 하위 문서 목록(제목·생성일·url·id)을 반환한다. doc 생략 시 *자동화 정기 스크럼 부모 문서* 하위 = 주차별 회의록 목록. ★스크럼 주차 비교(지난주 vs 이번주)는 검색이 부정확하니 이걸 먼저 써서 목록을 받고, 원하는 주차(예 07-01·2026-07-08)를 골라 outline_read로 본문을 읽어라. 제목 날짜 형식은 '(MM-DD)' 또는 '(YYYY-MM-DD)'.",
+      "Outline에서 특정 부모 문서의 하위 문서 목록(제목·생성일·url·id)을 반환한다. doc 생략 시 *자동화 정기 스크럼 부모 문서* 하위 = 주차별 회의록 목록. ★스크럼 주차 비교(지난주 vs 이번주)는 검색이 부정확하니 이걸 먼저 써서 목록을 받고, 원하는 주차(예 07-01·2026-07-08)를 골라 outline_read로 본문을 읽어라. 제목 형식은 'YYYY-MM-DD 자동화 정기 스크럼'(날짜가 맨 앞, 2026-08-19 이후 생성분부터 — 그 이전 문서는 '자동화 정기 스크럼 — YYYY-MM-DD' 구형식일 수 있음).",
       { doc: z.string().optional().describe("부모 문서 ID/urlId/URL. 생략 시 스크럼 부모(OUTLINE_PARENT_DOC_ID)") },
       async (a) => {
         try {
@@ -4982,7 +4982,7 @@ async function checkWeeklyScrum() {
       const prev = (await outlineChildren()).filter((k) => k.id && !String(k.title || "").includes(mdate)).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
       if (prev) { const t = await outlineDocText(prev.id); if (t && t.length > 100) body = t; }
     } catch (e) { console.error("[scrum] 이어받기 실패:", e?.message ?? e); }
-    const doc = await createOutlineDoc(`자동화 정기 스크럼 — ${mdate}`, body);
+    const doc = await createOutlineDoc(`${mdate} 자동화 정기 스크럼`, body);
     const mentions = process.env.WEEKLY_SCRUM_MENTIONS || "";
     const docLine = doc?.url ? `📄 회의록: ${doc.url}` : `_📄 회의록 링크는 Outline 연동(토큰) 후 자동 첨부돼요._`;
     const lines = [
