@@ -9,8 +9,8 @@ import { readRange } from "./sheets.js";
 const DOWNLOADS = "C:/Users/P-205/Downloads";
 // 납품 완료 체크박스가 있는 라이브 구글시트(엑셀 파일의 원본). 탭명 "M/D"(예 "7/15", zero-pad 없음).
 const COMPLETION_SHEET_ID = "1foLY_HtD8PwF4li2z_5V7Zfyq8NhFOiWv508okAdcTY";
-// 고정 멘션(재팬팀 운영 리소스 레지스트리 기준, 2026-06-15 확정)
-const MENTION_IDS = ["U02BTD7TY48", "U04463JR4HH", "U02GPTNGZ5W", "U05CE8HFA6B", "U07E0QPL8MV"];
+// 고정 멘션(재팬팀 운영 리소스 레지스트리 기준, 2026-06-15 확정. U07G8KC2EE6로 교체 2026-08-19)
+const MENTION_IDS = ["U02BTD7TY48", "U04463JR4HH", "U02GPTNGZ5W", "U05CE8HFA6B", "U07G8KC2EE6"];
 
 // 다운로드 폴더에서 "납품시트" 포함 xlsx 중 가장 최근 파일을 찾는다.
 export function findLatestDeliveryExcel() {

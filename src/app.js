@@ -218,7 +218,8 @@ const DISPATCHER_PROMPT = [
   "- 설정집 AI검수 인증번호 재발급('OO 인증번호 재발급해줘/번역검수자 인증번호 발급해줘', 한도 초과로 폐기된 뒤 다시 필요할 때, 또는 요청 확인 시점엔 배정현황에 없어서 못 받은 역할 몫을 나중에 발급할 때): reissue_setjip_ai_token(pivo, role, [worker], [thread]). role은 '번역' 또는 '번역검수'. worker 생략하면 배정현황에서 그 역할 담당자를 다시 조회(없으면 에러 — worker로 이름 직접 줘야 함). 설정집 작성 요청 스레드 안에서 부르면 thread 생략, 그 스레드에 바로 게시. 게이트 없이 즉시 실행(발급은 되돌리기 쉬운 저위험 동작).",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
   "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). ★사용자가 요청 문장에 PIVO를 직접 언급했으면(숫자만이든 'PIVO 123456'이든) 반드시 pivo 인자로도 같이 넘겨라 — 설정집 요청 메시지 자체엔 PIVO가 안 찍혀있는 경우가 있어서(오래된 스레드 등) work만으로는 검색은 되도 뒤의 TOTUS 프로젝트명+시트 반영 단계가 PIVO를 못 찾아 건너뛰어질 수 있다. DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 버튼 한 번으로 봇이 이어서 게이트 없이 바로 다 처리한다(2026-08-04부터 — 별도 확인 버튼 없음): ①TOTUS 프로젝트명 가제→FIX 변경 ②출판사 드라이브 링크 시트 한국어 타이틀·APM 채움 ③납품 시트(중일 V5)에 초도 회차만큼 행(1~N화) 생성 ④1-3화 번역검수 자동 모니터 등록. 그러니 propose_totus_project·propose_totus_sheets_sync·register_translation_monitor를 따로 부르지 말 것(그 체인이 실패했을 때의 수동 재시도 용도로만 남아있음). ★중요: '내부 시트(한국어 타이틀·납품 행)는 도구로 못 바꾼다/직접 채워야 한다'고 답하지 마라 — 위 버튼 체인으로 봇이 실제로 쓴다(버튼을 안 누르면 안 될 뿐). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
-  "★고객사 → APM 릴레이(재상 님이 고객사 메시지를 붙이며 'APM에게 전달/릴레이해줘'류로 요청할 때): 고객사 채널엔 툰식이가 못 들어가서, 재상 님이 고객사 메시지(보통 **일본어**)를 붙여주면 툰식이가 APM에게 대신 전달하는 흐름이다. ①작품 식별(메시지의 일/중 타이틀 → get_work_info로 **한국어 작품명·담당 APM** 확인) ②요청 유형 파악(원본 교체 / 식자본 선납품 / 번역 JPG 공유 등) → **재상 님 대화체 톤**으로 APM 릴레이 초안을 만들어 send_message로 발송 제안(target=재팬_요청 `C09B8QHP7D4`, 본문 맨 앞 `<@담당APM>` + 끝에 `cc <@U04463JR4HH>`). ★톤(엄수): 굵은 제목·불릿·정형 필드 금지, 자연스러운 대화체. 예 — `<@APM>` 줄 / `<작품> N화 {요청}이 필요합니다.` / `{맥락 한 줄}, …부탁 드립니다.` / `{마감/확인} 가능할까요?`. 링크는 슬랙 마스킹 `<url|라벨>`(생 URL 나열 금지). ★원본 교체 요청이면 원본 링크(고객사가 준 baidu 등)+프로젝트 링크(get_project_url)를 `<url|원본 링크> / <url|프로젝트 링크>`로, 식자·식자검수 담당(작업자 DB)도 함께. 그 외 유형은 요청 내용만 담백하게. 담당 APM이 애매하면 한 줄 되묻기. 게이트(버튼)—'보냈다' 단정 금지.",
+  "★고객사 → APM 릴레이(재상 님이 고객사 메시지를 붙이며 'APM에게 전달/릴레이해줘'류로 요청할 때, 헤더 없이 원문만 붙이고 '판단해봐'/'초안 띄워줘'/'보여줘'류로 요청할 때도 동일 — 표현이 뭐든 결국 실제 수신자(APM)에게 나갈 초안이면 전부 이 흐름): 고객사 채널엔 툰식이가 못 들어가서, 재상 님이 고객사 메시지(보통 **일본어**)를 붙여주면 툰식이가 APM에게 대신 전달하는 흐름이다. ①작품 식별 — 메시지의 일/중 타이틀로 get_work_info를 호출해 **pivoId·한국어 작품명(koTitle)·담당 APM**을 확정한다. get_work_info가 exact 매칭을 못 찾으면(애매하면) 초안으로 넘어가지 말고 먼저 '이 작품 맞아?'로 확인부터 받는다. ★pivoId를 확정한 뒤에는 get_project_url을 포함한 이후 모든 조회에 **원문 텍스트가 아니라 pivoId만** 넘긴다 — get_project_url·get_work_info는 서로 다른 백엔드로 검색해 결과가 갈릴 수 있고, get_project_url은 호출 즉시 슬랙에 링크를 게시하는 부작용이 있어 원문으로 잘못 조회하면 오탐 링크가 바로 게시된다(실제로 'ドラゴン使い' 같은 원문 조각으로 get_project_url을 불렀다가 전혀 다른 작품 링크가 게시된 사고 있었음, 2026-08-07). ②요청 유형 파악(원본 교체 / 원본 파일 추가공유 / 식자본 선납품 / 번역 JPG 공유 등) — ★다운로드 경로/원본 소재지는 **get_work_info의 driveLink 필드**로 안내한다 — 첨부 스크린샷을 보고 폴더 구조·경로를 눈짐작으로 지어내지 말 것(이미지 판독은 부정확하고 실제 드라이브 구조와 다를 수 있음). driveLink가 있으면 그 링크를, driveLink가 null이면(콰이칸·빌리빌리 등 URL 미제공 출판사) 경로 대신 **출판사명(get_work_info의 publisher 필드)만** 언급한다(예: '콰이칸 쪽에 공유된 파일이에요, 확인 부탁드립니다'). 파일명은 스크린샷에 명확히 보이면 참고해 언급해도 되지만, 폴더 경로 자체는 image에서 재구성하지 않는다. → **재상 님 대화체 톤**으로 APM 릴레이 초안을 만들어 **반드시 send_message 도구를 호출**해 발송 제안(target=재팬_요청 `C09B8QHP7D4`, 본문 맨 앞 `<@담당APM>` + 끝에 `cc <@U04463JR4HH>`). ★금지: 초안을 채팅 텍스트로 직접 적고 '보낼까요?'라고 말로만 묻는 것 — send_message를 안 거치면 버튼·linkToken 치환·첨부파일 동반이 전부 빠진다. 무엇을 시켜도('띄워줘'/'보여줘' 포함) 실제 발송 대상이 정해진 초안은 항상 send_message로 제안하고, 그 결과 버튼 메시지를 '초안이에요'로 소개하는 정도만 채팅에 남긴다. ★톤(엄수, 재상 님이 재팬_요청 채널에 실제로 쓴 문장 기반): 짧고 사실 위주의 격식체(-습니다/-합니다체)만 쓴다. **금지**: 이모지, 물결(~), '~드릴게요'/'~해드릴게요' 같은 캐주얼한 쿠션어, 과한 친근함, '안녕하세요'/'수고하세요'/'감사합니다' 같은 인사·의례 문구(용건만 바로 말함), '혹시'/'괜찮으시다면'/'번거로우시겠지만' 같은 쿠션어(가장 부드러운 표현도 '~가능할까요?' 정도까지만). 요청 어휘는 아래 몇 개로 고정해서 쓰고 매번 새로 창작하지 않는다: '확인 부탁 드립니다.' / '말씀 주세요.' / '진행 부탁 드립니다.' / '~가능할까요?'. 문제가 있으면 돌려 말하지 않고 사실만 직설적으로 쓴다(예: '번역문과 다른 내용으로 식자가 되어 있습니다.'). 구조는 `<@담당APM>` 줄 → `<작품명> {상황을 담백하게 서술, 완료형}.` → (있으면) 세부 이슈 한두 줄(여러 건이면 '•'나 번호로 나열) → (요청이 있으면) 마지막 줄에 위 고정 어휘로 짧게. 실제 예시(그대로 참고) — 1) `<@U07E0QPL8MV>\n<죽음이 나를 왕이라 부른다> 1차 납품 검수 완료되었습니다.\n1화에만 식자 관련 코멘트 있습니다.\n\n[요청 사항]\n1화 고객 검수 반영 후 슬라이스한 JPG 파일 따로 받아서 7/23 오전 중으로 여기로 제출가능하실까요?` 2) `<@U05CE8HFA6B>\n<세컨드 로그인> 1-3화 식자본 선납품이 필요합니다.\n아직 최종 검수 진행 전이지만, 우선 LQA 작업 반영 + 타이틀 로고 / 크레딧 삽입 후 1-3화만 재제출 부탁 드립니다.\n내일 오전까지 가능할까요?` 3) `<@U05CE8HFA6B>\n<언리미티드 네크로멘서> 1차 납품 고객 검수 완료되었습니다.\n2화에만 텍스트 박스 방향 관련 코멘트 있습니다.\n이후 회차에도 반영이 필요한 내용이라, 식자 작업자에게도 공유 부탁 드립니다.` 이 정도의 간결함·어미·격식·직설적 태도를 그대로 따라간다. ★언어(엄수): 원문이 일본어·중국어여도 본문은 **전체 한국어**로 쓰고 작품명도 반드시 **한국어 작품명(koTitle)**을 쓴다 — 원문 언어를 따라가지 않는다. 링크는 슬랙 마스킹 `<url|라벨>`(생 URL 나열 금지). ★링크: 프로젝트 링크(get_project_url, pivoId로 조회)는 **모든 유형에 공통으로** 본문에 포함한다 — ★단 URL을 직접 쓰지 말 것: get_project_url이 돌려준 linkToken 문자열(`{{PROJECT_LINK:uuid}}` 형태)을 그 자리에 그대로 복사해 넣으면 send_message가 발송 직전에 실제 하이퍼링크로 치환해준다(UUID를 손으로 옮기다 오타 낸 사고 있었음, 2026-07-28 — 그래서 모델은 URL 자체를 절대 모른다). 원본 파일(교체·추가공유 등) 관련 요청이면 여기에 원본 링크(고객사가 준 baidu 등, 원문에 있는 그대로)를 더해 `<url|원본 링크> {linkToken}`으로, 식자·식자검수 담당(작업자 DB)도 함께. 원본과 무관한 유형은 linkToken만. 담당 APM이 애매하면 한 줄 되묻기. ★대상 APM이 여러 명이어도 기본은 **하나의 메시지로 합쳐서 보낸다**(send_message의 단일 target/text로, 채널 앞머리에 관련 APM들을 전부 `<@APM1> <@APM2>`로 멘션 나열하고 본문에 작품별로 '• 작품명 (@담당APM)'처럼 구분) — items 배열(대상별 별도 메시지)은 재상 님이 그 자리에서 명시적으로 '각각 나눠줘/따로 보내줘'라고 할 때만 쓴다(items를 쓰면 항목별 ✏️수정은 되지만 대상마다 메시지가 갈라진다). 합친 단일 메시지 쪽이 대상별 ✏️수정도 더 간단하다(단일 수정 모달). 게이트(버튼)—'보냈다' 단정 금지.",
+  "★내부 채널 요청/공유 시 관련 정보 동봉: 재상 님이 툰식이를 통해 내부 채널(재팬_요청·PM요청·작업자 채널 등)에 무언가 요청하거나 공유할 때는, 본문만 덜렁 보내지 말고 상황에 맞는 참고정보를 같이 실어라 — 프로젝트 링크(get_project_url의 linkToken), 원본/드라이브 링크(get_work_info의 driveLink), 작업자 채널·담당자 정보(작업자 DB) 등. 그 요청 성격과 무관한 것까지 억지로 채우지 말고, 받는 사람이 바로 찾아볼 수 있게 관련된 것만 고른다(2026-08-19).",
   "★작품 특이사항(비고) 등록: '이 작품 특이사항으로 ~ 적어둬/기억해둬'류 요청은 propose_work_note(work, note)로 출판사 드라이브 링크 시트 비고란에 즉시 기록(확인 버튼 없이 바로 반영). 저장해두면 그 작품 납품일마다 시스템이 자동으로 스캔해 그날 재팬_공지의 'Toon_Japan 납품스레드'(하루 1개, 결정적으로 찾음)에 리마인드를 직접 게시한다 — 이건 브레인(너) 개입 없이 스케줄러가 처리하니, 이 흐름 자체를 네가 따로 신경 쓸 필요는 없다(등록만 propose_work_note로 확실히 해주면 됨).",
   "★납품 '체크/완료 여부'를 물으면 반드시 check_undelivered_episodes를 호출해서 답하라 — 스레드에 첨부된 이미지·과거 대화 맥락에서 유추해 답하지 마라(실제로 스레드 내용으로 지어내 틀린 적 있음, 2026-07-15). 도구 호출 없이 '체크 컬럼을 확인할 수 없다'고 답하는 것도 금지 — 그 도구가 정확히 그 체크박스를 읽는다.",
   "★문의봇 하향 릴레이(재상 님이 고객사 답장을 붙이며 '문의봇에 전달/릴레이해줘'류로 요청할 때, 위 고객사→APM 릴레이와 달리 원래 **작업자 쪽에서 올라온 문의·재수급**에 대한 고객사 회신을 되짚어 보내는 경우): 문의/재수급 요청은 시트(문의봇·재수급봇 탭)에 원 스레드 URL과 함께 기록되어 있으니, 웹훅 연동 없이 **find_unresolved_inquiry(work, episode)**로 그 시트를 조회해 미해결(완료 미체크) 건의 원 스레드를 찾는다. ①고객사 답에서 작품(일/중/한)+회차 추출 ②find_unresolved_inquiry 호출 ③결과가 1건이면 그 candidate의 link(스레드 URL)를 send_message의 thread 인자로 그대로 넘겨 답변 relay(+APM 멘션: candidate.apm이 서주원/정태영/박재상이면 위 Slack ID 맵으로, 그 외 이름이면 query_sheet(worker_db)로 slack_id 조회 — 이름 그대로 텍스트로 멘션하지 말 것) ④2건 이상이면 후보(작품·회차·링크) 보여주고 어느 스레드인지 되묻기 ⑤0건이면 '미해결 문의/재수급 못 찾음'이라 답하고 지어내지 말 것. 게이트(버튼)—'보냈다' 단정 금지.",
@@ -240,6 +241,7 @@ const DISPATCHER_PROMPT = [
   "- 스레드 찾기('○○ 작품 ~~ 스레드 찾아줘', '○○ 관련 논의 어디 있어', 과거 대화/스레드 내용): find_thread(query=작품명+키워드). 등록된 주요 업무 채널들에서 검색해 매칭 스레드를 찾고, 1개로 분명하면 내용(topContent)까지 와서 요약·답+링크. 여러 개면 후보를 보여주고 어느 건지 되묻거나 키워드를 좁힌다(임의 단정 금지). 사용자가 특정 채널을 말하면 channel 인자로. 특정 스레드/링크를 콕 집으면 read_thread. (등록 채널·봇 멤버 범위 내 — 전역 검색 아님)",
   "- '고객사 스케줄 시트'(중일, =내부 납품 시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. '○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일=mode:launch(work나 pivo + episode), ★'이 납품(회차)이 스케줄 시트에 기재/반영됐나' 검증=**mode:delivery_check**(納品話数+納品予定日 기준, listedForDelivery로 판단 — 話数(런칭)로 보는 launch로 판단하면 오답이니 절대 launch로 납품 기재 여부를 판정하지 마라), 'N/일 납품 회차 카운트'=mode:delivery_on+date, '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. 여러 작품+회차를 한꺼번에 검증하면 각 항목마다 delivery_check를 돌려 결과를 모아 답한다. 블록 제목(正式+仮) 직접매칭이라 일본어 제목만으로도 잘 잡힌다. ID 묻지 말 것(이 도구가 그 시트임).",
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
+  "★채널 사전(2026-08-19 확정 — send_message 등에서 채널을 부를 때 이 이름들이면 재상 님께 ID를 다시 묻지 말고 바로 이 값을 target으로 써라): '재팬_요청'/'요청 채널'/'요청채널' = C09B8QHP7D4. '재팬_작업요청'/'작업요청 채널'/'작업요청채널'/'설정집 채널' = C09AUQN8GEB. '재팬_공지'/'공지 채널'/'공지채널' = C09B8QLR5FG. '리마인더 채널'/'리마인더채널' = C0B73GL3WAJ. '리테이크 채널'/'리테이크 감시 채널' = C09B8QBEC9L. 이 사전에 없는 채널명을 대면 지어내지 말고 '그 채널 ID(또는 링크)를 알려달라'고 되묻는다.",
   "- 학습/교정(영구): 재상 님이 '앞으로 ~로 기억해/외워둬', '이건 이렇게 이해해', 또는 내가 잘못 이해한 걸 바로잡아 주면 → remember(note)로 저장한다(재기동에도 유지, 다음부터 자동 적용). '그 규칙 잊어'=forget, '뭐 배웠어'=list_learned. ★단순 '나중에 ~할 일'은 add_reminder(리마인더), 항구적 동작 규칙·별칭·이해 교정은 remember로 구분. 모호하면 '리마인더로 할까요, 규칙으로 외울까요?' 한 줄 확인.",
   "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝내거나 '그만'할 때까지 하루 여러 번 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. 완료('~했어'·'N번 완료'·'해결됐어')거나 중단('그만'·'멈춰'·'이건 그만 리마인드해') 신호 → complete_reminder(번호 또는 내용 일부). 재촉 중인 일을 대화로 처리하다가 '그만/됐어' 신호가 오면 그 항목을 complete_reminder로 빼라.",
   "그 밖에 도구가 없는 일이면, '도구가 없다'를 장황히 설명하지 말고 — 아는 선에서 바로 도움이 되는 답을 주고, 정확한 데이터가 필요하면 어디(어느 시트·채널)를 보면 되는지 한 줄로만 짚어준다.",
@@ -317,6 +319,7 @@ async function annotateWongoNotes() {
   const todayKDay = kday(Date.now());
   const updates = [];
   let tightCount = 0, groupCount = 0;
+  const tightItems = [];   // ★재상 님 요청(2026-08-13): 원고수급 실행 시 납품일 2주 미만 남은 작품을 별도 채널 노티용으로 수집
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     const work = String(r[2] || "").trim();
@@ -335,7 +338,11 @@ async function annotateWongoNotes() {
       const days = dr.found.map((f) => f.currentDate).filter(Boolean)
         .map((d) => { const m = String(d).match(/(\d{4})-(\d{2})-(\d{2})/); return m ? kday(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null; })
         .filter((n) => n != null);
-      if (days.length && Math.min(...days) - todayKDay < 14) { noteValue = "일정 타이트"; tightCount++; }
+      if (days.length && Math.min(...days) - todayKDay < 14) {
+        noteValue = "일정 타이트"; tightCount++;
+        const minDay = Math.min(...days);
+        tightItems.push({ work, pivo, episodes: epRange, daysLeft: minDay - todayKDay });
+      }
     }
     if (!noteValue) {
       const mode = await deliveryBatchMode({ pivo }).catch(() => null);
@@ -345,7 +352,7 @@ async function annotateWongoNotes() {
     if (noteValue) updates.push({ a1: `원고수급!L${i + 2}`, value: noteValue });
   }
   if (updates.length) await setCells(OPS_ID, updates);
-  return { total: updates.length, tightCount, groupCount };
+  return { total: updates.length, tightCount, groupCount, tightItems };
 }
 // 여러 작품을 배정 현황(등록 여부·상태) + 납품 시트(최근 납품일 지남 여부)로 한 번에 대조.
 // 시트를 작품 수만큼 반복 조회하지 않고 딱 2번(배정현황·납품시트)만 읽어 로컬 매칭 — get_delivery_date를
@@ -458,6 +465,7 @@ async function ctxPermalink() {
 const EDIT_TTL_MS = 24 * 60 * 60 * 1000;   // 버튼 유효 24h (영속화로 재시작에도 유지)
 
 const SETJIP_CHANNEL = process.env.SETJIP_CHANNEL || "C09AUQN8GEB";   // 설정집 작성 요청 채널(#재팬_작업요청)
+const WONGO_TIGHT_CHANNEL = process.env.WONGO_TIGHT_CHANNEL || "C09AUQN8GEB";   // 원고수급 실행 시 납품일 2주 미만 작품 노티(재상 님 요청, 2026-08-13). 같은 채널(#재팬_작업요청) 재사용.
 // ── 설정집 일정 관리(2026-07-15): 요청 이력을 시트에 남기고, 제출 희망일 당일 재상 님께 검수 리마인드 ──
 const SETJIP_SCHEDULE_SHEET = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
 const SETJIP_SCHEDULE_TAB = "설정집 일정";
@@ -1923,7 +1931,10 @@ const apmTools = createSdkMcpServer({
           if (ctx?.client) {
             await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.threadTs || ctx.ts, text: `🔗 <${projName}> 프로젝트 링크예요\n${url}`, unfurl_links: false, ...SENDER });
           }
-          return { content: [{ type: "text", text: JSON.stringify({ posted: true, work: projName, note: "링크는 이미 코드가 직접 슬랙에 올렸다. 너는 URL을 재전송하거나 옮겨적지 말고 '보냈다'고만 한 줄로 알려라." }) }] };
+          // ★다른 메시지(APM 릴레이 등) 본문에 이 링크를 넣어야 할 때도 모델이 URL을 직접 못 쓰게, 토큰만 준다.
+          // send_message가 발송 직전에 이 토큰을 실제 링크로 치환한다(모델은 토큰 문자열만 그대로 복사해 넣으면 됨).
+          const linkToken = `{{PROJECT_LINK:${proj.uuid}}}`;
+          return { content: [{ type: "text", text: JSON.stringify({ posted: true, work: projName, linkToken, note: "이 대화창엔 이미 링크가 게시됐다(재전송 금지). 다른 메시지(예 send_message로 APM에게 보낼 본문)에 이 프로젝트 링크를 넣고 싶으면, URL을 직접 쓰지 말고 linkToken 문자열을 그 자리에 그대로 복사해 넣어라 — send_message가 발송 시 자동으로 실제 하이퍼링크로 치환한다." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -2429,7 +2440,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: false } }),
     tool("send_message",
-      "슬랙으로 메시지를 보낸다. 받는이가 재상 님 본인(U04463JR4HH)이면 바로 발송, 그 외(다른 사람/채널)면 프리뷰+확인 버튼 후 발송. target=채널ID(C…) 또는 사용자ID(U…). 사람 이름만 알면 먼저 query_sheet(worker_db)로 slack_id를 조회해 ID로 넘겨라. 특정 스레드에 댓글로 달려면 thread에 그 메시지 링크(permalink)를 넘겨라(그러면 그 스레드 답글로 발송). 여러 명/채널에 같은 종류의 공지를 한 번에 보낼 땐 target/text 대신 items 배열을 써라 — 확인 버튼이 대상마다 따로 생기지 않고 1개로 묶여서 한 번에 전체 발송/취소된다(대량 발송 시 버튼 난립 방지). 임의로 '보냈다'고 말하지 말 것(확인 대기일 수 있음).",
+      "슬랙으로 메시지를 보낸다. 받는이가 재상 님 본인(U04463JR4HH)이면 바로 발송, 그 외(다른 사람/채널)면 프리뷰+확인 버튼 후 발송. target=채널ID(C…) 또는 사용자ID(U…). 사람 이름만 알면 먼저 query_sheet(worker_db)로 slack_id를 조회해 ID로 넘겨라. 특정 스레드에 댓글로 달려면 thread에 그 메시지 링크(permalink)를 넘겨라(그러면 그 스레드 답글로 발송). 여러 명/채널에 같은 종류의 공지를 한 번에 보낼 땐 target/text 대신 items 배열을 써라 — 확인 버튼이 대상마다 따로 생기지 않고 1개로 묶여서 한 번에 전체 발송/취소된다(대량 발송 시 버튼 난립 방지). items도 ✏️수정 버튼으로 항목별 내용을 재상 님이 직접 고칠 수 있다(수정 불가라고 말하지 말 것). ★재상 님이 이번 턴에 이미지·파일을 첨부했으면(예: 고객사 원문과 함께 스크린샷) 그 첨부가 자동으로 이 메시지에 같이 실려서 발송된다 — 별도 인자 불필요, target/thread만 쓰는 단일 호출에서만 적용됨(items 배치 발송엔 첨부 안 실림). 임의로 '보냈다'고 말하지 말 것(확인 대기일 수 있음).",
       {
         target: z.string().optional().describe("받는 곳: 채널 ID(C…) 또는 사용자 ID(U…). thread(링크)를 주면 채널은 링크에서 자동 추출되므로 생략 가능. items를 쓸 땐 생략"),
         text: z.string().optional().describe("보낼 메시지 내용. items를 쓸 땐 생략"),
@@ -2444,47 +2455,40 @@ const apmTools = createSdkMcpServer({
           const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
           if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "발송 컨텍스트 없음" }) }] };
+          if (text) text = expandLinkTokens(text);
 
           if (items && items.length) {
-            const cleaned = items.map((it) => ({ target: String(it.target || "").trim(), text: it.text })).filter((it) => it.target && it.text);
+            const cleaned = items.map((it) => ({ target: String(it.target || "").trim(), text: expandLinkTokens(it.text) })).filter((it) => it.target && it.text);
             if (!cleaned.length) return { content: [{ type: "text", text: JSON.stringify({ error: "items가 비어있음" }) }] };
             const sendId = `send_${++sendSeq}`;
-            pendingSends.set(sendId, { items: cleaned, createdAt: Date.now() });
-            const lines = cleaned.map((it, i) => `${i + 1}. ${it.target.startsWith("C") ? `<#${it.target}>` : `<@${it.target}>`}`).join("\n");
-            await ctx.client.chat.postMessage({
+            const p = { items: cleaned, createdAt: Date.now() };
+            pendingSends.set(sendId, p);
+            const posted = await ctx.client.chat.postMessage({
               channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `일괄 발송 확인: ${cleaned.length}건`,
-              blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `✉️ *일괄 발송 확인 (${cleaned.length}건)*\n${lines}` } },
-                { type: "actions", elements: [
-                  { type: "button", style: "primary", text: { type: "plain_text", text: `✉️ 전체 발송 (${cleaned.length}건)` }, value: sendId, action_id: "send_confirm" },
-                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: sendId, action_id: "send_cancel" },
-                ] },
-              ],
+              blocks: itemsConfirmBlocks(sendId, p),
             });
-            return { content: [{ type: "text", text: JSON.stringify({ proposed: true, count: cleaned.length, note: "확인 버튼 1개(일괄)를 보냈음. 사용자가 버튼을 눌러야 전체 발송됨. 보냈다고 말하지 말 것." }) }] };
+            if (posted?.ts) { p.previewChannel = ctx.channel; p.previewTs = posted.ts; pendingSends.save(); }
+            return { content: [{ type: "text", text: JSON.stringify({ proposed: true, count: cleaned.length, note: "확인 버튼 1개(일괄)를 보냈음(✏️수정으로 항목별 내용을 재상 님이 직접 고칠 수도 있음). 사용자가 버튼을 눌러야 전체 발송됨. 보냈다고 말하지 말 것." }) }] };
           }
 
           // 스레드 링크 파싱 → thread_ts(+채널). target 없으면 링크 채널 사용.
           let threadTs = null;
           if (thread) { const p = parseSlackLink(thread); if (!p) return { content: [{ type: "text", text: JSON.stringify({ error: `스레드 링크/ts를 못 읽음: ${thread} (슬랙 메시지 '링크 복사' 값 또는 1719300000.123456 형식)` }) }] }; threadTs = p.ts; if (!target && p.channel) target = p.channel; }
           if (!target) return { content: [{ type: "text", text: JSON.stringify({ error: "받는 곳(target) 또는 스레드 링크가 필요해요." }) }] };
+          const files = (currentFileRefs || []).filter((f) => f?.url).map((f) => ({ url: f.url, name: f.name || "file", mimetype: f.mimetype || "" }));
           if (target === DISPATCHER_USER_ID && !threadTs) {
-            await ctx.client.chat.postMessage({ channel: target, text, ...SENDER });
+            await postMessageWithFiles(ctx.client, { channel: target, text, files });
             return { content: [{ type: "text", text: JSON.stringify({ sent: true, to: "본인 DM" }) }] };
           }
           const sendId = `send_${++sendSeq}`;
-          pendingSends.set(sendId, { target, text, threadTs, createdAt: Date.now() });
-          await ctx.client.chat.postMessage({
+          const p = { target, text, threadTs, files, createdAt: Date.now() };
+          pendingSends.set(sendId, p);
+          const posted = await ctx.client.chat.postMessage({
             channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `발송 확인: ${target}`,
-            blocks: [
-              { type: "section", text: { type: "mrkdwn", text: `✉️ *발송 확인*\n• 받는 곳: ${target.startsWith("C") ? `<#${target}>` : `<@${target}>`}${threadTs ? ` (스레드 답글)` : ""}\n• 내용:\n>${String(text).replace(/\n/g, "\n>")}` } },
-              { type: "actions", elements: [
-                { type: "button", style: "primary", text: { type: "plain_text", text: "✉️ 보내기" }, value: sendId, action_id: "send_confirm" },
-                { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: sendId, action_id: "send_cancel" },
-              ] },
-            ],
+            blocks: sendConfirmBlocks(sendId, p),
           });
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, to: target, note: "확인 버튼을 보냈음. 사용자가 버튼을 눌러야 발송됨. 보냈다고 말하지 말 것." }) }] };
+          if (posted?.ts) { p.previewChannel = ctx.channel; p.previewTs = posted.ts; pendingSends.save(); }
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, to: target, fileCount: files.length, note: "확인 버튼을 보냈음(✏️수정으로 재상 님이 직접 고칠 수도 있음). 사용자가 버튼을 눌러야 발송됨. 보냈다고 말하지 말 것." }) }] };
         } catch (e) {
           return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
         }
@@ -2749,7 +2753,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("run_wongo_update",
-      "원고수급(납품·이관) 시트의 '미발송' 건(발송 여부 N열 미체크 & 담당 APM 매칭 & 작품명 있음)을 GAS 웹앱으로 일괄 전송한다. ★재상 님이 버튼 없이 바로 실행하기로 함 — 이 도구는 확인 버튼 없이 즉시 슬랙 리포트 전송 + N열 체크 + n8n 반영을 수행하고 결과만 보고한다. '원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘' 류에 사용. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지). 빈 행·담당자 미매칭은 GAS가 제외. 전송 전에 비고란을 자동 기재한다: 납품일 14일 미만 남으면 '일정 타이트', 아니면 그 작품의 납품 배치 주기(같은 납품일로 묶이는 연속 회차 크기의 최빈값)가 3 이상일 때만 '주{N}화 납품'(1·2화는 기본값 취급, 라벨 없음. 기존 비고 있으면 안 건드림). 성공 시 간단히, 실패/일부실패/타임아웃이면 분명히 보고.",
+      "원고수급(납품·이관) 시트의 '미발송' 건(발송 여부 N열 미체크 & 담당 APM 매칭 & 작품명 있음)을 GAS 웹앱으로 일괄 전송한다. ★재상 님이 버튼 없이 바로 실행하기로 함 — 이 도구는 확인 버튼 없이 즉시 슬랙 리포트 전송 + N열 체크 + n8n 반영을 수행하고 결과만 보고한다. '원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘' 류에 사용. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지). 빈 행·담당자 미매칭은 GAS가 제외. 전송 전에 비고란을 자동 기재한다: 납품일 14일 미만 남으면 '일정 타이트', 아니면 그 작품의 납품 배치 주기(같은 납품일로 묶이는 연속 회차 크기의 최빈값)가 3 이상일 때만 '주{N}화 납품'(1·2화는 기본값 취급, 라벨 없음. 기존 비고 있으면 안 건드림). '일정 타이트'로 잡힌 작품이 있으면 별도로 WONGO_TIGHT_CHANNEL(#재팬_작업요청, C09AUQN8GEB)에 목록(작품·회차·D-일)을 알림으로 올린다(재상 님 요청, 2026-08-13). 성공 시 간단히, 실패/일부실패/타임아웃이면 분명히 보고.",
       {},
       async () => {
         try {
@@ -2757,6 +2761,17 @@ const apmTools = createSdkMcpServer({
           let noteStats = { total: 0, tightCount: 0, groupCount: 0 };
           try { noteStats = await annotateWongoNotes(); } catch (e) { console.error("[wongo] 비고 자동기재 실패:", e?.message ?? e); }
           const noteSummary = noteStats.total ? `, 비고 기재 ${noteStats.total}건(일정타이트 ${noteStats.tightCount}·회차그룹 ${noteStats.groupCount})` : "";
+          if (noteStats.tightItems?.length) {
+            try {
+              const lines = noteStats.tightItems
+                .sort((a, b) => a.daysLeft - b.daysLeft)
+                .map((t) => `• ${t.work} (${t.episodes}) — 납품일 D-${t.daysLeft}`);
+              await app.client.chat.postMessage({
+                channel: WONGO_TIGHT_CHANNEL, ...SENDER,
+                text: `⏰ *원고수급 — 납품일 2주 미만 작품 ${noteStats.tightItems.length}건*\n${lines.join("\n")}`,
+              });
+            } catch (e) { console.error("[wongo] 일정타이트 노티 실패:", e?.message ?? e); }
+          }
           const r = await wongoPost(false);                 // 버튼 없이 즉시 실제 전송
           const sent = r.managers ?? 0, failed = r.failedManagers ?? 0, rows = r.rows ?? 0;
           if (sent === 0 && failed === 0) return { content: [{ type: "text", text: JSON.stringify({ ok: true, pending: 0, noteStats, note: "보낼 미발송 건이 없었음(전부 발송됨/담당자 미매칭). 사용자에게 '보낼 거 없었어요'만 간단히." }) }] };
@@ -3955,6 +3970,62 @@ app.view("fob_resolve_submit", async ({ ack, view, client }) => {
   }
 });
 
+// send_message 발송 확인 미리보기 블록 — 최초 게시·✏️수정 후 갱신 둘 다 이걸로 통일.
+function sendConfirmBlocks(sendId, p) {
+  return [
+    { type: "section", text: { type: "mrkdwn", text: `✉️ *발송 확인*\n• 받는 곳: ${p.target.startsWith("C") ? `<#${p.target}>` : `<@${p.target}>`}${p.threadTs ? ` (스레드 답글)` : ""}${p.files?.length ? `\n• 첨부: ${p.files.length}개` : ""}\n• 내용:\n>${String(p.text).replace(/\n/g, "\n>")}` } },
+    { type: "actions", elements: [
+      { type: "button", style: "primary", text: { type: "plain_text", text: "✉️ 보내기" }, value: sendId, action_id: "send_confirm" },
+      { type: "button", text: { type: "plain_text", text: "✏️ 수정" }, value: sendId, action_id: "send_edit" },
+      { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: sendId, action_id: "send_cancel" },
+    ] },
+  ];
+}
+
+// send_message(items) 일괄 발송 확인 미리보기 블록 — 최초 게시·✏️수정 후 갱신 둘 다 이걸로 통일.
+function itemsConfirmBlocks(sendId, p) {
+  const blocks = [
+    { type: "section", text: { type: "mrkdwn", text: `✉️ *일괄 발송 확인 (${p.items.length}건)*` } },
+    ...p.items.map((it, i) => ({
+      type: "section",
+      text: { type: "mrkdwn", text: `*${i + 1}. ${it.target.startsWith("C") ? `<#${it.target}>` : `<@${it.target}>`}*\n>${String(it.text).replace(/\n/g, "\n>")}` },
+    })),
+    { type: "actions", elements: [
+      { type: "button", style: "primary", text: { type: "plain_text", text: `✉️ 전체 발송 (${p.items.length}건)` }, value: sendId, action_id: "send_confirm" },
+      { type: "button", text: { type: "plain_text", text: "✏️ 수정" }, value: sendId, action_id: "send_items_edit" },
+      { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: sendId, action_id: "send_cancel" },
+    ] },
+  ];
+  return blocks;
+}
+
+// get_project_url이 준 linkToken({{PROJECT_LINK:uuid}})을 실제 마스킹 하이퍼링크로 치환.
+// 모델이 URL을 직접 손으로 안 쓰게(2026-07-28 UUID 오타 사고) — uuid는 토큰 자체에 이미 안전하게 담겨 있으므로 추가 조회 없이 순수 치환만 한다.
+function expandLinkTokens(text) {
+  return String(text ?? "").replace(/\{\{PROJECT_LINK:([a-zA-Z0-9-]+)\}\}/g, (_, uuid) =>
+    `<https://admin.totus.pro/ko/workProgressManagementDetail/?id=${uuid}|프로젝트 링크>`);
+}
+
+// send_message용 — 첨부(currentFileRefs 경유) 있으면 봇 토큰으로 받아 같이 업로드, 없으면 평문 발송.
+async function postMessageWithFiles(client, { channel, thread_ts, text, files }) {
+  if (files?.length) {
+    const uploads = [];
+    for (const f of files) {
+      try {
+        const res = await fetch(f.url, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
+        if (!res.ok) continue;
+        uploads.push({ file: Buffer.from(await res.arrayBuffer()), filename: f.name });
+      } catch { /* 개별 파일 실패는 건너뜀 */ }
+    }
+    if (uploads.length) {
+      await client.files.uploadV2({ channel_id: channel, thread_ts, initial_comment: text, file_uploads: uploads });
+      return uploads.length;
+    }
+  }
+  await client.chat.postMessage({ channel, thread_ts, text, ...SENDER });
+  return 0;
+}
+
 // ── 발송 확인/취소 (실제 발송은 LLM 밖, 여기서만) ──────────────────
 app.action("send_confirm", async ({ ack, body, client }) => {
   await ack();
@@ -3988,9 +4059,9 @@ app.action("send_confirm", async ({ ack, body, client }) => {
 
   try {
     if (p.threadTs) { try { await client.conversations.join({ channel: p.target }); } catch {} }
-    await client.chat.postMessage({ channel: p.target, text: p.text, thread_ts: p.threadTs || undefined, ...SENDER });
-    appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, target: p.target, threadTs: p.threadTs || null, text: p.text }) + "\n");
-    await reply(`✅ 발송 완료 → ${p.target.startsWith("C") ? `<#${p.target}>` : `<@${p.target}>`}${p.threadTs ? " (스레드 답글)" : ""}`);
+    const attached = await postMessageWithFiles(client, { channel: p.target, thread_ts: p.threadTs || undefined, text: p.text, files: p.files });
+    appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, target: p.target, threadTs: p.threadTs || null, text: p.text, files: attached }) + "\n");
+    await reply(`✅ 발송 완료 → ${p.target.startsWith("C") ? `<#${p.target}>` : `<@${p.target}>`}${p.threadTs ? " (스레드 답글)" : ""}${attached ? ` (첨부 ${attached}개 포함)` : ""}`);
   } catch (e) {
     await reply(`❌ 발송 실패: ${e?.message ?? e}\n(봇이 그 채널 멤버인지 / 대상 ID가 맞는지 확인)`);
   }
@@ -4000,6 +4071,76 @@ app.action("send_cancel", async ({ ack, body, client }) => {
   await ack();
   pendingSends.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+app.action("send_edit", async ({ ack, body, client }) => {
+  await ack();
+  if (body.user?.id !== DISPATCHER_USER_ID) return;
+  const id = body.actions?.[0]?.value;
+  const p = pendingSends.get(id);
+  if (!p || p.items) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료됐거나 수정할 수 없는 초안이에요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: "modal", callback_id: "send_edit_modal", private_metadata: id,
+      title: { type: "plain_text", text: "발송 초안 수정" },
+      submit: { type: "plain_text", text: "적용" }, close: { type: "plain_text", text: "닫기" },
+      blocks: [
+        { type: "input", block_id: "body", label: { type: "plain_text", text: "내용" },
+          element: { type: "plain_text_input", action_id: "val", multiline: true, initial_value: p.text } },
+      ],
+    },
+  }).catch((e) => console.error("[send_edit] views.open 실패:", e?.data?.error || e?.message));
+});
+
+app.view("send_edit_modal", async ({ ack, view, client, body }) => {
+  await ack();
+  const id = view.private_metadata;
+  const p = pendingSends.get(id);
+  if (!p) return;
+  if (body.user?.id !== DISPATCHER_USER_ID) return;
+  const newText = view.state.values?.body?.val?.value;
+  if (typeof newText === "string" && newText.trim()) { p.text = newText; pendingSends.save(); }
+  if (p.previewChannel && p.previewTs) {
+    await client.chat.update({ channel: p.previewChannel, ts: p.previewTs, text: `발송 확인(수정됨): ${p.target}`, blocks: sendConfirmBlocks(id, p) }).catch((e) => console.error("[send_edit_modal] update 실패:", e?.data?.error || e?.message));
+  }
+});
+
+app.action("send_items_edit", async ({ ack, body, client }) => {
+  await ack();
+  if (body.user?.id !== DISPATCHER_USER_ID) return;
+  const id = body.actions?.[0]?.value;
+  const p = pendingSends.get(id);
+  if (!p || !p.items) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료됐거나 수정할 수 없는 초안이에요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: "modal", callback_id: "send_items_edit_modal", private_metadata: id,
+      title: { type: "plain_text", text: "일괄 발송 수정" },
+      submit: { type: "plain_text", text: "적용" }, close: { type: "plain_text", text: "닫기" },
+      blocks: p.items.map((it, i) => ({
+        type: "input", block_id: `item_${i}`, optional: true,
+        label: { type: "plain_text", text: `${i + 1}. ${it.target}`.slice(0, 75) },
+        element: { type: "plain_text_input", action_id: "val", multiline: true, initial_value: it.text },
+      })),
+    },
+  }).catch((e) => console.error("[send_items_edit] views.open 실패:", e?.data?.error || e?.message));
+});
+
+app.view("send_items_edit_modal", async ({ ack, view, client, body }) => {
+  await ack();
+  const id = view.private_metadata;
+  const p = pendingSends.get(id);
+  if (!p || !p.items) return;
+  if (body.user?.id !== DISPATCHER_USER_ID) return;
+  p.items.forEach((it, i) => {
+    const v = view.state.values?.[`item_${i}`]?.val?.value;
+    if (typeof v === "string" && v.trim()) it.text = v;
+  });
+  pendingSends.save();
+  if (p.previewChannel && p.previewTs) {
+    await client.chat.update({ channel: p.previewChannel, ts: p.previewTs, text: `일괄 발송 확인(수정됨): ${p.items.length}건`, blocks: itemsConfirmBlocks(id, p) }).catch((e) => console.error("[send_items_edit_modal] update 실패:", e?.data?.error || e?.message));
+  }
 });
 
 // ── 설정집 작성 요청 게시 확인/취소 (실제 게시는 LLM 밖, 여기서만) ──

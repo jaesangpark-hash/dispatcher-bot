@@ -36,7 +36,7 @@ const TRACK_TAB        = () => get("REVIEW_TRACK_TAB") || "중일 1-3화 번역�
 const PM_SLACK_ID      = () => process.env.DISPATCHER_USER_ID || get("PM_SLACK_ID") || "U04463JR4HH";
 
 const EXPIRE_MS  = 48 * 3600 * 1000;          // 무응답 만료 기준
-const CHECK_EVERY_MS = 3 * 3600 * 1000;       // 트래킹 체크 주기(3~6시간 중 하한으로 고정, tick 자체는 더 촘촘히 불려도 내부에서 스킵)
+const CHECK_EVERY_MS = 1 * 3600 * 1000;       // 트래킹 체크 주기(1시간, tick 자체는 더 촘촘히 불려도 내부에서 스킵)
 
 const PROMPT_JA = "上記の指摘事項をご確認いただき、修正が必要な箇所はこちらのスレッドにコメントで残してください。";
 const READ_TOKEN = () => get("SLACK_BOT_TOKEN"); // files:read 있는 툰식이 토큰 — REVIEW_BOT_TOKEN엔 없음, 원본 파일 다운로드에만 사용
