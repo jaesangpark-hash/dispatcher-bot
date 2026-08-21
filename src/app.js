@@ -4214,20 +4214,23 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
     // 초도 회차 원본 파일 순서 자동 점검·수정 — 번역 개시뿐 아니라 설정집 작성 요청 시점에도(재상 님 요청,
     // 2026-08-21). 설정집 작성 자체가 초도 회차 원문을 참조하므로 이 시점에 미리 잡아두는 게 더 이르다.
     const epN = parseInt(String(p.e?.episodes || "").replace(/[^\d]/g, ""), 10);
+    // ★결과 보고는 확인버튼을 누른 위치(DM 등)가 아니라 실제 요청 스레드(p.channel/posted.ts)로 —
+    // 재상 님이 나중에 그 스레드만 봐도 파일순서 점검 결과가 바로 보이게(2026-08-21 재상 님 지적).
+    const replyToThread = (t) => client.chat.postMessage({ channel: p.channel, thread_ts: posted.ts, text: t, ...SENDER }).catch(() => {});
     if (p.e?.pivo && epN > 0) {
       try {
         const r = await runFileOrderCheck({ work: p.e.pivo, episodes: `1-${epN}`, channel: p.channel, ts: posted.ts, client });
         if (r.error) {
-          await reply(`⚠️ 파일 순서 자동 점검 실패: ${r.error}`);
+          await replyToThread(`⚠️ 파일 순서 자동 점검 실패: ${r.error}`);
         } else if (r.executed) {
           const fixed = (r.results || []).filter((s) => s.startsWith("✅")).length;
           const clean = (r.results || []).filter((s) => s.startsWith("👌")).length;
           const rest = (r.results || []).length - fixed - clean;
-          await reply(`📁 초도 1~${epN}화 파일 순서 자동 점검: 수정 ${fixed}건 · 이미 정상 ${clean}건${rest ? ` · 확인필요/실패 ${rest}건` : ""}`);
+          await replyToThread(`📁 초도 1~${epN}화 파일 순서 자동 점검: 수정 ${fixed}건 · 이미 정상 ${clean}건${rest ? ` · 확인필요/실패 ${rest}건` : ""}`);
         } else {
-          await reply(`📁 초도 1~${epN}화 파일 순서 중 애매한 회차(${r.tieEpisodeCount}건)가 있어 확인 버튼을 그 스레드에 보냈어요 — 확인해줘.`);
+          await replyToThread(`📁 초도 1~${epN}화 파일 순서 중 애매한 회차(${r.tieEpisodeCount}건)가 있어 확인 버튼을 이 스레드에 보냈어요 — 확인해줘.`);
         }
-      } catch (e) { await reply(`⚠️ 파일 순서 자동 점검 실패: ${e?.message ?? e}`); }
+      } catch (e) { await replyToThread(`⚠️ 파일 순서 자동 점검 실패: ${e?.message ?? e}`); }
     }
   } catch (e) {
     await reply(`❌ 게시 실패: ${e?.message ?? e}\n(봇이 그 채널 멤버인지 확인)`);
@@ -4637,19 +4640,21 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
     if (p.pivo) {
       const epN = parseInt(String(p.firstEpisode || "").replace(/[^\d]/g, ""), 10);
       if (epN > 0) {
+        // ★결과 보고는 확인버튼을 누른 위치가 아니라 실제 설정집 스레드(p.channel/p.threadTs)로(2026-08-21).
+        const replyToThread = (t) => client.chat.postMessage({ channel: p.channel, thread_ts: p.threadTs, text: t, ...SENDER }).catch(() => {});
         try {
           const r = await runFileOrderCheck({ work: p.pivo, episodes: `1-${epN}`, channel: p.channel, ts: p.threadTs, client });
           if (r.error) {
-            await reply(`⚠️ 파일 순서 자동 점검 실패: ${r.error}`);
+            await replyToThread(`⚠️ 파일 순서 자동 점검 실패: ${r.error}`);
           } else if (r.executed) {
             const fixed = (r.results || []).filter((s) => s.startsWith("✅")).length;
             const clean = (r.results || []).filter((s) => s.startsWith("👌")).length;
             const rest = (r.results || []).length - fixed - clean;
-            await reply(`📁 초도 1~${epN}화 파일 순서 자동 점검: 수정 ${fixed}건 · 이미 정상 ${clean}건${rest ? ` · 확인필요/실패 ${rest}건` : ""}`);
+            await replyToThread(`📁 초도 1~${epN}화 파일 순서 자동 점검: 수정 ${fixed}건 · 이미 정상 ${clean}건${rest ? ` · 확인필요/실패 ${rest}건` : ""}`);
           } else {
-            await reply(`📁 초도 1~${epN}화 파일 순서 중 애매한 회차(${r.tieEpisodeCount}건)가 있어 확인 버튼을 이 스레드에 보냈어요 — 확인해줘.`);
+            await replyToThread(`📁 초도 1~${epN}화 파일 순서 중 애매한 회차(${r.tieEpisodeCount}건)가 있어 확인 버튼을 이 스레드에 보냈어요 — 확인해줘.`);
           }
-        } catch (e) { await reply(`⚠️ 파일 순서 자동 점검 실패: ${e?.message ?? e}`); }
+        } catch (e) { await replyToThread(`⚠️ 파일 순서 자동 점검 실패: ${e?.message ?? e}`); }
       }
     }
   } catch (e) {
