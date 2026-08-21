@@ -4561,6 +4561,18 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
     if (!attached) await client.chat.postMessage({ channel: p.channel, thread_ts: p.threadTs, text, ...SENDER });
     appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "transstart", channel: p.channel, threadTs: p.threadTs, pivo: p.pivo, files: attached, text }) + "\n");
     await reply(`✅ 번역 개시 요청을 <#${p.channel}> 설정집 스레드에 발송했어요.${attached ? ` (첨부 ${attached}개 포함)` : " (첨부 파일은 직접 올려 주세요)"}`);
+    // 후속0: '설정집 일정' 시트에서 이 PIVO 행 찾아 P열(번역개시일)에 오늘 날짜 기록 — 번역개시된 작품을
+    // 일정 탭에서 따로 표시하고 싶다는 재상 님 요청(2026-08-21). 실패해도 발송 자체는 이미 끝난 뒤라 무시.
+    if (p.pivo) {
+      try {
+        const srRows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_SCHEDULE_TAB}!A2:O2000`);
+        const rowIdx = (srRows || []).findIndex((r) => String(r[2] || "").trim() === String(p.pivo).trim());
+        if (rowIdx >= 0) {
+          const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+          await setCells(SETJIP_SCHEDULE_SHEET, [{ a1: `${SETJIP_SCHEDULE_TAB}!P${rowIdx + 2}`, value: today }]);
+        }
+      } catch (e) { console.error("[setjip-schedule] 번역개시일(P열) 기록 실패:", e?.message ?? e); }
+    }
     // 후속: TOTUS 프로젝트명 가제→FIX + 출판사/납품 시트 — 번역개시 발송에 묶어 게이트 없이 바로 실행(2026-08-04, 재상 님 요청: 한 번에 처리).
     if (p.pivo) {
       try {
