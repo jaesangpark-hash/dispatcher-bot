@@ -392,7 +392,7 @@ async function n8nPost(path, body) {
   return j;
 }
 // review-engine(EC2) 검수 호출. 인라인 판단 대신 이 엔진(정규화·PASS1/2·critic)을 단일 소스로 사용.
-const REVIEW_ENGINE_BASE = (process.env.REVIEW_ENGINE_BASE || "http://13.125.252.179:8000").replace(/\/$/, "");
+const REVIEW_ENGINE_BASE = (process.env.REVIEW_ENGINE_BASE || "http://54.180.119.187:8000").replace(/\/$/, "");
 async function reviewEngineReview({ work, episode, stage, lang, taskUuid, pairs }) {
   const texts = pairs.map((p, i) => {
     const [pageStr, tbStr] = String(p.pb || "").split("-");
