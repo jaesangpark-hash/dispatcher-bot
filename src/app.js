@@ -4313,49 +4313,61 @@ app.action("setjip_cancel", async ({ ack, body, client }) => {
 // 설정집 작성 요청 수정 — 모달(필드 직접 편집)
 app.action("setjip_edit", async ({ ack, body, client }) => {
   await ack();
-  if (body.user?.id !== DISPATCHER_USER_ID) return;
-  const id = body.actions?.[0]?.value;
-  const p = pendingSetjip.get(id);
-  if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정 불가. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
-  const e = p.e || {};
-  const apmDisplay = p.apmId ? await resolveUserName(client, p.apmId) || p.apmId : "";
-  const inp = (b, label, init, ml = false) => ({ type: "input", block_id: b, optional: true, label: { type: "plain_text", text: label }, element: { type: "plain_text_input", action_id: "v", multiline: ml, initial_value: init || "" } });
-  await client.views.open({
-    trigger_id: body.trigger_id,
-    view: {
-      type: "modal", callback_id: "setjip_edit_modal", private_metadata: id,
-      title: { type: "plain_text", text: "설정집 요청 수정" }, submit: { type: "plain_text", text: "적용" }, close: { type: "plain_text", text: "닫기" },
-      blocks: [
-        inp("apm", "담당 APM(이름 또는 U…ID)", apmDisplay),
-        inp("translator", "번역 작업자", p.translator || "프리랜서 배정"),
-        inp("typesetter", "식자 작업자", p.typesetter || "강연재 우선 배정\n배정 안될 경우 프리랜서 배정", true),
-        inp("expectation", "기대치", e.expectation),
-        inp("episodes", "초도 화수", e.episodes),
-        inp("submit_date", "설정집 제출 희망일", e.submit_date),
-        inp("delivery_date", "초도 납품일", e.delivery_date),
-        inp("country", "국가설정", e.country),
-        inp("work_title", "작품명", e.work_title),
-        inp("original_title", "원제", e.original_title),
-        inp("notes", "특이사항", e.notes, true),
-      ],
-    },
-  }).catch((er) => console.error("[setjip_edit] views.open 실패:", er?.data?.error || er?.message));
+  console.log(`[setjip_edit] 진입 — user=${body.user?.id} value=${body.actions?.[0]?.value}`);
+  try {
+    if (body.user?.id !== DISPATCHER_USER_ID) { console.log("[setjip_edit] 권한 없음, 무시"); return; }
+    const id = body.actions?.[0]?.value;
+    const p = pendingSetjip.get(id);
+    if (!p) { console.log(`[setjip_edit] pendingSetjip에 ${id} 없음(만료/미존재)`); await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정 불가. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
+    const e = p.e || {};
+    const apmDisplay = p.apmId ? await resolveUserName(client, p.apmId) || p.apmId : "";
+    const inp = (b, label, init, ml = false) => ({ type: "input", block_id: b, optional: true, label: { type: "plain_text", text: label }, element: { type: "plain_text_input", action_id: "v", multiline: ml, initial_value: init || "" } });
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: {
+        type: "modal", callback_id: "setjip_edit_modal", private_metadata: id,
+        title: { type: "plain_text", text: "설정집 요청 수정" }, submit: { type: "plain_text", text: "적용" }, close: { type: "plain_text", text: "닫기" },
+        blocks: [
+          inp("apm", "담당 APM(이름 또는 U…ID)", apmDisplay),
+          inp("translator", "번역 작업자", p.translator || "프리랜서 배정"),
+          inp("typesetter", "식자 작업자", p.typesetter || "강연재 우선 배정\n배정 안될 경우 프리랜서 배정", true),
+          inp("expectation", "기대치", e.expectation),
+          inp("episodes", "초도 화수", e.episodes),
+          inp("submit_date", "설정집 제출 희망일", e.submit_date),
+          inp("delivery_date", "초도 납품일", e.delivery_date),
+          inp("country", "국가설정", e.country),
+          inp("work_title", "작품명", e.work_title),
+          inp("original_title", "원제", e.original_title),
+          inp("notes", "특이사항", e.notes, true),
+        ],
+      },
+    });
+    console.log(`[setjip_edit] views.open 성공 — id=${id}`);
+  } catch (er) { console.error("[setjip_edit] 예외:", er?.data?.error || er?.message || er); }
 });
 
 app.view("setjip_edit_modal", async ({ ack, view, client, body }) => {
   await ack();
   const id = view.private_metadata;
-  const p = pendingSetjip.get(id);
-  if (!p || body.user?.id !== DISPATCHER_USER_ID) return;
-  const v = (b) => view.state.values?.[b]?.v?.value?.trim() ?? "";
-  const apmRaw = v("apm");
-  if (apmRaw) p.apmId = /^[UW][A-Z0-9]+$/.test(apmRaw) ? apmRaw : (Object.entries(USER_NAMES).find(([, nm]) => nm === apmRaw)?.[0] || p.apmId);
-  p.translator = v("translator"); p.typesetter = v("typesetter");
-  p.e = { ...p.e, expectation: v("expectation"), episodes: v("episodes"), submit_date: v("submit_date"), delivery_date: v("delivery_date"), country: v("country") || p.e.country, work_title: v("work_title") || p.e.work_title, original_title: v("original_title"), notes: v("notes") };
-  pendingSetjip.save();
-  if (p.previewChannel && p.previewTs) {
-    await client.chat.update({ channel: p.previewChannel, ts: p.previewTs, text: "설정집 작성 요청 확인(수정됨)", blocks: setjipBlocks(id, p) }).catch((er) => console.error("[setjip_edit_modal] update 실패:", er?.data?.error || er?.message));
-  }
+  console.log(`[setjip_edit_modal] 진입 — user=${body.user?.id} id=${id}`);
+  try {
+    const p = pendingSetjip.get(id);
+    if (!p) { console.log(`[setjip_edit_modal] pendingSetjip에 ${id} 없음`); return; }
+    if (body.user?.id !== DISPATCHER_USER_ID) { console.log("[setjip_edit_modal] 권한 없음, 무시"); return; }
+    const v = (b) => view.state.values?.[b]?.v?.value?.trim() ?? "";
+    const apmRaw = v("apm");
+    if (apmRaw) p.apmId = /^[UW][A-Z0-9]+$/.test(apmRaw) ? apmRaw : (Object.entries(USER_NAMES).find(([, nm]) => nm === apmRaw)?.[0] || p.apmId);
+    p.translator = v("translator"); p.typesetter = v("typesetter");
+    p.e = { ...p.e, expectation: v("expectation"), episodes: v("episodes"), submit_date: v("submit_date"), delivery_date: v("delivery_date"), country: v("country") || p.e.country, work_title: v("work_title") || p.e.work_title, original_title: v("original_title"), notes: v("notes") };
+    pendingSetjip.save();
+    console.log(`[setjip_edit_modal] pendingSetjip 저장 완료 — id=${id}, previewChannel=${p.previewChannel}, previewTs=${p.previewTs}`);
+    if (p.previewChannel && p.previewTs) {
+      await client.chat.update({ channel: p.previewChannel, ts: p.previewTs, text: "설정집 작성 요청 확인(수정됨)", blocks: setjipBlocks(id, p) });
+      console.log(`[setjip_edit_modal] chat.update 성공 — id=${id}`);
+    } else {
+      console.log(`[setjip_edit_modal] previewChannel/previewTs 없어 미리보기 갱신 스킵 — id=${id}`);
+    }
+  } catch (er) { console.error("[setjip_edit_modal] 예외:", er?.data?.error || er?.message || er); }
 });
 
 // TOTUS 프로젝트 해석 — ①출판사 시트(lookupWork) 먼저 → ②못 찾으면 TOTUS(findProject) 폴백. 각 단계 완전→부분→후보.
