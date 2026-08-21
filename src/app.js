@@ -485,23 +485,49 @@ async function lookupAssignment(pivo) {
     return { translator: String(row[7] || "").trim(), reviewer: String(row[9] || "").trim() };
   } catch (e) { console.error("[lookupAssignment] 배정현황 조회 실패:", e?.message ?? e); return { translator: "", reviewer: "" }; }
 }
+// 설정집 일정 등록 직후 호출 — 번역/번역검수 두 역할 자리를 "대기"(토큰 미발급) 상태로 미리 만들어둔다.
+// 배정이 안 잡힌 시점이라 토큰 값 자체는 비워두고, 나중에 issueSetjipAiToken이 이 대기 행을 채워 넣는다.
+// 이미 해당 pivo+role 행이 있으면(대기든 활성이든 폐기든) 건너뛴다 — 중복 방지.
+async function createSetjipTokenPlaceholders({ pivo, work, submitDate }) {
+  try {
+    if (!_setjipAiTokenTabEnsured) { await ensureTab(SETJIP_SCHEDULE_SHEET, SETJIP_AI_TOKEN_TAB); _setjipAiTokenTabEnsured = true; }
+    const rows = (await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_AI_TOKEN_TAB}!A2:L5000`)) || [];
+    const hasRole = (role) => rows.some((r) => String(r[3] || "").trim() === String(pivo || "").trim() && String(r[2] || "").trim() === role);
+    const missing = ["번역", "번역검수"].filter((role) => !hasRole(role));
+    if (!missing.length) return { created: 0 };
+    let nextRow = rows.length + 2;
+    const updates = [];
+    for (const role of missing) {
+      updates.push(
+        { a1: `${SETJIP_AI_TOKEN_TAB}!C${nextRow}`, value: role },
+        { a1: `${SETJIP_AI_TOKEN_TAB}!D${nextRow}`, value: pivo || "" },
+        { a1: `${SETJIP_AI_TOKEN_TAB}!E${nextRow}`, value: work || "" },
+        { a1: `${SETJIP_AI_TOKEN_TAB}!F${nextRow}`, value: submitDate || "" },
+        { a1: `${SETJIP_AI_TOKEN_TAB}!G${nextRow}`, value: "FALSE" },
+        { a1: `${SETJIP_AI_TOKEN_TAB}!K${nextRow}`, value: "대기" },
+      );
+      nextRow++;
+    }
+    await setCells(SETJIP_SCHEDULE_SHEET, updates);
+    return { created: missing.length };
+  } catch (e) { console.error("[setjip-token-placeholder] 생성 실패:", e?.message ?? e); return { created: 0, error: String(e?.message ?? e) }; }
+}
 // 작업자(번역 또는 번역검수) 1명에게 8자리 인증번호 발급 + 시트 등록. 이름이 실제로 있을 때만 호출할 것.
 // 같은 PIVO+역할당 활성 토큰은 항상 1개만 — 이미 있으면 새로 안 만들고 그 토큰을 그대로 반환(재상 님 확인, 2026-08-21).
+// 설정집 일정 등록 시 만들어둔 "대기" 행이 있으면 새 행을 만들지 않고 그 행을 채워서 활성화한다.
 async function issueSetjipAiToken({ translator, role, pivo, work, submitDate }) {
   if (!_setjipAiTokenTabEnsured) { await ensureTab(SETJIP_SCHEDULE_SHEET, SETJIP_AI_TOKEN_TAB); _setjipAiTokenTabEnsured = true; }
   const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_AI_TOKEN_TAB}!A2:L5000`);
-  const existingIdx = (rows || []).findIndex((r) =>
-    String(r[3] || "").trim() === String(pivo || "").trim()
-    && String(r[2] || "").trim() === String(role || "").trim()
-    && String(r[10] || "").trim() === "활성"
-  );
+  const matchesRole = (r) => String(r[3] || "").trim() === String(pivo || "").trim() && String(r[2] || "").trim() === String(role || "").trim();
+  const existingIdx = (rows || []).findIndex((r) => matchesRole(r) && String(r[10] || "").trim() === "활성");
   if (existingIdx >= 0) {
     const r = rows[existingIdx];
     return { code: r[0], limit: Number(r[11]) || SETJIP_AI_TOKEN_DEFAULT_LIMIT, usedCount: Number(r[8]) || 0, reused: true };
   }
-  const row = (rows?.length || 0) + 2;   // 헤더(1행) 다음 첫 빈 행
+  const placeholderIdx = (rows || []).findIndex((r) => matchesRole(r) && String(r[10] || "").trim() === "대기");
   const code = String(Math.floor(10000000 + Math.random() * 90000000));   // 8자리(10000000~99999999)
   const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  const row = placeholderIdx >= 0 ? placeholderIdx + 2 : (rows?.length || 0) + 2;   // 대기 행 재사용, 없으면 헤더 다음 첫 빈 행
   await setCells(SETJIP_SCHEDULE_SHEET, [
     { a1: `${SETJIP_AI_TOKEN_TAB}!A${row}`, value: code },
     { a1: `${SETJIP_AI_TOKEN_TAB}!B${row}`, value: translator || "" },
@@ -562,6 +588,7 @@ async function logSetjipSchedule({ client, work, pivo, apmId, submitDate, thread
       { a1: `${SETJIP_SCHEDULE_TAB}!G${row}`, value: "FALSE" },
       { a1: `${SETJIP_SCHEDULE_TAB}!I${row}`, value: submitDateToISO(submitDate) || "" },
     ]);
+    await createSetjipTokenPlaceholders({ pivo, work, submitDate });
   } catch (e) { console.error("[setjip-schedule] 이력 기록 실패:", e?.message ?? e); }
 }
 // 매일 체크: 제출 희망일(I열 ISO) == 오늘이고 아직 리마인드 안 했으면(G열≠TRUE) 재상 님께 검수 DM.
@@ -2409,6 +2436,7 @@ const apmTools = createSdkMcpServer({
             { a1: `${SETJIP_SCHEDULE_TAB}!I${row}`, value: deadlineISO },
             { a1: `${SETJIP_SCHEDULE_TAB}!J${row}`, value: "FALSE" },
           ]);
+          await createSetjipTokenPlaceholders({ pivo: pivoNum, work, submitDate });
           return { content: [{ type: "text", text: JSON.stringify({ registered: true, pivo: pivoNum, work, apm: apmName, submitDate, deadlineISO }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
