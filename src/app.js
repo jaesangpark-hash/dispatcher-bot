@@ -1063,6 +1063,54 @@ async function executeFileOrderBatch(rec) {
   }
   return results;
 }
+// 파일 순서 점검·수정 핵심 로직 — check_and_fix_file_order 도구와 번역개시 자동 트리거가 공유.
+// currentCtx(LLM 대화 컨텍스트)에 의존하지 않도록 channel/ts/client를 인자로 받는다.
+async function runFileOrderCheck({ work, episodes, channel, ts, client }) {
+  const epNums = parseEpisodeSpec(episodes);
+  if (!epNums.length) return { error: "회차 범위를 못 읽음(예: '1-20')" };
+  const projectUuid = await resolveProjectUuidForWork(work);
+  if (!projectUuid) return { error: `'${work}' 프로젝트를 TOTUS에서 못 찾음` };
+
+  const epRecords = [];
+  for (const ep of epNums) {
+    try {
+      const json = await episodeSourceGroups(projectUuid, ep);
+      if (!json.success) throw new Error(json.error?.message || "source-groups 조회 실패");
+      const group = (json.data || [])[0] || null;
+      const fileList = (group?.파일목록 || []);
+      if (!group || !fileList.length) { epRecords.push({ episode: ep, status: "not_found" }); continue; }
+      const files = fileList.map((f) => f.파일이름);
+      const fileMap = {}; for (const f of fileList) fileMap[f.파일이름] = f.id;
+      const a = analyzeOrder(files);
+      const status = a.complexGroups.length ? "complex_skip" : (a.simpleAmbiguousGroups.length ? "simple_tie" : (a.isDifferent ? "fix" : "clean"));
+      const mp = detectMissingPages(files);
+      epRecords.push({
+        episode: ep, status, sourceGroupId: group.id, groupName: group.이름, files, fileMap,
+        suggested: a.suggested, simpleGroups: a.simpleAmbiguousGroups, resolvedByStartIndex: {},
+        complexNote: a.complexGroups.length ? a.complexGroups.map((g) => g.files.join("/")).join(", ") : undefined,
+        missingPages: mp.missing.length ? mp.missing : undefined,
+      });
+    } catch (e) {
+      epRecords.push({ episode: ep, status: "error", error: String(e?.message ?? e) });
+    }
+  }
+
+  if (allSimpleTiesResolved({ episodes: epRecords })) {
+    // 애매한 회차가 없음(또는 전부 처리 불필요) → 게이트 없이 즉시 전체 실행
+    const results = await executeFileOrderBatch({ episodes: epRecords });
+    return { executed: true, work, episodeCount: epNums.length, results };
+  }
+
+  const batchId = `fob_${++fileOrderBatchSeq}`;
+  const rec = { work, projectUuid, episodes: epRecords, channel, ts, createdAt: Date.now() };
+  pendingFileOrderBatch.set(batchId, rec);
+  if (client && channel) {
+    const posted = await client.chat.postMessage({ channel, thread_ts: ts, ...SENDER, text: `파일 순서 일괄 점검 — ${work}`, blocks: fileOrderBatchBlocks(batchId, rec) });
+    if (posted?.ts) { rec.previewChannel = channel; rec.previewTs = posted.ts; pendingFileOrderBatch.save(); }
+  }
+  const tieCount = epRecords.filter((e) => e.status === "simple_tie").length;
+  return { executed: false, gated: true, tieEpisodeCount: tieCount, work, episodeCount: epNums.length };
+}
 
 // ── 사용량·활동 로깅 + 데일리 리포트 ─────────────────────────
 function logUsage(rec) {
@@ -2283,50 +2331,10 @@ const apmTools = createSdkMcpServer({
       async ({ work, episodes }) => {
         try {
           const ctx = currentCtx;
-          const epNums = parseEpisodeSpec(episodes);
-          if (!epNums.length) return { content: [{ type: "text", text: JSON.stringify({ error: "회차 범위를 못 읽음(예: '1-20')" }) }] };
-          const projectUuid = await resolveProjectUuidForWork(work);
-          if (!projectUuid) return { content: [{ type: "text", text: JSON.stringify({ error: `'${work}' 프로젝트를 TOTUS에서 못 찾음` }) }] };
-
-          const epRecords = [];
-          for (const ep of epNums) {
-            try {
-              const json = await episodeSourceGroups(projectUuid, ep);
-              if (!json.success) throw new Error(json.error?.message || "source-groups 조회 실패");
-              const group = (json.data || [])[0] || null;
-              const fileList = (group?.파일목록 || []);
-              if (!group || !fileList.length) { epRecords.push({ episode: ep, status: "not_found" }); continue; }
-              const files = fileList.map((f) => f.파일이름);
-              const fileMap = {}; for (const f of fileList) fileMap[f.파일이름] = f.id;
-              const a = analyzeOrder(files);
-              const status = a.complexGroups.length ? "complex_skip" : (a.simpleAmbiguousGroups.length ? "simple_tie" : (a.isDifferent ? "fix" : "clean"));
-              const mp = detectMissingPages(files);
-              epRecords.push({
-                episode: ep, status, sourceGroupId: group.id, groupName: group.이름, files, fileMap,
-                suggested: a.suggested, simpleGroups: a.simpleAmbiguousGroups, resolvedByStartIndex: {},
-                complexNote: a.complexGroups.length ? a.complexGroups.map((g) => g.files.join("/")).join(", ") : undefined,
-                missingPages: mp.missing.length ? mp.missing : undefined,
-              });
-            } catch (e) {
-              epRecords.push({ episode: ep, status: "error", error: String(e?.message ?? e) });
-            }
-          }
-
-          if (allSimpleTiesResolved({ episodes: epRecords })) {
-            // 애매한 회차가 없음(또는 전부 처리 불필요) → 게이트 없이 즉시 전체 실행
-            const results = await executeFileOrderBatch({ episodes: epRecords });
-            return { content: [{ type: "text", text: JSON.stringify({ executed: true, work, episodeCount: epNums.length, results, note: "애매한 회차가 없어 바로 실행했다. 아래 results를 회차별로 요약해서 답해라." }) }] };
-          }
-
-          const batchId = `fob_${++fileOrderBatchSeq}`;
-          const rec = { work, projectUuid, episodes: epRecords, channel: ctx?.channel, ts: ctx?.ts, createdAt: Date.now() };
-          pendingFileOrderBatch.set(batchId, rec);
-          if (ctx?.client && ctx?.channel) {
-            const posted = await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: `파일 순서 일괄 점검 — ${work}`, blocks: fileOrderBatchBlocks(batchId, rec) });
-            if (posted?.ts) { rec.previewChannel = ctx.channel; rec.previewTs = posted.ts; pendingFileOrderBatch.save(); }
-          }
-          const tieCount = epRecords.filter((e) => e.status === "simple_tie").length;
-          return { content: [{ type: "text", text: JSON.stringify({ executed: false, gated: true, tieEpisodeCount: tieCount, note: `순서가 애매한 회차 ${tieCount}건이 있어 아직 아무 것도 반영 안 했다 — 확인 버튼을 스레드에 보냈다. '반영했다/고쳤다'고 단정하지 말고 '확인이 필요한 회차가 있어 버튼을 보냈다'고만 답해라.` }) }] };
+          const r = await runFileOrderCheck({ work, episodes, channel: ctx?.channel, ts: ctx?.ts, client: ctx?.client });
+          if (r.error) return { content: [{ type: "text", text: JSON.stringify({ error: r.error }) }] };
+          if (r.executed) return { content: [{ type: "text", text: JSON.stringify({ executed: true, work: r.work, episodeCount: r.episodeCount, results: r.results, note: "애매한 회차가 없어 바로 실행했다. 아래 results를 회차별로 요약해서 답해라." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ executed: false, gated: true, tieEpisodeCount: r.tieEpisodeCount, note: `순서가 애매한 회차 ${r.tieEpisodeCount}건이 있어 아직 아무 것도 반영 안 했다 — 확인 버튼을 스레드에 보냈다. '반영했다/고쳤다'고 단정하지 말고 '확인이 필요한 회차가 있어 버튼을 보냈다'고만 답해라.` }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: false } }),
@@ -4593,6 +4601,26 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
         await n8nPost("translation-monitor-register", { pivoId: p.pivo, workTitle: p.koTitle || "" });
         await reply(`📡 1-3화 번역검수 자동 모니터 등록됨 (마감 D-1부터 추적 → 3화 완료 시 AI 검수)`);
       } catch (e) { await reply(`⚠️ 번역검수 모니터 등록 실패: ${e?.message ?? e} (n8n/웹훅 확인 — 수동 'register_translation_monitor' 가능)`); }
+    }
+    // 후속3: 초도 회차(1~firstEpisode) 원본 파일 순서 자동 점검·수정(재상 님 요청, 2026-08-21).
+    // 애매한 회차 없으면 게이트 없이 바로 반영, 있으면 runFileOrderCheck가 그 스레드에 버튼 프리뷰를 올린다.
+    if (p.pivo) {
+      const epN = parseInt(String(p.firstEpisode || "").replace(/[^\d]/g, ""), 10);
+      if (epN > 0) {
+        try {
+          const r = await runFileOrderCheck({ work: p.pivo, episodes: `1-${epN}`, channel: p.channel, ts: p.threadTs, client });
+          if (r.error) {
+            await reply(`⚠️ 파일 순서 자동 점검 실패: ${r.error}`);
+          } else if (r.executed) {
+            const fixed = (r.results || []).filter((s) => s.startsWith("✅")).length;
+            const clean = (r.results || []).filter((s) => s.startsWith("👌")).length;
+            const rest = (r.results || []).length - fixed - clean;
+            await reply(`📁 초도 1~${epN}화 파일 순서 자동 점검: 수정 ${fixed}건 · 이미 정상 ${clean}건${rest ? ` · 확인필요/실패 ${rest}건` : ""}`);
+          } else {
+            await reply(`📁 초도 1~${epN}화 파일 순서 중 애매한 회차(${r.tieEpisodeCount}건)가 있어 확인 버튼을 이 스레드에 보냈어요 — 확인해줘.`);
+          }
+        } catch (e) { await reply(`⚠️ 파일 순서 자동 점검 실패: ${e?.message ?? e}`); }
+      }
     }
   } catch (e) {
     const m = String(e?.data?.error || e?.message || e);
