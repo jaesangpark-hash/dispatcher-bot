@@ -420,7 +420,7 @@ async function reviewEngineReview({ work, episode, stage, lang, taskUuid, pairs 
     const startedAt = Date.now();
     try {
       r = await fetch(`${REVIEW_ENGINE_BASE}/review`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": process.env.REVIEW_ENGINE_API_KEY || "" }, body: JSON.stringify(body),
         signal: AbortSignal.timeout(1_400_000),   // review-engine REQUEST_TIMEOUT_SECONDS(1800s)보다 짧게, JOB_TIMEOUT_MS(25분)보다 짧게
       });
     } catch (e) {
