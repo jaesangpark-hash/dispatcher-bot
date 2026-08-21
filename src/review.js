@@ -41,8 +41,22 @@ async function uuidForPivo(pivo) {
 // 회차 → 단계코드별 taskUuid
 async function tasksForEpisode(projectUuid, episode) {
   const byCode = {};
+  const statusByCode = {}; // 재작업/재검수 등으로 같은 오퍼레이션유형 태스크가 여러 건일 때 COMPLETED 우선 채택용
   let jobInfo = null;
-  const add = (job) => { if (!jobInfo) jobInfo = { index: job.순서 ?? null, name: job.JOB명 ?? null }; for (const op of job.오퍼레이션 || []) for (const t of op.태스크 || []) if (!byCode[t.오퍼레이션유형]) byCode[t.오퍼레이션유형] = t.uuid; };
+  const add = (job) => {
+    if (!jobInfo) jobInfo = { index: job.순서 ?? null, name: job.JOB명 ?? null };
+    for (const op of job.오퍼레이션 || []) {
+      for (const t of op.태스크 || []) {
+        const code = t.오퍼레이션유형;
+        // 처음 만난 걸 기본 채택하되, 아직 COMPLETED를 못 찾았고 지금 게 COMPLETED면 교체.
+        // (예: OTC0013이 PREPARING/READY/COMPLETED 여러 건 존재 — 첫 건(PREPARING)은 리소스가 없어 그대로 두면 다음 stage로 잘못 폴백함)
+        if (!byCode[code] || (t.상태 === "COMPLETED" && statusByCode[code] !== "COMPLETED")) {
+          byCode[code] = t.uuid;
+          statusByCode[code] = t.상태;
+        }
+      }
+    }
+  };
   const j = await projectJobs(projectUuid, episode);
   for (const job of j?.data || []) add(job);
   // 폴백: episode 필터 0건(구작 source-group false) → 전체 jobs에서 JOB명 회차 매칭
@@ -174,7 +188,12 @@ export async function extractEpisodeRange({ pivo = null, projectName = null, fro
     let picked = null;
     for (const s of order) {
       if (!byCode[s.code]) continue;
-      const arr = (await translationText(byCode[s.code]))?.data;
+      let arr;
+      try {
+        arr = (await translationText(byCode[s.code]))?.data;
+      } catch {
+        continue; // 태스크는 있어도 리소스(RTC0014/RTC0017) 자체가 없는 경우(TOTUS 404) — 다음 단계로 폴백
+      }
       if (Array.isArray(arr) && arr.length) { picked = { stage: s.name, arr }; break; }
     }
     if (!picked) { missing.push({ episode: ep, reason: "텍스트 있는 단계 없음" }); continue; }
