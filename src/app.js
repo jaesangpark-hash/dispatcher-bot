@@ -17,7 +17,7 @@ import { readRange as readRangeRO } from "./sheets.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { quotationByPivo, findProject, projectByPivo, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, episodeSourceGroups, reorderFiles, completeSourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl } from "./totus.js";
+import { quotationByPivo, findProject, projectByPivo, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, episodeSourceGroups, reorderFiles, completeSourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl, pivoEpisodeSourceFiles, pivoUploadSourceFile } from "./totus.js";
 import { patchMinRowHeight } from "./xlsxRowHeight.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
@@ -277,6 +277,8 @@ const pendingFeedback = new PersistMap("feedback");  // fbId → { channel, text
 const pendingRetakes = new PersistMap("retakes");    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
 const pendingTransStart = new PersistMap("transstart"); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
 const pendingSetjip = new PersistMap("setjip");      // sjId → { channel, text, work, createdAt } 설정집 작성 요청 게시
+const pendingReuploads = new Map();                  // ruId → { pivo, episode, fileName, buffer, size, driveFileName, createdAt } — 바이너리 포함이라 비영속(재기동 시 소멸, TTL도 짧으니 재요청하면 됨)
+let reuploadSeq = 0;
 const pendingTaskRetake = new PersistMap("taskretake"); // trId → { work, operation, items[{episode,taskUuid,status}], createdAt } TOTUS 태스크 리테이크(연결 태스크 생성)
 const pendingFileOrderBatch = new PersistMap("fileorderbatch"); // fobId → { work, projectUuid, episodes[{episode,status,sourceGroupId,groupName,files,fileMap,suggested,simpleGroups,resolvedByStartIndex,complexNote,error}], channel, ts, createdAt }
 let setjipSeq = 0;
@@ -2359,6 +2361,116 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("check_original_source_files",
+      "TOTUS PIVO 작품의 특정 회차에 현재 등록된 원본(작업용) 파일 목록을 조회한다('N화 원본 파일 뭐 있어', '재수급 업로드 전에 기존 파일명 확인'). 재수급으로 원본을 교체 업로드(propose_original_reupload)하려면 기존과 동일한 파일명으로 올려야 덮어쓰기되므로, 그 전에 이걸로 파일명을 확인하는 용도. 게이트 없이 즉시 실행(읽기성 조회, 부작용 없음).",
+      {
+        pivo: z.string().describe("PIVO 번호(PV- 접두 붙여도 됨, 숫자만 추출해서 씀)"),
+        episode: z.union([z.string(), z.number()]).describe("회차 번호"),
+      },
+      async ({ pivo, episode }) => {
+        try {
+          const num = String(pivo).match(/\d{4,}/)?.[0] || String(pivo).trim();
+          const res = await pivoEpisodeSourceFiles(num, String(episode));
+          const files = (res?.data?.파일목록 || []).map((f) => ({ 파일명: f.파일명, 크기MB: f.크기 ? +(f.크기 / (1024 * 1024)).toFixed(1) : null }));
+          return { content: [{ type: "text", text: JSON.stringify({ found: true, work: res?.data?.작품명, folder: res?.data?.회차폴더?.폴더명, files }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
+    tool("propose_original_reupload",
+      "재수급된 원본 파일(psd/jpg 등)을 드라이브(Kuaikan/arthub)에서 찾아 실제로 다운로드한 뒤 TOTUS PIVO 회차에 업로드(재수급 교체)까지 제안한다('N화 M페이지 원본 재수급됐으니 토투스에 올려줘'). fetch_original_from_drive와 파일 탐색 로직은 같지만, 여기는 실제로 바이트를 받아 TOTUS에 쓰기까지 한다 — 되돌리기 어려운 작업(TOTUS는 파일 삭제 기능 자체가 없어 잘못 올리면 원본으로 다시 덮어써야만 복구됨)이라 반드시 확인 버튼을 거쳐야 하고, 호출만으로 절대 업로드가 실행되지 않는다(그렇게 답하면 안 됨). ★같은 파일명으로 올려야 기존 파일 내용만 교체되므로(다른 이름이면 그냥 새 파일 추가), file_name을 안 주면 TOTUS의 기존 파일 목록에서 page 번호로 자동 매칭을 시도한다 — 후보가 0개나 여러 개라 확정 못 하면 절대 추측하지 않고 후보 파일명 목록을 사용자에게 보여주고 file_name을 직접 받아 다시 호출해야 한다. 드라이브 탐색이 애매한 경우(회차/페이지 후보 여러 개)도 fetch_original_from_drive와 동일하게 추측 없이 후보만 반환한다.",
+      {
+        pivo: z.string().describe("PIVO 번호"),
+        episode: z.union([z.string(), z.number()]).describe("회차 번호"),
+        page: z.union([z.string(), z.number()]).describe("페이지 번호"),
+        file_type: z.enum(["psd", "jpg"]).optional().describe("드라이브에서 찾을 파일 형식(생략 시 psd)"),
+        work: z.string().optional().describe("작품명 또는 PIVO — url 없을 때 출판사 드라이브 링크 시트에서 찾을 키"),
+        url: z.string().optional().describe("드라이브 링크 직접 제공(Kuaikan/arthub). work 없어도 됨"),
+        file_name: z.string().optional().describe("TOTUS에 올릴 파일명 직접 지정(기존 파일명과 완전히 동일해야 덮어쓰기됨). 생략하면 기존 파일 목록에서 page로 자동 매칭 시도."),
+      },
+      async ({ pivo, episode, page, file_type, work, url, file_name }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;   // 신규·미검증 기능이라 우선 owner만. 실사용 검증되면 APM 개방 검토.
+          const num = String(pivo).match(/\d{4,}/)?.[0] || String(pivo).trim();
+          if (!work && !url) return { content: [{ type: "text", text: JSON.stringify({ error: "work(작품명/PIVO) 또는 url(드라이브 링크) 중 하나는 필요해." }) }] };
+
+          let platform, rootId, token, sourceNote;
+          if (url) {
+            const parsed = parseDriveUrl(url);
+            platform = parsed.platform; rootId = parsed.rootId; token = parsed.token;
+            if (!platform) return { content: [{ type: "text", text: JSON.stringify({ error: "이 URL이 어느 플랫폼인지 인식 못 함(Kuaikan/arthub만 지원)." }) }] };
+          } else {
+            const entry = await lookupDriveEntryForWork(work);
+            if (!entry) return { content: [{ type: "text", text: JSON.stringify({ error: `출판사 드라이브 링크 시트에서 '${work}'를 못 찾음.` }) }] };
+            if (entry.driveLink) {
+              const parsed = parseDriveUrl(entry.driveLink);
+              platform = parsed.platform; rootId = parsed.rootId; token = parsed.token;
+            } else if (/kuaikan/i.test(entry.publisher || "")) {
+              platform = "kuaikan";
+              const hits = await kuaikanSearchRoot(entry.originalTitleCH || work);
+              if (hits.length !== 1) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: hits.length ? "Kuaikan 검색 결과가 여러 건이라 특정 못 함 — 사용자 확인 필요" : "Kuaikan에서 이 작품을 못 찾음", candidates: hits.slice(0, 5).map((h) => ({ id: h.id, name: h.name })) }) }] };
+              rootId = hits[0].id;
+              sourceNote = "시트에 링크가 없어서 Kuaikan 이름 검색으로 찾음";
+            } else {
+              return { content: [{ type: "text", text: JSON.stringify({ error: `이 작품 드라이브 링크가 시트에 없고, 자동 검색 대상(Kuaikan)도 아니야 — 판권사: ${entry.publisher || "미상"}. baidu/arthub면 실제 링크를 url로 직접 줘.` }) }] };
+            }
+          }
+          if (platform === "baidu") return { content: [{ type: "text", text: JSON.stringify({ error: "baidu는 웹에서 자동 다운로드가 안 돼(앱 전용) — 사람이 직접 받아야 해." }) }] };
+          if (platform !== "kuaikan" && platform !== "arthub") return { content: [{ type: "text", text: JSON.stringify({ error: `지원하지 않는 플랫폼: ${platform}` }) }] };
+
+          const adapter = platform === "arthub" ? makeArthubAdapter(token) : makeKuaikanAdapter();
+          const found = await resolveEpisodePage(adapter, rootId, episode, page, file_type || "psd");
+          if (!found.ok) {
+            const candidateNames = (found.candidates || []).slice(0, 25).map((c) => c.name).filter(Boolean);
+            return { content: [{ type: "text", text: JSON.stringify({ found: false, reason: found.reason, candidates: candidateNames, msg: "드라이브에서 자동으로 확정 못 했어. 후보 목록을 사용자에게 그대로 보여주고 확인받아야 해." }) }] };
+          }
+
+          // 실제 바이트 다운로드(서명URL은 20분 내외로 짧게 만료되니 바로 받는다)
+          const dlRes = await fetch(found.url, { signal: AbortSignal.timeout(120000) });
+          if (!dlRes.ok) return { content: [{ type: "text", text: JSON.stringify({ error: `드라이브 파일 다운로드 실패: HTTP ${dlRes.status}` }) }] };
+          const buffer = Buffer.from(await dlRes.arrayBuffer());
+
+          // 기존 TOTUS 파일명 매칭(지정 안 했으면)
+          let finalName = file_name;
+          if (!finalName) {
+            const existing = await pivoEpisodeSourceFiles(num, String(episode)).catch(() => null);
+            const files = existing?.data?.파일목록 || [];
+            const m = matchByNumber(files, page, "파일명");
+            if (!m.confident) {
+              const candidateNames = files.map((f) => f.파일명);
+              return { content: [{ type: "text", text: JSON.stringify({ found: false, reason: "TOTUS 기존 파일 중 이 페이지에 해당하는 파일명을 확정 못 함", candidates: candidateNames, msg: "file_name을 직접 지정해서 다시 호출해야 해 — 후보 중 임의로 고르면 안 됨." }) }] };
+            }
+            finalName = m.item.파일명;
+          }
+
+          const id = `ru_${++reuploadSeq}`;
+          pendingReuploads.set(id, { pivo: num, episode: String(episode), fileName: finalName, buffer, size: buffer.length, driveFileName: found.name, createdAt: Date.now() });
+          const sizeMB = (buffer.length / (1024 * 1024)).toFixed(1);
+          const ctx = currentCtx;
+          if (ctx?.channel && ctx?.ts) {
+            await ctx.client.chat.postMessage({
+              channel: ctx.channel, thread_ts: ctx.threadTs || ctx.ts,
+              text: `📤 원본 재업로드 확인 — PIVO ${num} ${episode}화 ${page}페이지\n드라이브 파일: ${found.name} (${sizeMB}MB)\nTOTUS 대상 파일명: ${finalName} (동일 파일명 → 기존 내용 덮어쓰기)${sourceNote ? `\n${sourceNote}` : ""}`,
+              blocks: [
+                { type: "section", text: { type: "mrkdwn", text: `📤 *원본 재업로드 확인* — PIVO ${num} ${episode}화 ${page}페이지\n드라이브 파일: \`${found.name}\` (${sizeMB}MB)\nTOTUS 대상 파일명: \`${finalName}\` (동일 파일명 → *기존 내용 덮어쓰기*, 삭제 후 재업로드 아님)${sourceNote ? `\n${sourceNote}` : ""}` } },
+                { type: "actions", elements: [
+                  { type: "button", style: "primary", text: { type: "plain_text", text: "📤 업로드" }, value: id, action_id: "reupload_confirm" },
+                  { type: "button", text: { type: "plain_text", text: "취소" }, value: id, action_id: "reupload_cancel" },
+                ] },
+              ],
+              ...SENDER,
+            }).catch(() => {});
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, pivo: num, episode: String(episode), page: String(page), fileName: finalName, driveFileName: found.name, sizeMB, note: "확인 버튼을 이미 게시했어. 아직 업로드는 실행 안 됐다고 답할 것 — 버튼을 눌러야 실제로 올라감." }) }] };
+        } catch (e) {
+          if (e instanceof KuaikanSessionExpiredError) {
+            await dmOwner(`⚠️ Kuaikan 드라이브 세션이 만료된 것 같아요 — 재로그인 후 KUAIKAN_SESSION_COOKIE를 갱신해주세요.`);
+            return { content: [{ type: "text", text: JSON.stringify({ error: "Kuaikan 세션이 만료됐어(재상님께 알림 보냄) — 재로그인 후 다시 시도해야 해." }) }] };
+          }
+          if (e instanceof DriveFileUnsupportedError) return { content: [{ type: "text", text: JSON.stringify({ error: e.message }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: false } }),
     tool("check_and_fix_file_order",
       "TOTUS 원본 파일 순서를 회차 범위 단위로 일괄 점검하고 고친다('1~20화 파일 순서 체크하고 고쳐줘'). 설정집 요청 스레드 등에서 APM이 직접 호출 가능. 파일명 규칙(주번호-부번호.서브페이지, 예: 36-9.2.psd)으로 올바른 순서를 판정해 TOTUS 파일순서(에디터 파일관리 탭)에 반영하고 회차를 확정 처리한다. 원칙: 확인 게이트 없이 즉시 실행하되, 애매한 회차가 하나라도 있으면 전체를 멈추고 그 회차만 버튼/모달로 확인받은 뒤 배치 전체를 한 번에 실행한다. 애매함은 두 종류 — ①단순 동률(같은 순번으로 해석되는 파일 2개 이상, 수정본 표시 없음): 순서 확인 버튼을 보내고, 확인되면 그 회차까지 포함해 실행. ②수정본/교체본 표시가 섞인 동률(예: 汉字3话1 / 汉字3话1_改): 순서 문제가 아니라 어느 파일을 지울지의 별개 판단이라 이 도구가 처리하지 않음 — 건너뛰고 보고만 함. 단순 동률이 하나도 없으면 곧바로 전체 실행하고 결과 요약을 스레드에 올린다. 있으면 미리보기+버튼만 보내고 아직 아무 것도 반영 안 됐다고 답해야 한다(반영했다고 단정 금지). ★순서와 별개로 회차 내 페이지 번호 누락(빠진 페이지)도 함께 탐지해 results/미리보기에 표시한다 — 이건 휴리스틱(파일명에서 페이지 카운터로 보이는 자리의 연속성만 확인)이라 확정이 아니니, 있으면 반드시 '~페이지가 빠진 것 같다, 직접 확인 필요'로만 전달하고 실제로 빠졌다고 단정하지 말 것.",
       {
@@ -3187,7 +3299,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
@@ -4903,6 +5015,31 @@ app.action("retake_confirm", async ({ ack, body, client }) => {
 app.action("retake_cancel", async ({ ack, body, client }) => {
   await ack();
   pendingRetakes.delete(body.actions?.[0]?.value);
+  await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+const REUPLOAD_TTL_MS = 30 * 60 * 1000;   // 드라이브 서명URL 만료(~20분)와 비슷하게 짧게 — 바이너리를 메모리에 들고 있어서 오래 안 둠
+app.action("reupload_confirm", async ({ ack, body, client }) => {
+  await ack();
+  const id = body.actions?.[0]?.value;
+  const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+  if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
+  const p = pendingReuploads.get(id);
+  if (!p) return reply("⌛ 만료됐거나 이미 처리된 업로드예요. 다시 요청해줘.");
+  pendingReuploads.delete(id);
+  if (Date.now() - p.createdAt > REUPLOAD_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요(드라이브 링크도 만료됐을 수 있음) — 다시 요청해줘.");
+  try {
+    const res = await pivoUploadSourceFile(p.pivo, p.episode, p.buffer, p.fileName);
+    appendFileSync("logs/original-reuploads.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, pivo: p.pivo, episode: p.episode, fileName: p.fileName, sizeBytes: p.size, resp: res }) + "\n");
+    await reply(`✅ 업로드 완료 — PIVO ${p.pivo} ${p.episode}화 \`${p.fileName}\` (${(p.size / (1024 * 1024)).toFixed(1)}MB)`);
+  } catch (e) {
+    await reply(`❌ 업로드 실패: ${String(e?.message ?? e)}`);
+  }
+});
+app.action("reupload_cancel", async ({ ack, body, client }) => {
+  await ack();
+  pendingReuploads.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
 

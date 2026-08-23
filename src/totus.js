@@ -122,3 +122,27 @@ export const reorderFiles = (sources) =>
 // 소스그룹(회차) 파일순서 확정 처리. sourceGroupIds=[id,...]
 export const completeSourceGroups = (sourceGroupIds) =>
   sendJSON("POST", `/source-groups/complete`, { sourceGroupIds }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
+
+// ── 재수급 원본 → PIVO 업로드(2026-08-23) ────────────────────────
+// PIVO 작품 회차의 원본(작업용) 파일 목록. read-only(PIVO GraphQL Directory query만, 부작용 없음).
+// 응답: { data: { pid, episode, 작품명, 원제, 회차폴더, 파일목록:[{fileId,파일명,크기}] } } (실측, PV-212305/1화)
+export const pivoEpisodeSourceFiles = (pid, episode) => getJSON(`/pivo/${encodeURIComponent(pid)}/episodes/${encodeURIComponent(episode)}/source-files`);
+
+// [MUTATION] PIVO 회차에 원본 파일 업로드+회차지정(fileStructureUpsert→presigned S3 PUT→complete→directoryEpisodeUpdateV2, 이관 완료 회차도 재이관 가능).
+// 같은 파일명 재업로드=동일 fileId 유지한 채 내용만 덮어씀(재수급 교체에 안전, 삭제 후 재업로드 아님) — fileName은 반드시 기존과 동일해야 교체로 처리됨.
+// 요청 바디는 OpenAPI에 미문서화(같은 게이트웨이의 /projects/{uuid}/files와 동일 규약으로 추정: multipart/form-data, 필드명 "file").
+// PIVO 허용 확장자(psd·psb·png·jpg·pdf 등) 외 파일이 회차 폴더에 섞이면 그 폴더 전체 동기화가 스킵됨(409 EPISODE_MATCH_SKIPPED_UNSUPPORTED_EXTENSION).
+export async function pivoUploadSourceFile(pid, episode, buffer, fileName) {
+  const { url, tok } = creds();
+  const form = new FormData();
+  form.append("file", new Blob([buffer]), fileName);
+  const r = await fetch(`${url}/api/v1/pivo/${encodeURIComponent(pid)}/episodes/${encodeURIComponent(episode)}/source-files`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${tok}`, "X-Confirm-Mutation": "I-UNDERSTAND-PROD" },
+    body: form,
+    signal: AbortSignal.timeout(120000),   // 대용량(원본 PSD 수백MB) 대비 넉넉히
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`TOTUS ${r.status}: ${text.slice(0, 500)}`);
+  try { return JSON.parse(text); } catch { return text; }
+}
