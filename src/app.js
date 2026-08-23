@@ -3426,7 +3426,7 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   const att = attFiles.length ? await toAttachmentBlocks(attFiles) : { blocks: [], texts: [] };
   // 첨부가 있었는데 하나도 못 읽었으면(다운로드 타임아웃/미지원) 조용히 넘어가지 말고 브레인이 사용자에게 알리도록.
   if (attFiles.length && !att.blocks.length && !att.texts.length) {
-    llmText += `\n\n[주의: 첨부 파일(${attFiles.map((f) => f.name).filter(Boolean).join(", ") || "?"})을 텍스트/이미지로는 못 읽었어요(다운로드 실패·타임아웃, 또는 psd/clip 등 미리보기 미지원 형식). 다만 psd/jpg 원본 재업로드 요청이면 못 읽은 게 문제 아님 — propose_original_reupload가 이 첨부를 원본 그대로 사용하니 그대로 진행할 것. 그 외에 파일 '내용'을 읽어야 하는 작업이면 진행하지 말고 '파일을 못 받았어요 — 용량이 크거나 형식이 안 맞을 수 있으니 다시 올려주세요'라고 안내하라.]`;
+    llmText += `\n\n[주의: 첨부 파일(${attFiles.map((f) => f.name).filter(Boolean).join(", ") || "?"})을 텍스트/이미지로는 못 읽었어요(다운로드 실패·타임아웃, 또는 psd/clip 등 미리보기 미지원 형식). ★이건 파일 '내용'을 볼 때만 문제고, 파일을 그대로 옮기기만 하면 되는 작업은 전혀 문제 없음 — send_message(다른 채널/스레드로 그대로 전달)나 propose_original_reupload(TOTUS 재수급 업로드)는 내용을 안 읽고 바이트만 그대로 옮기니 이 경고와 무관하게 정상 진행할 것("읽을 수 없다"고 거절하면 안 됨). 파일 안의 글자·이미지 내용을 실제로 파악해야 하는 작업일 때만 진행하지 말고 '파일을 못 받았어요 — 용량이 크거나 형식이 안 맞을 수 있으니 다시 올려주세요'라고 안내하라.]`;
   }
   const content = att.blocks.length ? [{ type: "text", text: llmText }, ...att.blocks] : llmText;
 
