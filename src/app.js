@@ -2722,7 +2722,9 @@ const apmTools = createSdkMcpServer({
             : await ctx.client.conversations.history(fetchOpts);
           const msg = (res?.messages || [])[0];
           if (!msg) return { content: [{ type: "text", text: JSON.stringify({ error: "그 메시지를 못 찾음(삭제됐거나 봇이 채널 멤버가 아닐 수 있음)." }) }] };
-          if (msg.user !== SELF_BOT_USER) return { content: [{ type: "text", text: JSON.stringify({ error: "이 메시지는 툰식이가 쓴 게 아니라서 못 고쳐(Slack이 다른 사람 메시지 수정을 막음) — 대신 댓글로 안내를 남겨야 해." }) }] };
+          // SENDER(표시명 커스터마이즈, chat:write.customize)로 올린 메시지는 message.user가 비고 bot_id만 있음 — 둘 중 하나라도 맞으면 자기 메시지로 인정.
+          const isOwnMessage = (msg.user && msg.user === SELF_BOT_USER) || (msg.bot_id && msg.bot_id === SELF_BOT_ID);
+          if (!isOwnMessage) return { content: [{ type: "text", text: JSON.stringify({ error: "이 메시지는 툰식이가 쓴 게 아니라서 못 고쳐(Slack이 다른 사람 메시지 수정을 막음) — 대신 댓글로 안내를 남겨야 해." }) }] };
           await ctx.client.chat.update({ channel, ts, text: new_text });
           return { content: [{ type: "text", text: JSON.stringify({ edited: true, channel, ts }) }] };
         } catch (e) {
@@ -3483,6 +3485,7 @@ const RESUPPLY_RE = /재수급|재\s*수급|원본\s*다시|원고\s*다시|다�
 const REPORT_TO_CLIENT_PUBLISHERS = new Set(["Kuaikan Comics（直取引）_2", "Shenzhen Yuerong（共同制作）"]);
 const ORIGIN_ISSUE_RE = /재수급|원본|작화\s*(실수|미스|오류)|스토리\s*모순/;
 let SELF_BOT_USER = null;   // 툰식이 자신의 Slack user id(멘션 시 app_mention이 처리하도록 자동링크 스킵)
+let SELF_BOT_ID = null;     // 툰식이 자신의 bot_id — SENDER(표시명 커스터마이즈)로 올린 메시지는 message.user가 비어있고 bot_id만 있어서 별도로 필요
 async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
   try {
     if (!text || processed.has("wl:" + ts)) return;
@@ -5527,7 +5530,7 @@ async function tick() {
 
 (async () => {
   await app.start();
-  try { const a = await app.client.auth.test(); SELF_BOT_USER = a.user_id; } catch { /* self id 조회 실패 무시 */ }
+  try { const a = await app.client.auth.test(); SELF_BOT_USER = a.user_id; SELF_BOT_ID = a.bot_id; } catch { /* self id 조회 실패 무시 */ }
   if (BRAIN_ON) startSession();   // 엔진을 미리 띄워 워밍(콜드스타트 제거)
   initSince();                    // 토톡 since 복원(없으면 KST 자정)
   refreshJungil().catch((e) => console.error("[totalk] 중일 캐시 초기빌드 실패:", e?.message));   // 중일 작품 uuid 집합 백그라운드 빌드
