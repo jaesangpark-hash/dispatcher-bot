@@ -54,9 +54,13 @@ export function completeReminder(match) {
 // 재촉 시각 슬롯이 새로 도래했는지 판단 + 마킹(하루 시각별 1회). 보낼 내용 유무와 무관 —
 // 개인 재촉 + 문의/재수급 미해결을 한 슬롯에서 같이 보내기 위해 슬롯 게이트만 담당.
 // nagHours: 시각 배열(예 [9,14,18]). 새 슬롯이면 키 반환(+마킹), 아니면 null. lastNagSlot="YYYY-MM-DD:HH".
+// ★영업일(월~금) 10~21시로 제한(2026-08-21, 사용자 확인) — 봇 다운 후 늦은 캐치업으로 심야·주말에 발송되는 것도 여기서 같이 막힘.
 export function dueNagSlot(nagHours) {
   const d = load();
   const now = new Date();
+  const day = now.getDay();   // 0=일 6=토
+  if (day === 0 || day === 6) return null;
+  if (now.getHours() < 10 || now.getHours() >= 21) return null;
   const ymd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const hours = (Array.isArray(nagHours) ? nagHours : [nagHours]).map(Number).filter((h) => !isNaN(h)).sort((a, b) => a - b);
   const slot = hours.filter((h) => now.getHours() >= h).pop();   // 지금 이하 중 가장 늦은 슬롯
