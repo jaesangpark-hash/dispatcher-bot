@@ -277,7 +277,7 @@ const pendingFeedback = new PersistMap("feedback");  // fbId → { channel, text
 const pendingRetakes = new PersistMap("retakes");    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
 const pendingTransStart = new PersistMap("transstart"); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
 const pendingSetjip = new PersistMap("setjip");      // sjId → { channel, text, work, createdAt } 설정집 작성 요청 게시
-const pendingReuploads = new Map();                  // ruId → { pivo, episode, fileName, buffer, size, driveFileName, createdAt } — 바이너리 포함이라 비영속(재기동 시 소멸, TTL도 짧으니 재요청하면 됨)
+const pendingReuploads = new Map();                  // ruId → { pivo, episode, items:[{fileName,buffer,size,sourceName,page}], createdAt } — 바이너리 포함이라 비영속(재기동 시 소멸, TTL도 짧으니 재요청하면 됨)
 let reuploadSeq = 0;
 const pendingTaskRetake = new PersistMap("taskretake"); // trId → { work, operation, items[{episode,taskUuid,status}], createdAt } TOTUS 태스크 리테이크(연결 태스크 생성)
 const pendingFileOrderBatch = new PersistMap("fileorderbatch"); // fobId → { work, projectUuid, episodes[{episode,status,sourceGroupId,groupName,files,fileMap,suggested,simpleGroups,resolvedByStartIndex,complexNote,error}], channel, ts, createdAt }
@@ -2377,36 +2377,42 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("propose_original_reupload",
-      "재수급된 원본 파일(psd/jpg 등)을 실제로 받아 TOTUS PIVO 회차에 업로드(재수급 교체)까지 제안한다('N화 M페이지 원본 재수급됐으니 토투스에 올려줘', '이 파일 토투스에 올려줘'). 소스는 두 가지 — ①이 요청 메시지에 파일이 직접 첨부돼 있으면 그걸 그대로 씀(work/url 생략 가능, 가장 흔한 경우), ②없으면 드라이브(Kuaikan/arthub)에서 work 또는 url로 찾음(fetch_original_from_drive와 탐색 로직 동일). 되돌리기 어려운 작업(TOTUS는 파일 삭제 기능 자체가 없어 잘못 올리면 원본으로 다시 덮어써야만 복구됨)이라 반드시 확인 버튼을 거쳐야 하고, 호출만으로 절대 업로드가 실행되지 않는다(그렇게 답하면 안 됨). ★같은 파일명으로 올려야 기존 파일 내용만 교체되므로(다른 이름이면 그냥 새 파일 추가), file_name을 안 주면 TOTUS의 기존 파일 목록에서 page 번호로 자동 매칭을 시도한다 — 후보가 0개나 여러 개라 확정 못 하면 절대 추측하지 않고 후보 파일명 목록을 사용자에게 보여주고 file_name을 직접 받아 다시 호출해야 한다. 드라이브 탐색이 애매한 경우(회차/페이지 후보 여러 개)도 fetch_original_from_drive와 동일하게 추측 없이 후보만 반환한다.",
+      "재수급된 원본 파일(psd/jpg 등, 수백MB급도 되고 여러 장 동시도 됨. 단 다운로드·업로드 모두 10분 타임아웃이라 초대용량·다회선 동시업로드는 실패할 수 있음 — 실패하면 같은 파일명 재시도가 안전함, 덮어쓰기라 중복 안 생김)을 실제로 받아 TOTUS PIVO 회차에 업로드(재수급 교체)까지 제안한다('N화 M페이지 원본 재수급됐으니 토투스에 올려줘', '이 파일들 토투스에 올려줘'). 소스는 두 가지 — ①이 요청 메시지에 파일이 직접 첨부돼 있으면 그걸 그대로 씀(work/url 생략 가능, 가장 흔한 경우, 여러 장 첨부해도 됨), ②없으면 드라이브(Kuaikan/arthub)에서 work 또는 url로 찾음(fetch_original_from_drive와 탐색 로직 동일, 이쪽은 한 번에 1페이지만). ★파일을 여러 장 첨부했으면 page도 그 개수만큼 콤마로(첨부한 순서와 1:1 대응, 예: 파일 3장이면 page='4,5,6') — 개수가 안 맞으면 절대 추측하지 말고 몇 페이지인지 사용자에게 물어야 한다. 되돌리기 어려운 작업(TOTUS는 파일 삭제 기능 자체가 없어 잘못 올리면 원본으로 다시 덮어써야만 복구됨)이라 반드시 확인 버튼을 거쳐야 하고, 호출만으로 절대 업로드가 실행되지 않는다(그렇게 답하면 안 됨). ★같은 파일명으로 올려야 기존 파일 내용만 교체되므로(다른 이름이면 그냥 새 파일 추가), file_name을 안 주면 TOTUS의 기존 파일 목록에서 각 page 번호로 자동 매칭을 시도한다 — 여러 장 중 단 하나라도 후보가 0개나 여러 개라 확정 못 하면 전체를 멈추고(일부만 진행 금지) 그 페이지의 후보 파일명 목록을 사용자에게 보여주고 file_name을 받아야 한다.",
       {
         pivo: z.string().describe("PIVO 번호"),
         episode: z.union([z.string(), z.number()]).describe("회차 번호"),
-        page: z.union([z.string(), z.number()]).describe("페이지 번호 — TOTUS 기존 파일명 자동매칭에 씀"),
+        page: z.string().describe("페이지 번호. 파일 1장이면 단일값('4'), 여러 장 첨부했으면 첨부 순서와 같은 순서로 콤마 목록('4,5,6') — TOTUS 기존 파일명 자동매칭에 씀"),
         file_type: z.enum(["psd", "jpg"]).optional().describe("드라이브에서 찾을 파일 형식(생략 시 psd). 파일 직접 첨부 시엔 첨부 파일 확장자를 그대로 씀"),
         work: z.string().optional().describe("작품명 또는 PIVO — 파일 직접 첨부가 없고 url도 없을 때 출판사 드라이브 링크 시트에서 찾을 키"),
-        url: z.string().optional().describe("드라이브 링크 직접 제공(Kuaikan/arthub). 파일 직접 첨부가 없을 때만 씀"),
-        file_name: z.string().optional().describe("TOTUS에 올릴 파일명 직접 지정(기존 파일명과 완전히 동일해야 덮어쓰기됨). 생략하면 기존 파일 목록에서 page로 자동 매칭 시도."),
+        url: z.string().optional().describe("드라이브 링크 직접 제공(Kuaikan/arthub). 파일 직접 첨부가 없을 때만 씀, 1페이지 한정"),
+        file_name: z.string().optional().describe("TOTUS에 올릴 파일명 직접 지정(기존 파일명과 완전히 동일해야 덮어쓰기됨). 여러 장이면 콤마 목록으로 page와 1:1. 생략하면 기존 파일 목록에서 page로 자동 매칭 시도."),
       },
       async ({ pivo, episode, page, file_type, work, url, file_name }) => {
         try {
           const _d = ownerOnly(); if (_d) return _d;   // 신규·미검증 기능이라 우선 owner만. 실사용 검증되면 APM 개방 검토.
           const num = String(pivo).match(/\d{4,}/)?.[0] || String(pivo).trim();
+          const pages = String(page).split(",").map((s) => s.trim()).filter(Boolean);
+          const fileNames = file_name ? String(file_name).split(",").map((s) => s.trim()).filter(Boolean) : [];
+          const ext = (file_type || "psd").toLowerCase();
+          const attachedList = (currentFileRefs || []).filter((f) => String(f.name || "").toLowerCase().endsWith(`.${ext}`));
+          const useAttached = !work && !url && attachedList.length > 0;
 
-          let found, buffer, sourceNote;
-          const attached = !work && !url
-            ? ((currentFileRefs || []).find((f) => String(f.name || "").toLowerCase().endsWith(`.${(file_type || "psd").toLowerCase()}`)) || (currentFileRefs || [])[0])
-            : null;
+          let items = [];   // [{ name, buffer }] — 소스에서 받은 원본들(아직 TOTUS 파일명 매칭 전)
+          let sourceNote;
 
-          if (attached?.url) {
-            // ① 이 메시지에 직접 첨부된 파일을 그대로 소스로 사용 — 드라이브 탐색 생략.
-            const dlRes = await fetch(attached.url, { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }, signal: AbortSignal.timeout(120000) });
-            if (!dlRes.ok) return { content: [{ type: "text", text: JSON.stringify({ error: `첨부 파일 다운로드 실패: HTTP ${dlRes.status} (files:read 스코프/봇 채널 멤버십 확인 필요할 수 있음)` }) }] };
-            buffer = Buffer.from(await dlRes.arrayBuffer());
-            found = { name: attached.name };
+          if (useAttached) {
+            // ① 이 메시지에 직접 첨부된 파일(들)을 그대로 소스로 사용 — 드라이브 탐색 생략.
+            if (attachedList.length !== pages.length) return { content: [{ type: "text", text: JSON.stringify({ error: `첨부된 ${file_type || "psd"} 파일이 ${attachedList.length}개인데 page는 ${pages.length}개 줬어 — 개수를 맞춰서(첨부 순서대로 콤마 목록) 다시 호출해야 해. 몇 페이지인지 불확실하면 추측하지 말고 사용자에게 물어라.` }) }] };
+            for (const f of attachedList) {
+              const dlRes = await fetch(f.url, { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }, signal: AbortSignal.timeout(600000) });
+              if (!dlRes.ok) return { content: [{ type: "text", text: JSON.stringify({ error: `첨부 파일(${f.name}) 다운로드 실패: HTTP ${dlRes.status} (files:read 스코프/봇 채널 멤버십 확인 필요할 수 있음)` }) }] };
+              items.push({ name: f.name, buffer: Buffer.from(await dlRes.arrayBuffer()) });
+            }
             sourceNote = "드라이브 대신 이 메시지에 직접 첨부된 파일을 그대로 사용함";
           } else {
-            // ② 드라이브(Kuaikan/arthub)에서 탐색
+            // ② 드라이브(Kuaikan/arthub)에서 탐색 — 한 번에 1페이지만 지원.
             if (!work && !url) return { content: [{ type: "text", text: JSON.stringify({ error: "work(작품명/PIVO), url(드라이브 링크), 또는 이 메시지에 직접 첨부한 파일 중 하나는 필요해." }) }] };
+            if (pages.length > 1) return { content: [{ type: "text", text: JSON.stringify({ error: "드라이브 탐색은 한 번에 1페이지만 지원해 — 여러 페이지는 파일을 직접 첨부하거나 페이지별로 나눠 호출해야 해." }) }] };
 
             let platform, rootId, token;
             if (url) {
@@ -2433,49 +2439,52 @@ const apmTools = createSdkMcpServer({
             if (platform !== "kuaikan" && platform !== "arthub") return { content: [{ type: "text", text: JSON.stringify({ error: `지원하지 않는 플랫폼: ${platform}` }) }] };
 
             const adapter = platform === "arthub" ? makeArthubAdapter(token) : makeKuaikanAdapter();
-            found = await resolveEpisodePage(adapter, rootId, episode, page, file_type || "psd");
+            const found = await resolveEpisodePage(adapter, rootId, episode, pages[0], file_type || "psd");
             if (!found.ok) {
               const candidateNames = (found.candidates || []).slice(0, 25).map((c) => c.name).filter(Boolean);
               return { content: [{ type: "text", text: JSON.stringify({ found: false, reason: found.reason, candidates: candidateNames, msg: "드라이브에서 자동으로 확정 못 했어. 후보 목록을 사용자에게 그대로 보여주고 확인받아야 해." }) }] };
             }
             // 실제 바이트 다운로드(서명URL은 20분 내외로 짧게 만료되니 바로 받는다)
-            const dlRes = await fetch(found.url, { signal: AbortSignal.timeout(120000) });
+            const dlRes = await fetch(found.url, { signal: AbortSignal.timeout(600000) });
             if (!dlRes.ok) return { content: [{ type: "text", text: JSON.stringify({ error: `드라이브 파일 다운로드 실패: HTTP ${dlRes.status}` }) }] };
-            buffer = Buffer.from(await dlRes.arrayBuffer());
+            items.push({ name: found.name, buffer: Buffer.from(await dlRes.arrayBuffer()) });
           }
 
-          // 기존 TOTUS 파일명 매칭(지정 안 했으면)
-          let finalName = file_name;
-          if (!finalName) {
-            const existing = await pivoEpisodeSourceFiles(num, String(episode)).catch(() => null);
-            const files = existing?.data?.파일목록 || [];
-            const m = matchByNumber(files, page, "파일명");
+          // 기존 TOTUS 파일명 매칭(각 페이지마다, file_name 안 줬으면) — 하나라도 애매하면 전체 중단(부분 진행 금지).
+          const existing = fileNames.length === items.length ? null : await pivoEpisodeSourceFiles(num, String(episode)).catch(() => null);
+          const existingFiles = existing?.data?.파일목록 || [];
+          const resolved = [];
+          for (let i = 0; i < items.length; i++) {
+            const explicit = fileNames[i];
+            if (explicit) { resolved.push(explicit); continue; }
+            const m = matchByNumber(existingFiles, pages[i], "파일명");
             if (!m.confident) {
-              const candidateNames = files.map((f) => f.파일명);
-              return { content: [{ type: "text", text: JSON.stringify({ found: false, reason: "TOTUS 기존 파일 중 이 페이지에 해당하는 파일명을 확정 못 함", candidates: candidateNames, msg: "file_name을 직접 지정해서 다시 호출해야 해 — 후보 중 임의로 고르면 안 됨." }) }] };
+              return { content: [{ type: "text", text: JSON.stringify({ found: false, reason: `${pages[i]}페이지(${items[i].name}) — TOTUS 기존 파일 중 해당하는 파일명을 확정 못 함`, candidates: existingFiles.map((f) => f.파일명), msg: "이 페이지 때문에 전체를 중단했어. file_name을 페이지 개수만큼 콤마로 직접 지정해서 다시 호출해야 해 — 후보 중 임의로 고르면 안 됨." }) }] };
             }
-            finalName = m.item.파일명;
+            resolved.push(m.item.파일명);
           }
 
           const id = `ru_${++reuploadSeq}`;
-          pendingReuploads.set(id, { pivo: num, episode: String(episode), fileName: finalName, buffer, size: buffer.length, driveFileName: found.name, createdAt: Date.now() });
-          const sizeMB = (buffer.length / (1024 * 1024)).toFixed(1);
+          const batch = items.map((it, i) => ({ fileName: resolved[i], buffer: it.buffer, size: it.buffer.length, sourceName: it.name, page: pages[i] }));
+          pendingReuploads.set(id, { pivo: num, episode: String(episode), items: batch, createdAt: Date.now() });
+          const totalMB = (batch.reduce((s, b) => s + b.size, 0) / (1024 * 1024)).toFixed(1);
+          const listLines = batch.map((b) => `• ${b.page}페이지 원본 \`${b.sourceName}\` (${(b.size / (1024 * 1024)).toFixed(1)}MB) → TOTUS \`${b.fileName}\``).join("\n");
           const ctx = currentCtx;
           if (ctx?.channel && ctx?.ts) {
             await ctx.client.chat.postMessage({
               channel: ctx.channel, thread_ts: ctx.threadTs || ctx.ts,
-              text: `📤 원본 재업로드 확인 — PIVO ${num} ${episode}화 ${page}페이지\n원본 파일: ${found.name} (${sizeMB}MB)\nTOTUS 대상 파일명: ${finalName} (동일 파일명 → 기존 내용 덮어쓰기)${sourceNote ? `\n${sourceNote}` : ""}`,
+              text: `📤 원본 재업로드 확인 — PIVO ${num} ${episode}화 (${batch.length}개, 총 ${totalMB}MB)\n${listLines}\n동일 파일명 → 기존 내용 덮어쓰기${sourceNote ? `\n${sourceNote}` : ""}`,
               blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `📤 *원본 재업로드 확인* — PIVO ${num} ${episode}화 ${page}페이지\n원본 파일: \`${found.name}\` (${sizeMB}MB)\nTOTUS 대상 파일명: \`${finalName}\` (동일 파일명 → *기존 내용 덮어쓰기*, 삭제 후 재업로드 아님)${sourceNote ? `\n${sourceNote}` : ""}` } },
+                { type: "section", text: { type: "mrkdwn", text: `📤 *원본 재업로드 확인* — PIVO ${num} ${episode}화 (${batch.length}개, 총 ${totalMB}MB)\n${listLines}\n동일 파일명 → *기존 내용 덮어쓰기*(삭제 후 재업로드 아님)${sourceNote ? `\n${sourceNote}` : ""}` } },
                 { type: "actions", elements: [
-                  { type: "button", style: "primary", text: { type: "plain_text", text: "📤 업로드" }, value: id, action_id: "reupload_confirm" },
+                  { type: "button", style: "primary", text: { type: "plain_text", text: `📤 업로드(${batch.length}개)` }, value: id, action_id: "reupload_confirm" },
                   { type: "button", text: { type: "plain_text", text: "취소" }, value: id, action_id: "reupload_cancel" },
                 ] },
               ],
               ...SENDER,
             }).catch(() => {});
           }
-          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, pivo: num, episode: String(episode), page: String(page), fileName: finalName, driveFileName: found.name, sizeMB, note: "확인 버튼을 이미 게시했어. 아직 업로드는 실행 안 됐다고 답할 것 — 버튼을 눌러야 실제로 올라감." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, pivo: num, episode: String(episode), count: batch.length, files: batch.map((b) => ({ page: b.page, source: b.sourceName, target: b.fileName, sizeMB: (b.size / (1024 * 1024)).toFixed(1) })), note: "확인 버튼을 이미 게시했어. 아직 업로드는 실행 안 됐다고 답할 것 — 버튼을 눌러야 실제로 올라감." }) }] };
         } catch (e) {
           if (e instanceof KuaikanSessionExpiredError) {
             await dmOwner(`⚠️ Kuaikan 드라이브 세션이 만료된 것 같아요 — 재로그인 후 KUAIKAN_SESSION_COOKIE를 갱신해주세요.`);
@@ -5044,13 +5053,19 @@ app.action("reupload_confirm", async ({ ack, body, client }) => {
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 업로드예요. 다시 요청해줘.");
   pendingReuploads.delete(id);
   if (Date.now() - p.createdAt > REUPLOAD_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요(드라이브 링크도 만료됐을 수 있음) — 다시 요청해줘.");
-  try {
-    const res = await pivoUploadSourceFile(p.pivo, p.episode, p.buffer, p.fileName);
-    appendFileSync("logs/original-reuploads.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, pivo: p.pivo, episode: p.episode, fileName: p.fileName, sizeBytes: p.size, resp: res }) + "\n");
-    await reply(`✅ 업로드 완료 — PIVO ${p.pivo} ${p.episode}화 \`${p.fileName}\` (${(p.size / (1024 * 1024)).toFixed(1)}MB)`);
-  } catch (e) {
-    await reply(`❌ 업로드 실패: ${String(e?.message ?? e)}`);
+  const ok = [], failed = [];
+  for (const it of p.items) {
+    try {
+      const res = await pivoUploadSourceFile(p.pivo, p.episode, it.buffer, it.fileName);
+      appendFileSync("logs/original-reuploads.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, pivo: p.pivo, episode: p.episode, fileName: it.fileName, sizeBytes: it.size, resp: res }) + "\n");
+      ok.push(it);
+    } catch (e) {
+      failed.push({ ...it, error: String(e?.message ?? e) });
+    }
   }
+  const okLines = ok.map((it) => `✅ \`${it.fileName}\` (${(it.size / (1024 * 1024)).toFixed(1)}MB)`);
+  const failLines = failed.map((it) => `❌ \`${it.fileName}\`: ${it.error}`);
+  await reply(`원본 재업로드 결과 — PIVO ${p.pivo} ${p.episode}화 (${ok.length}/${p.items.length}개 성공)\n${[...okLines, ...failLines].join("\n")}`);
 });
 app.action("reupload_cancel", async ({ ack, body, client }) => {
   await ack();

@@ -141,7 +141,7 @@ export async function pivoUploadSourceFile(pid, episode, buffer, fileName) {
     method: "POST",
     headers: { Authorization: `Bearer ${tok}`, "X-Confirm-Mutation": "I-UNDERSTAND-PROD" },
     body: form,
-    signal: AbortSignal.timeout(120000),   // 대용량(원본 PSD 수백MB) 대비 넉넉히
+    signal: AbortSignal.timeout(600000),   // 대용량(원본 PSD 수백MB~1GB급) 대비 10분
   });
   const text = await r.text();
   if (!r.ok) throw new Error(`TOTUS ${r.status}: ${text.slice(0, 500)}`);
