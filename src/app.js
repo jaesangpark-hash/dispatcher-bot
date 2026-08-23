@@ -2377,57 +2377,72 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("propose_original_reupload",
-      "재수급된 원본 파일(psd/jpg 등)을 드라이브(Kuaikan/arthub)에서 찾아 실제로 다운로드한 뒤 TOTUS PIVO 회차에 업로드(재수급 교체)까지 제안한다('N화 M페이지 원본 재수급됐으니 토투스에 올려줘'). fetch_original_from_drive와 파일 탐색 로직은 같지만, 여기는 실제로 바이트를 받아 TOTUS에 쓰기까지 한다 — 되돌리기 어려운 작업(TOTUS는 파일 삭제 기능 자체가 없어 잘못 올리면 원본으로 다시 덮어써야만 복구됨)이라 반드시 확인 버튼을 거쳐야 하고, 호출만으로 절대 업로드가 실행되지 않는다(그렇게 답하면 안 됨). ★같은 파일명으로 올려야 기존 파일 내용만 교체되므로(다른 이름이면 그냥 새 파일 추가), file_name을 안 주면 TOTUS의 기존 파일 목록에서 page 번호로 자동 매칭을 시도한다 — 후보가 0개나 여러 개라 확정 못 하면 절대 추측하지 않고 후보 파일명 목록을 사용자에게 보여주고 file_name을 직접 받아 다시 호출해야 한다. 드라이브 탐색이 애매한 경우(회차/페이지 후보 여러 개)도 fetch_original_from_drive와 동일하게 추측 없이 후보만 반환한다.",
+      "재수급된 원본 파일(psd/jpg 등)을 실제로 받아 TOTUS PIVO 회차에 업로드(재수급 교체)까지 제안한다('N화 M페이지 원본 재수급됐으니 토투스에 올려줘', '이 파일 토투스에 올려줘'). 소스는 두 가지 — ①이 요청 메시지에 파일이 직접 첨부돼 있으면 그걸 그대로 씀(work/url 생략 가능, 가장 흔한 경우), ②없으면 드라이브(Kuaikan/arthub)에서 work 또는 url로 찾음(fetch_original_from_drive와 탐색 로직 동일). 되돌리기 어려운 작업(TOTUS는 파일 삭제 기능 자체가 없어 잘못 올리면 원본으로 다시 덮어써야만 복구됨)이라 반드시 확인 버튼을 거쳐야 하고, 호출만으로 절대 업로드가 실행되지 않는다(그렇게 답하면 안 됨). ★같은 파일명으로 올려야 기존 파일 내용만 교체되므로(다른 이름이면 그냥 새 파일 추가), file_name을 안 주면 TOTUS의 기존 파일 목록에서 page 번호로 자동 매칭을 시도한다 — 후보가 0개나 여러 개라 확정 못 하면 절대 추측하지 않고 후보 파일명 목록을 사용자에게 보여주고 file_name을 직접 받아 다시 호출해야 한다. 드라이브 탐색이 애매한 경우(회차/페이지 후보 여러 개)도 fetch_original_from_drive와 동일하게 추측 없이 후보만 반환한다.",
       {
         pivo: z.string().describe("PIVO 번호"),
         episode: z.union([z.string(), z.number()]).describe("회차 번호"),
-        page: z.union([z.string(), z.number()]).describe("페이지 번호"),
-        file_type: z.enum(["psd", "jpg"]).optional().describe("드라이브에서 찾을 파일 형식(생략 시 psd)"),
-        work: z.string().optional().describe("작품명 또는 PIVO — url 없을 때 출판사 드라이브 링크 시트에서 찾을 키"),
-        url: z.string().optional().describe("드라이브 링크 직접 제공(Kuaikan/arthub). work 없어도 됨"),
+        page: z.union([z.string(), z.number()]).describe("페이지 번호 — TOTUS 기존 파일명 자동매칭에 씀"),
+        file_type: z.enum(["psd", "jpg"]).optional().describe("드라이브에서 찾을 파일 형식(생략 시 psd). 파일 직접 첨부 시엔 첨부 파일 확장자를 그대로 씀"),
+        work: z.string().optional().describe("작품명 또는 PIVO — 파일 직접 첨부가 없고 url도 없을 때 출판사 드라이브 링크 시트에서 찾을 키"),
+        url: z.string().optional().describe("드라이브 링크 직접 제공(Kuaikan/arthub). 파일 직접 첨부가 없을 때만 씀"),
         file_name: z.string().optional().describe("TOTUS에 올릴 파일명 직접 지정(기존 파일명과 완전히 동일해야 덮어쓰기됨). 생략하면 기존 파일 목록에서 page로 자동 매칭 시도."),
       },
       async ({ pivo, episode, page, file_type, work, url, file_name }) => {
         try {
           const _d = ownerOnly(); if (_d) return _d;   // 신규·미검증 기능이라 우선 owner만. 실사용 검증되면 APM 개방 검토.
           const num = String(pivo).match(/\d{4,}/)?.[0] || String(pivo).trim();
-          if (!work && !url) return { content: [{ type: "text", text: JSON.stringify({ error: "work(작품명/PIVO) 또는 url(드라이브 링크) 중 하나는 필요해." }) }] };
 
-          let platform, rootId, token, sourceNote;
-          if (url) {
-            const parsed = parseDriveUrl(url);
-            platform = parsed.platform; rootId = parsed.rootId; token = parsed.token;
-            if (!platform) return { content: [{ type: "text", text: JSON.stringify({ error: "이 URL이 어느 플랫폼인지 인식 못 함(Kuaikan/arthub만 지원)." }) }] };
+          let found, buffer, sourceNote;
+          const attached = !work && !url
+            ? ((currentFileRefs || []).find((f) => String(f.name || "").toLowerCase().endsWith(`.${(file_type || "psd").toLowerCase()}`)) || (currentFileRefs || [])[0])
+            : null;
+
+          if (attached?.url) {
+            // ① 이 메시지에 직접 첨부된 파일을 그대로 소스로 사용 — 드라이브 탐색 생략.
+            const dlRes = await fetch(attached.url, { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }, signal: AbortSignal.timeout(120000) });
+            if (!dlRes.ok) return { content: [{ type: "text", text: JSON.stringify({ error: `첨부 파일 다운로드 실패: HTTP ${dlRes.status} (files:read 스코프/봇 채널 멤버십 확인 필요할 수 있음)` }) }] };
+            buffer = Buffer.from(await dlRes.arrayBuffer());
+            found = { name: attached.name };
+            sourceNote = "드라이브 대신 이 메시지에 직접 첨부된 파일을 그대로 사용함";
           } else {
-            const entry = await lookupDriveEntryForWork(work);
-            if (!entry) return { content: [{ type: "text", text: JSON.stringify({ error: `출판사 드라이브 링크 시트에서 '${work}'를 못 찾음.` }) }] };
-            if (entry.driveLink) {
-              const parsed = parseDriveUrl(entry.driveLink);
+            // ② 드라이브(Kuaikan/arthub)에서 탐색
+            if (!work && !url) return { content: [{ type: "text", text: JSON.stringify({ error: "work(작품명/PIVO), url(드라이브 링크), 또는 이 메시지에 직접 첨부한 파일 중 하나는 필요해." }) }] };
+
+            let platform, rootId, token;
+            if (url) {
+              const parsed = parseDriveUrl(url);
               platform = parsed.platform; rootId = parsed.rootId; token = parsed.token;
-            } else if (/kuaikan/i.test(entry.publisher || "")) {
-              platform = "kuaikan";
-              const hits = await kuaikanSearchRoot(entry.originalTitleCH || work);
-              if (hits.length !== 1) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: hits.length ? "Kuaikan 검색 결과가 여러 건이라 특정 못 함 — 사용자 확인 필요" : "Kuaikan에서 이 작품을 못 찾음", candidates: hits.slice(0, 5).map((h) => ({ id: h.id, name: h.name })) }) }] };
-              rootId = hits[0].id;
-              sourceNote = "시트에 링크가 없어서 Kuaikan 이름 검색으로 찾음";
+              if (!platform) return { content: [{ type: "text", text: JSON.stringify({ error: "이 URL이 어느 플랫폼인지 인식 못 함(Kuaikan/arthub만 지원)." }) }] };
             } else {
-              return { content: [{ type: "text", text: JSON.stringify({ error: `이 작품 드라이브 링크가 시트에 없고, 자동 검색 대상(Kuaikan)도 아니야 — 판권사: ${entry.publisher || "미상"}. baidu/arthub면 실제 링크를 url로 직접 줘.` }) }] };
+              const entry = await lookupDriveEntryForWork(work);
+              if (!entry) return { content: [{ type: "text", text: JSON.stringify({ error: `출판사 드라이브 링크 시트에서 '${work}'를 못 찾음.` }) }] };
+              if (entry.driveLink) {
+                const parsed = parseDriveUrl(entry.driveLink);
+                platform = parsed.platform; rootId = parsed.rootId; token = parsed.token;
+              } else if (/kuaikan/i.test(entry.publisher || "")) {
+                platform = "kuaikan";
+                const hits = await kuaikanSearchRoot(entry.originalTitleCH || work);
+                if (hits.length !== 1) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: hits.length ? "Kuaikan 검색 결과가 여러 건이라 특정 못 함 — 사용자 확인 필요" : "Kuaikan에서 이 작품을 못 찾음", candidates: hits.slice(0, 5).map((h) => ({ id: h.id, name: h.name })) }) }] };
+                rootId = hits[0].id;
+                sourceNote = "시트에 링크가 없어서 Kuaikan 이름 검색으로 찾음";
+              } else {
+                return { content: [{ type: "text", text: JSON.stringify({ error: `이 작품 드라이브 링크가 시트에 없고, 자동 검색 대상(Kuaikan)도 아니야 — 판권사: ${entry.publisher || "미상"}. baidu/arthub면 실제 링크를 url로 직접 줘.` }) }] };
+              }
             }
-          }
-          if (platform === "baidu") return { content: [{ type: "text", text: JSON.stringify({ error: "baidu는 웹에서 자동 다운로드가 안 돼(앱 전용) — 사람이 직접 받아야 해." }) }] };
-          if (platform !== "kuaikan" && platform !== "arthub") return { content: [{ type: "text", text: JSON.stringify({ error: `지원하지 않는 플랫폼: ${platform}` }) }] };
+            if (platform === "baidu") return { content: [{ type: "text", text: JSON.stringify({ error: "baidu는 웹에서 자동 다운로드가 안 돼(앱 전용) — 사람이 직접 받아야 해." }) }] };
+            if (platform !== "kuaikan" && platform !== "arthub") return { content: [{ type: "text", text: JSON.stringify({ error: `지원하지 않는 플랫폼: ${platform}` }) }] };
 
-          const adapter = platform === "arthub" ? makeArthubAdapter(token) : makeKuaikanAdapter();
-          const found = await resolveEpisodePage(adapter, rootId, episode, page, file_type || "psd");
-          if (!found.ok) {
-            const candidateNames = (found.candidates || []).slice(0, 25).map((c) => c.name).filter(Boolean);
-            return { content: [{ type: "text", text: JSON.stringify({ found: false, reason: found.reason, candidates: candidateNames, msg: "드라이브에서 자동으로 확정 못 했어. 후보 목록을 사용자에게 그대로 보여주고 확인받아야 해." }) }] };
+            const adapter = platform === "arthub" ? makeArthubAdapter(token) : makeKuaikanAdapter();
+            found = await resolveEpisodePage(adapter, rootId, episode, page, file_type || "psd");
+            if (!found.ok) {
+              const candidateNames = (found.candidates || []).slice(0, 25).map((c) => c.name).filter(Boolean);
+              return { content: [{ type: "text", text: JSON.stringify({ found: false, reason: found.reason, candidates: candidateNames, msg: "드라이브에서 자동으로 확정 못 했어. 후보 목록을 사용자에게 그대로 보여주고 확인받아야 해." }) }] };
+            }
+            // 실제 바이트 다운로드(서명URL은 20분 내외로 짧게 만료되니 바로 받는다)
+            const dlRes = await fetch(found.url, { signal: AbortSignal.timeout(120000) });
+            if (!dlRes.ok) return { content: [{ type: "text", text: JSON.stringify({ error: `드라이브 파일 다운로드 실패: HTTP ${dlRes.status}` }) }] };
+            buffer = Buffer.from(await dlRes.arrayBuffer());
           }
-
-          // 실제 바이트 다운로드(서명URL은 20분 내외로 짧게 만료되니 바로 받는다)
-          const dlRes = await fetch(found.url, { signal: AbortSignal.timeout(120000) });
-          if (!dlRes.ok) return { content: [{ type: "text", text: JSON.stringify({ error: `드라이브 파일 다운로드 실패: HTTP ${dlRes.status}` }) }] };
-          const buffer = Buffer.from(await dlRes.arrayBuffer());
 
           // 기존 TOTUS 파일명 매칭(지정 안 했으면)
           let finalName = file_name;
@@ -2449,9 +2464,9 @@ const apmTools = createSdkMcpServer({
           if (ctx?.channel && ctx?.ts) {
             await ctx.client.chat.postMessage({
               channel: ctx.channel, thread_ts: ctx.threadTs || ctx.ts,
-              text: `📤 원본 재업로드 확인 — PIVO ${num} ${episode}화 ${page}페이지\n드라이브 파일: ${found.name} (${sizeMB}MB)\nTOTUS 대상 파일명: ${finalName} (동일 파일명 → 기존 내용 덮어쓰기)${sourceNote ? `\n${sourceNote}` : ""}`,
+              text: `📤 원본 재업로드 확인 — PIVO ${num} ${episode}화 ${page}페이지\n원본 파일: ${found.name} (${sizeMB}MB)\nTOTUS 대상 파일명: ${finalName} (동일 파일명 → 기존 내용 덮어쓰기)${sourceNote ? `\n${sourceNote}` : ""}`,
               blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `📤 *원본 재업로드 확인* — PIVO ${num} ${episode}화 ${page}페이지\n드라이브 파일: \`${found.name}\` (${sizeMB}MB)\nTOTUS 대상 파일명: \`${finalName}\` (동일 파일명 → *기존 내용 덮어쓰기*, 삭제 후 재업로드 아님)${sourceNote ? `\n${sourceNote}` : ""}` } },
+                { type: "section", text: { type: "mrkdwn", text: `📤 *원본 재업로드 확인* — PIVO ${num} ${episode}화 ${page}페이지\n원본 파일: \`${found.name}\` (${sizeMB}MB)\nTOTUS 대상 파일명: \`${finalName}\` (동일 파일명 → *기존 내용 덮어쓰기*, 삭제 후 재업로드 아님)${sourceNote ? `\n${sourceNote}` : ""}` } },
                 { type: "actions", elements: [
                   { type: "button", style: "primary", text: { type: "plain_text", text: "📤 업로드" }, value: id, action_id: "reupload_confirm" },
                   { type: "button", text: { type: "plain_text", text: "취소" }, value: id, action_id: "reupload_cancel" },
@@ -3402,7 +3417,7 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   const att = attFiles.length ? await toAttachmentBlocks(attFiles) : { blocks: [], texts: [] };
   // 첨부가 있었는데 하나도 못 읽었으면(다운로드 타임아웃/미지원) 조용히 넘어가지 말고 브레인이 사용자에게 알리도록.
   if (attFiles.length && !att.blocks.length && !att.texts.length) {
-    llmText += "\n\n[주의: 첨부 파일을 못 읽었어요(다운로드 실패/타임아웃/미지원 형식). 파일 내용이 필요한 작업은 진행하지 말고, '파일을 못 받았어요 — 용량이 크거나 형식이 안 맞을 수 있으니 다시 올려주세요'라고 사용자에게 안내하라.]";
+    llmText += `\n\n[주의: 첨부 파일(${attFiles.map((f) => f.name).filter(Boolean).join(", ") || "?"})을 텍스트/이미지로는 못 읽었어요(다운로드 실패·타임아웃, 또는 psd/clip 등 미리보기 미지원 형식). 다만 psd/jpg 원본 재업로드 요청이면 못 읽은 게 문제 아님 — propose_original_reupload가 이 첨부를 원본 그대로 사용하니 그대로 진행할 것. 그 외에 파일 '내용'을 읽어야 하는 작업이면 진행하지 말고 '파일을 못 받았어요 — 용량이 크거나 형식이 안 맞을 수 있으니 다시 올려주세요'라고 안내하라.]`;
   }
   const content = att.blocks.length ? [{ type: "text", text: llmText }, ...att.blocks] : llmText;
 
