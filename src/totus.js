@@ -131,6 +131,7 @@ export const pivoEpisodeSourceFiles = (pid, episode) => getJSON(`/pivo/${encodeU
 // [MUTATION] PIVO 회차에 원본 파일 업로드+회차지정(fileStructureUpsert→presigned S3 PUT→complete→directoryEpisodeUpdateV2, 이관 완료 회차도 재이관 가능).
 // 같은 파일명 재업로드=동일 fileId 유지한 채 내용만 덮어씀(재수급 교체에 안전, 삭제 후 재업로드 아님) — fileName은 반드시 기존과 동일해야 교체로 처리됨.
 // 요청 바디는 OpenAPI에 미문서화(같은 게이트웨이의 /projects/{uuid}/files와 동일 규약으로 추정: multipart/form-data, 필드명 "file").
+// ★2026-08-23 실측 검증 완료: PV-210986 1화 4.psd(26.6MB)를 그대로 재업로드→"기존 파일 덮어쓰기 완료(재조회 검증됨)" 응답, 파일수 그대로 11개·크기 일치 확인.
 // PIVO 허용 확장자(psd·psb·png·jpg·pdf 등) 외 파일이 회차 폴더에 섞이면 그 폴더 전체 동기화가 스킵됨(409 EPISODE_MATCH_SKIPPED_UNSUPPORTED_EXTENSION).
 export async function pivoUploadSourceFile(pid, episode, buffer, fileName) {
   const { url, tok } = creds();
