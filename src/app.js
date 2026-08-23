@@ -2701,6 +2701,35 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: false } }),
+    tool("edit_posted_message",
+      "툰식이가 예전에 올린 슬랙 메시지의 본문을 직접 고친다('그 메시지 날짜만 고쳐줘', '본문 수정해줘', '아까 올린 거 이렇게 바꿔줘'). link로 지정한 메시지가 실제로 이 봇이 쓴 게 아니면 Slack이 수정을 막으므로 자동으로 거부됨(다른 사람 메시지는 절대 못 고침). new_text는 부분이 아니라 **바뀐 내용을 반영한 본문 전체**를 줘야 함 — 기존 본문을 먼저 읽어서(read_thread 등으로) 필요한 부분만 바꾼 전체 텍스트를 만들 것, 일부만 주면 나머지 내용이 통째로 사라진다. 쉽게 되돌릴 수 있는 작업(다시 고치면 그만)이라 확인 버튼 없이 즉시 실행하고, 완료로 보고해도 된다.",
+      {
+        link: z.string().describe("수정할 메시지의 슬랙 퍼머링크(메시지 '링크 복사' 값)"),
+        new_text: z.string().describe("교체할 본문 전체(마크다운 포함 가능). 기존 내용 중 안 바뀐 부분도 그대로 포함해야 함."),
+      },
+      async ({ link, new_text }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;   // 신규 기능 — 우선 owner만.
+          const m = String(link || "").match(/\/archives\/([A-Z0-9]+)\/p(\d{10})(\d{6})/);
+          if (!m) return { content: [{ type: "text", text: JSON.stringify({ error: `슬랙 퍼머링크 형식이 아니야: ${link}` }) }] };
+          const channel = m[1], ts = `${m[2]}.${m[3]}`;
+          const tm = String(link).match(/[?&]thread_ts=(\d{10}\.\d{6})/);
+          const threadTs = tm ? tm[1] : null;
+          const ctx = currentCtx;
+          const fetchOpts = { channel, latest: ts, oldest: ts, inclusive: true, limit: 1 };
+          const res = (threadTs && threadTs !== ts)
+            ? await ctx.client.conversations.replies({ ...fetchOpts, ts: threadTs })
+            : await ctx.client.conversations.history(fetchOpts);
+          const msg = (res?.messages || [])[0];
+          if (!msg) return { content: [{ type: "text", text: JSON.stringify({ error: "그 메시지를 못 찾음(삭제됐거나 봇이 채널 멤버가 아닐 수 있음)." }) }] };
+          if (msg.user !== SELF_BOT_USER) return { content: [{ type: "text", text: JSON.stringify({ error: "이 메시지는 툰식이가 쓴 게 아니라서 못 고쳐(Slack이 다른 사람 메시지 수정을 막음) — 대신 댓글로 안내를 남겨야 해." }) }] };
+          await ctx.client.chat.update({ channel, ts, text: new_text });
+          return { content: [{ type: "text", text: JSON.stringify({ edited: true, channel, ts }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: false } }),
     tool("share_feedback",
       "번역 검수 피드백을 고객 공유용으로 정리해 지정 채널에 '발송 제안'한다('[작품] [회차] 피드백 공유해줘'). 퀄리티(KP평가) 작업기록 시트에서 총평·번역가·LG 코멘트와 등급(시트값 그대로)을 뽑아 양식 메시지를 만들고, APM을 받는이로(@APM CC @박재상) 확인 버튼과 함께 보낸다 — 재상 님이 버튼을 눌러야 실제 발송된다. 등급은 시트값을 그대로 쓰고 임의로 바꾸지 말 것. 발송 후 시트의 '피드백 공유' 열이 자동 체크된다. 절대 '보냈다'고 단정하지 말 것(확인 대기).",
       {
@@ -3323,7 +3352,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__edit_posted_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
