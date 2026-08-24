@@ -5342,6 +5342,15 @@ async function checkWeeklyScrum() {
     const mdShort = `${mtg.getUTCMonth() + 1}/${mtg.getUTCDate()}`;
     let st = {}; try { st = JSON.parse(readFileSync("data/weekly-scrum.json", "utf8")); } catch { /* 첫 실행 */ }
     if (st.week === mdate) return;                               // 이번 회의 주기 이미 공지
+    // ★2026-08-24 중복발송 실사고(원인 불명 — 프로세스는 1개뿐이었는데 서로 다른 Outline 문서 2개가 생성됨,
+    // 내부 상태 파일 마킹만으론 못 막은 사례) 이후 추가: 마킹과 별개로 슬랙 채널 자체를 조회해
+    // 오늘 이미 이 공지가 올라가 있으면(원인이 뭐든) 한 번 더 확실히 막는다.
+    try {
+      const todayKst = kst.toISOString().slice(0, 10);
+      const hist = await app.client.conversations.history({ channel: SCRUM_CHANNEL, limit: 20 });
+      const already = (hist.messages || []).some((m) => (m.bot_id === SELF_BOT_ID || m.user === SELF_BOT_USER) && /자동화 정기 스크럼 공지/.test(m.text || "") && new Date(parseFloat(m.ts) * 1000 + 9 * 3600 * 1000).toISOString().slice(0, 10) === todayKst);
+      if (already) { console.log(`[scrum] 채널에 오늘자 공지가 이미 있어서 스킵(중복발송 방지)`); st.week = mdate; try { writeFileSync("data/weekly-scrum.json", JSON.stringify(st)); } catch { } return; }
+    } catch (e) { console.error("[scrum] 중복확인 조회 실패(진행은 계속함):", e?.message ?? e); }
     // ★Outline 문서 생성·슬랙 발송(느림) 전에 먼저 주차를 마킹 — 그 사이 재기동/겹친 tick이 있어도 재공지 안 되게.
     st.week = mdate; try { writeFileSync("data/weekly-scrum.json", JSON.stringify(st)); } catch { }
     // 지난주 문서 이어받기(있으면 그 마크다운 그대로 — 링크·첨부 보존), 없으면 빈 템플릿
