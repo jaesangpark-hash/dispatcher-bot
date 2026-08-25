@@ -395,7 +395,32 @@ async function n8nPost(path, body) {
 }
 // review-engine(EC2) 검수 호출. 인라인 판단 대신 이 엔진(정규화·PASS1/2·critic)을 단일 소스로 사용.
 const REVIEW_ENGINE_BASE = (process.env.REVIEW_ENGINE_BASE || "http://54.180.119.187:8000").replace(/\/$/, "");
+// ★2026-08-25 실사고: review-engine이 uvicorn --workers 옵션 없이 단일 워커로 떠 있어서, 워커풀(WORKER_COUNT=4)이
+// 동시에 4건을 쏘면 서버가 하나 처리하는 동안 나머지 연결 자체가 안 붙어 4개 다 UND_ERR_CONNECT_TIMEOUT으로 실패함
+// (review-engine 앱 로그에 그 시간대 기록 자체가 없어 TCP 단계에서 막힌 것으로 확인). review-engine 서버 코드는
+// 건드릴 수 없는 범위라, 이쪽에서 동시 도달 개수를 제한하는 세마포어로 완화.
+const REVIEW_ENGINE_CONCURRENCY = Number(process.env.REVIEW_ENGINE_CONCURRENCY || 1);
+let _reviewInFlight = 0;
+const _reviewWaiters = [];
+async function acquireReviewSlot() {
+  if (_reviewInFlight < REVIEW_ENGINE_CONCURRENCY) { _reviewInFlight++; return; }
+  await new Promise((resolve) => _reviewWaiters.push(resolve));
+  _reviewInFlight++;
+}
+function releaseReviewSlot() {
+  _reviewInFlight--;
+  const next = _reviewWaiters.shift();
+  if (next) next();
+}
 async function reviewEngineReview({ work, episode, stage, lang, taskUuid, pairs }) {
+  await acquireReviewSlot();
+  try {
+    return await reviewEngineReviewInner({ work, episode, stage, lang, taskUuid, pairs });
+  } finally {
+    releaseReviewSlot();
+  }
+}
+async function reviewEngineReviewInner({ work, episode, stage, lang, taskUuid, pairs }) {
   const texts = pairs.map((p, i) => {
     const [pageStr, tbStr] = String(p.pb || "").split("-");
     return {
