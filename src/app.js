@@ -1,4 +1,8 @@
 import "dotenv/config";
+// ★2026-08-25: Windows에서 stdout/stderr을 파일로 리다이렉트(run.bat의 `>> logs\bot.log`)하면 Node가
+// 비동기(논블로킹) 파이프 쓰기를 써서 로그가 몇 분씩 지연되는 알려진 문제 — 실시간 진단이 계속 헛돌던 원인.
+// 동기 쓰기로 강제해 console.log가 호출 즉시 파일에 반영되게 함.
+try { process.stdout._handle?.setBlocking?.(true); process.stderr._handle?.setBlocking?.(true); } catch { /* TTY 등 handle 없는 환경은 무시 */ }
 import pkg from "@slack/bolt";
 const { App, Assistant } = pkg;
 import { pollOnce, initSince, refreshJungil } from "./totalk.js";
