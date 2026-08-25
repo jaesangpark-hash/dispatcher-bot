@@ -452,15 +452,16 @@ async function reviewEngineReviewInner({ work, episode, stage, lang, taskUuid, p
     // ★2026-08-25 진단용(원인 미확인 — 격리 테스트는 전부 성공하는데 실프로세스에서만 재현): 시도 직전 리소스 스냅샷.
     try {
       const mem = process.memoryUsage();
-      console.log(`[review-engine] 시도${attempt} 시작 — bodyBytes=${JSON.stringify(body).length} inFlight=${_reviewInFlight} waiters=${_reviewWaiters.length} handles=${process._getActiveHandles?.().length ?? "?"} reqs=${process._getActiveRequests?.().length ?? "?"} rss=${(mem.rss / 1048576).toFixed(0)}MB heapUsed=${(mem.heapUsed / 1048576).toFixed(0)}MB`);
-    } catch { /* 진단 실패는 무시 */ }
+      appendFileSync("logs/review-debug.log", `${new Date().toISOString()} 시도${attempt} 시작 — bodyBytes=${JSON.stringify(body).length} inFlight=${_reviewInFlight} waiters=${_reviewWaiters.length} handles=${process._getActiveHandles?.().length ?? "?"} reqs=${process._getActiveRequests?.().length ?? "?"} rss=${(mem.rss / 1048576).toFixed(0)}MB heapUsed=${(mem.heapUsed / 1048576).toFixed(0)}MB pid=${process.pid} base=${REVIEW_ENGINE_BASE}\n`);
+    } catch (e) { try { appendFileSync("logs/review-debug.log", `진단로그 실패: ${e?.message}\n`); } catch {} }
     try {
       r = await fetch(`${REVIEW_ENGINE_BASE}/review`, {
         method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": process.env.REVIEW_ENGINE_API_KEY || "" }, body: JSON.stringify(body),
         signal: AbortSignal.timeout(1_400_000),   // review-engine REQUEST_TIMEOUT_SECONDS(1800s)보다 짧게, JOB_TIMEOUT_MS(25분)보다 짧게
       });
+      appendFileSync("logs/review-debug.log", `${new Date().toISOString()} 시도${attempt} 응답 수신 — status=${r.status} elapsedMs=${Date.now() - startedAt}\n`);
     } catch (e) {
-      console.log(`[review-engine] 시도${attempt} 실패 — elapsedMs=${Date.now() - startedAt} code=${e?.cause?.code} handles=${process._getActiveHandles?.().length ?? "?"} reqs=${process._getActiveRequests?.().length ?? "?"}`);
+      appendFileSync("logs/review-debug.log", `${new Date().toISOString()} 시도${attempt} 실패 — elapsedMs=${Date.now() - startedAt} code=${e?.cause?.code} msg=${e?.message} handles=${process._getActiveHandles?.().length ?? "?"} reqs=${process._getActiveRequests?.().length ?? "?"}\n`);
       const detail = e?.cause?.code || e?.cause?.message || e?.message || String(e);
       // /review는 비싸고(수 분·다중 LLM콜) run_key 중복실행 방지가 서버에 없음 — 요청 전송 후 한참 지나 끊긴 거면
       // (서버는 이미 처리 중일 가능성 높음) 재시도하지 않고 바로 에러 반환. 연결 자체가 안 된 경우(수초 내 실패)만 1회 재시도.
@@ -3478,6 +3479,7 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   const chPol = CHANNEL_POLICY[channel];   // 채널별 행동 지침(임시) — 있으면 최우선 규칙으로 주입
   if (chPol) llmText = `[이 채널 규칙(최우선): ${chPol}]\n${llmText}`;
   console.log(`[handle] 수신 (ch=${channel}, inThread=${inThread}, 첨부=${attFiles.length}): ${String(text || "").slice(0, 80).replace(/\n/g, " ")}`);
+  try { appendFileSync("logs/review-debug.log", `${new Date().toISOString()} [handle] pid=${process.pid} ch=${channel}: ${String(text || "").slice(0, 80).replace(/\n/g, " ")}\n`); } catch {}
 
   // currentCtx는 messageStream이 '이 턴을 실제로 처리할 때' 설정한다 (도착 순간 아님 → 도구 오배달 방지)
   const ph = await say({ text: "처리 중…", thread_ts: thread, ...SENDER });   // 자리표시자(완료 시 삭제되고 새 메시지로 답함)
