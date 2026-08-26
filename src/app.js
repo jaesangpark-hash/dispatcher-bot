@@ -5460,6 +5460,7 @@ async function checkWeeklyScrumDiff() {
 // (재상 님이 실제 스레드 예시 제공 후 2026-07-10 설계 확정: 매번 다른 스레드가 아니라 일별 고정 패턴).
 const DELIVERY_NOTE_HOUR = Number(process.env.DELIVERY_NOTE_HOUR ?? 9);   // 이 시각(KST) 이후 그날 첫 tick에서 1회
 const DELIVERY_THREAD_CHANNEL = process.env.DELIVERY_THREAD_CHANNEL || "C09B8QLR5FG";   // 재팬_공지
+const DELIVERY_OWNER_ID = process.env.DELIVERY_OWNER_ID || "U07G8KC2EE6";   // 납품 담당자(고정) — 납품 전 특이사항 알림은 작품 APM이 아니라 이 사람에게(재상 님 확인, 2026-08-26)
 let _deliveryNoteDate = null, _deliveryNoteDmDate = null;
 async function todayDeliveriesWithNotes() {
   if (!gasReady()) return [];
@@ -5535,10 +5536,10 @@ async function checkDeliveryNotes() {
     if (kh < DELIVERY_NOTE_HOUR || _deliveryNoteDate === kd) return;
     const hits = await todayDeliveriesWithNotes();
     if (!hits.length) { _deliveryNoteDate = kd; return; }
+    // ★2026-08-26 정정: 작품별 APM이 아니라 납품 담당자(고정)를 멘션해야 함(재상 님 확인) — 이 알림은 "오늘 납품 처리하는 사람"에게 가는 것이지 작품 담당 APM용이 아님.
     const lines = hits.map((h) => {
       const epTxt = h.episodes.length ? ` ${h.episodes.join(",")}화` : "";
-      const who = h.apmId ? `<@${h.apmId}> ` : (h.apm ? `${h.apm} 님 ` : "");
-      return `⚠️ *${h.work}*${epTxt} — ${who}특이사항: ${h.note}`;
+      return `⚠️ *${h.work}*${epTxt} — <@${DELIVERY_OWNER_ID}> 특이사항: ${h.note}`;
     });
     const text = `🔔 *오늘 납품 중 특이사항 있는 작품*\n${lines.join("\n")}`;
     const threadTs = await findTodayDeliveryThreadTs();
