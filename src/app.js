@@ -3787,22 +3787,25 @@ async function handleRetakeWatch({ message, client }) {
     // 3) 번역/식자 분류 — 식자면 스킵(번역가 대상 아님)
     const cls = await classifyRetake(p.fix || "");
     if (cls.type === "식자") { logRW(ts, p, "skip:식자"); return; }
-    // 4) 애매(유형 애매 or 작품 매칭 1건 아님) → 박재상에게 질문(초안-우선이라 어차피 박재상에게 감)
+    // 4) 작품 매칭 0건 → 초안 자체를 못 만듦(대상 특정 불가) → 질문만
     const jpFix = await translateFixToJapanese(p.fix);   // 번역가는 전원 일본인 — 전달용은 항상 일본어로 준비해둔다.
-    if (cls.type === "애매" || cand.length !== 1) {
-      const why = [cand.length !== 1 ? `작품 매칭 ${cand.length}건` : "", cls.type === "애매" ? `유형 애매(${cls.reason || ""})` : ""].filter(Boolean).join(" / ");
-      await dmOwner(`🔁 *리테이크 확인 필요* (자동 감지)\n• 작품: *${p.work}* / 화수: ${p.ep || "?"}\n• 사유: ${why}\n• 번역가 전달용(일본어):\n${jpFix}\n→ 번역가에게 보낼 거면 \`propose_retake\`로 지시해줘 (작품·회차 그대로, 수정내용은 위 일본어 문구 그대로 사용).`);
-      logRW(ts, p, `ask:${cls.type}/cand${cand.length}`);
+    if (cand.length === 0) {
+      await dmOwner(`🔁 *리테이크 확인 필요* (자동 감지)\n• 작품: *${p.work}* / 화수: ${p.ep || "?"}\n• 사유: 작품 매칭 안 됨\n• 번역가 전달용(일본어):\n${jpFix}\n→ 번역가에게 보낼 거면 \`propose_retake\`로 지시해줘 (작품·회차 그대로, 수정내용은 위 일본어 문구 그대로 사용).`);
+      logRW(ts, p, "ask:매칭0");
       return;
     }
-    // 5) 명확(중일 확정 + 번역 + 매칭 1건) → 번역가 발송 초안을 박재상 DM으로(발송은 버튼)
+    // 5) 매칭 1건 이상 → 유형이 애매하거나(번역/식자 확신 못함) 매칭이 여러 건이어도 초안-우선이라 바로 띄운다.
+    //    (재상 님 요청, 2026-08-27: 애매하면 질문만 하지 말고 항상 초안부터 보여줄 것 — 판단은 초안 보고 재상 님이)
+    const ambiguity = [];
+    if (cand.length > 1) ambiguity.push(`작품 매칭 ${cand.length}건 중 첫 후보로 추정`);
+    if (cls.type === "애매") ambiguity.push(`유형 애매(${cls.reason || ""})`);
     const rk = await buildRetake({ work: p.work, episode: p.ep || "", fix: jpFix || p.fix || "" });
     if (!rk.found || !rk.target) {
       await dmOwner(`🔁 *리테이크 초안 실패* — *${p.work}* ${p.ep || ""}\n• ${!rk.found ? "작품 못 찾음" : "번역가/채널 못 찾음"} → 필요하면 propose_retake로 수동 처리.`);
       logRW(ts, p, "ask:buildfail");
       return;
     }
-    const warn = [];
+    const warn = [...ambiguity];
     if (rk.missing.editor) warn.push("식자검수 에디터 URL 못 찾음");
     if (rk.missing.apm) warn.push("APM cc 생략");
     if (rk.missing.trId) warn.push("번역가 Slack ID 미매핑(멘션 평문)");
@@ -3811,13 +3814,16 @@ async function handleRetakeWatch({ message, client }) {
     pendingRetakes.set(rkId, pp);
     try {
       const dm = await client.conversations.open({ users: DISPATCHER_USER_ID });
+      const ctxText = ambiguity.length
+        ? `🤖 리테이크 채널에서 자동 감지 — *번역 이슈로 추정*(확실치 않음: ${ambiguity.join(" / ")}). 초안 확인 후 발송/취소하세요.`
+        : `🤖 리테이크 채널에서 자동 감지 — *번역 이슈*로 판단(${cls.reason || ""}). 확인 후 발송하세요.`;
       const posted = await client.chat.postMessage({ channel: dm.channel.id, ...SENDER, text: `자동 감지 리테이크 초안: ${rk.jpTitle} ${rk.epText} → ${rk.translator || "?"}`,
-        blocks: [{ type: "context", elements: [{ type: "mrkdwn", text: `🤖 리테이크 채널에서 자동 감지 — *번역 이슈*로 판단(${cls.reason || ""}). 확인 후 발송하세요.` }] }, ...retakeBlocks(rkId, pp)] });
+        blocks: [{ type: "context", elements: [{ type: "mrkdwn", text: ctxText }] }, ...retakeBlocks(rkId, pp)] });
       pp.previewChannel = posted.channel; pp.previewTs = posted.ts;
       pendingRetakes.save();
     } catch (e) { console.error("[retake-watch] 초안 발송 실패:", e?.message ?? e); }
-    logRW(ts, p, `draft:${rkId}`);
-    console.log(`[retake-watch] 초안 → 박재상 DM: ${p.work} ${p.ep || ""} (${cls.type})`);
+    logRW(ts, p, `draft:${rkId}${ambiguity.length ? "(ambiguous)" : ""}`);
+    console.log(`[retake-watch] 초안 → 박재상 DM: ${p.work} ${p.ep || ""} (${cls.type}${ambiguity.length ? ", 애매" : ""})`);
   } catch (e) { console.error("[retake-watch] 실패:", e?.message ?? e); }
 }
 
@@ -5093,6 +5099,7 @@ app.action("retake_confirm", async ({ ack, body, client }) => {
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
   const p = pendingRetakes.get(id);
+  try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} retake_confirm 클릭 — id=${id} found=${!!p} keys=[${[...pendingRetakes.keys()].join(",")}] msgTs=${body.message?.ts} chan=${chan}\n`); } catch {}
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 발송이에요.");
   pendingRetakes.delete(id);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
@@ -5153,6 +5160,7 @@ app.action("retake_edit", async ({ ack, body, client }) => {
   if (body.user?.id !== DISPATCHER_USER_ID) return;
   const rkId = body.actions?.[0]?.value;
   const p = pendingRetakes.get(rkId);
+  try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} retake_edit 클릭 — id=${rkId} found=${!!p} keys=[${[...pendingRetakes.keys()].join(",")}] msgTs=${body.message?.ts}\n`); } catch {}
   if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정할 수 없어요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
   await client.views.open({
     trigger_id: body.trigger_id,
