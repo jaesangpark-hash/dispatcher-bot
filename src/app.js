@@ -272,6 +272,23 @@ class PersistMap extends Map {
   set(k, v) { Map.prototype.set.call(this, k, v); this.save(); return this; }
   delete(k) { const r = Map.prototype.delete.call(this, k); this.save(); return r; }
   maxSeq() { let m = 0; for (const k of this.keys()) { const n = parseInt(String(k).split("_").pop()); if (Number.isFinite(n) && n > m) m = n; } return m; }
+  // 인메모리에 없으면 디스크에서 한 번 더 확인하는 안전망(2026-08-27) — 확인 버튼을 누르자마자(1초 내) "만료됐거나
+  // 이미 처리됨"이 뜨는데 정작 pending-*.json엔 그 id가 멀쩡히 남아있는 사례가 반복 확인됨(원인 미확정, 네트워크
+  // 순단 등으로 인메모리·디스크 간 뭔가 어긋났을 가능성). 디스크는 set()마다 동기적으로 기록되므로 항상 최신 진실에
+  // 가깝다 — 거기 있으면 인메모리도 복구해서 그 뒤 delete 등이 정상 동작하게 만든다.
+  getFresh(k) {
+    const inMem = Map.prototype.get.call(this, k);
+    if (inMem !== undefined) return inMem;
+    try {
+      const disk = JSON.parse(readFileSync(this.file, "utf8"));
+      if (Object.prototype.hasOwnProperty.call(disk, k)) {
+        Map.prototype.set.call(this, k, disk[k]);
+        console.error(`[PersistMap] ${this.file}: 인메모리 누락분을 디스크에서 복구 — key=${k}`);
+        return disk[k];
+      }
+    } catch { /* 파일 없음/파싱 실패 — 진짜 없는 것으로 간주 */ }
+    return undefined;
+  }
 }
 const pendingEdits = new PersistMap("edits");        // changeId → { sheetId, tab, items[], newValue, clearing, ... }
 const pendingTotusDates = new PersistMap("totus");   // changeId → { items[], deliveryDate, reason, work, ... }
@@ -4146,7 +4163,7 @@ app.action("delivery_edit_confirm", async ({ ack, body, client }) => {
   const thread = body.message?.thread_ts || body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
-  const p = pendingEdits.get(changeId);
+  const p = pendingEdits.getFresh(changeId);
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 변경이에요. 다시 요청해줘.");
   pendingEdits.delete(changeId);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
@@ -4188,7 +4205,7 @@ app.action("totus_date_confirm", async ({ ack, body, client }) => {
   const thread = body.message?.thread_ts || body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
-  const p = pendingTotusDates.get(changeId);
+  const p = pendingTotusDates.getFresh(changeId);
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 변경이에요. 다시 요청해줘.");
   pendingTotusDates.delete(changeId);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
@@ -4219,7 +4236,7 @@ app.action("proj_confirm", async ({ ack, body, client }) => {
   const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
-  const p = pendingTotusProj.get(id);
+  const p = pendingTotusProj.getFresh(id);
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 변경이에요.");
   pendingTotusProj.delete(id);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
@@ -4242,7 +4259,7 @@ app.action("task_retake_confirm", async ({ ack, body, client }) => {
   const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (!ALLOWED_USERS.has(body.user?.id)) return reply("권한 없는 사용자예요.");
-  const p = pendingTaskRetake.get(id);
+  const p = pendingTaskRetake.getFresh(id);
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 요청이에요.");
   pendingTaskRetake.delete(id);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
@@ -4280,7 +4297,7 @@ app.action("task_retake_cancel", async ({ ack, body, client }) => {
 app.action("fob_resolve_open", async ({ ack, body, client }) => {
   await ack();
   const { batchId, episode } = JSON.parse(body.actions?.[0]?.value || "{}");
-  const rec = pendingFileOrderBatch.get(batchId);
+  const rec = pendingFileOrderBatch.getFresh(batchId);
   const ep = rec?.episodes.find((e) => e.episode === episode);
   if (!rec || !ep) return;
   const blocks = [{ type: "section", text: { type: "mrkdwn", text: `*${rec.work} ${episode}화* — 그룹마다 올바른 순서를 번호로 입력해줘(스페이스 구분).` } }];
@@ -4304,7 +4321,7 @@ app.action("fob_resolve_open", async ({ ack, body, client }) => {
 });
 app.view("fob_resolve_submit", async ({ ack, view, client }) => {
   const { batchId, episode } = JSON.parse(view.private_metadata || "{}");
-  const rec = pendingFileOrderBatch.get(batchId);
+  const rec = pendingFileOrderBatch.getFresh(batchId);
   const ep = rec?.episodes.find((e) => e.episode === episode);
   if (!rec || !ep) { await ack(); return; }
 
@@ -4399,7 +4416,7 @@ app.action("send_confirm", async ({ ack, body, client }) => {
   const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
-  const p = pendingSends.get(id);
+  const p = pendingSends.getFresh(id);
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 발송이에요.");
   pendingSends.delete(id);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
@@ -4443,7 +4460,7 @@ app.action("send_edit", async ({ ack, body, client }) => {
   await ack();
   if (body.user?.id !== DISPATCHER_USER_ID) return;
   const id = body.actions?.[0]?.value;
-  const p = pendingSends.get(id);
+  const p = pendingSends.getFresh(id);
   if (!p || p.items) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료됐거나 수정할 수 없는 초안이에요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
   await client.views.open({
     trigger_id: body.trigger_id,
@@ -4462,7 +4479,7 @@ app.action("send_edit", async ({ ack, body, client }) => {
 app.view("send_edit_modal", async ({ ack, view, client, body }) => {
   await ack();
   const id = view.private_metadata;
-  const p = pendingSends.get(id);
+  const p = pendingSends.getFresh(id);
   if (!p) return;
   if (body.user?.id !== DISPATCHER_USER_ID) return;
   const newText = view.state.values?.body?.val?.value;
@@ -4476,7 +4493,7 @@ app.action("send_items_edit", async ({ ack, body, client }) => {
   await ack();
   if (body.user?.id !== DISPATCHER_USER_ID) return;
   const id = body.actions?.[0]?.value;
-  const p = pendingSends.get(id);
+  const p = pendingSends.getFresh(id);
   if (!p || !p.items) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료됐거나 수정할 수 없는 초안이에요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
   await client.views.open({
     trigger_id: body.trigger_id,
@@ -4496,7 +4513,7 @@ app.action("send_items_edit", async ({ ack, body, client }) => {
 app.view("send_items_edit_modal", async ({ ack, view, client, body }) => {
   await ack();
   const id = view.private_metadata;
-  const p = pendingSends.get(id);
+  const p = pendingSends.getFresh(id);
   if (!p || !p.items) return;
   if (body.user?.id !== DISPATCHER_USER_ID) return;
   p.items.forEach((it, i) => {
@@ -4516,7 +4533,7 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
   const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
-  const p = pendingSetjip.get(id);
+  const p = pendingSetjip.getFresh(id);
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 요청이에요.");
   pendingSetjip.delete(id);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
@@ -4678,7 +4695,7 @@ app.action("setjip_edit", async ({ ack, body, client }) => {
   try {
     if (body.user?.id !== DISPATCHER_USER_ID) { console.log("[setjip_edit] 권한 없음, 무시"); return; }
     const id = body.actions?.[0]?.value;
-    const p = pendingSetjip.get(id);
+    const p = pendingSetjip.getFresh(id);
     if (!p) { console.log(`[setjip_edit] pendingSetjip에 ${id} 없음(만료/미존재)`); await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정 불가. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
     const e = p.e || {};
     const apmDisplay = p.apmId ? await resolveUserName(client, p.apmId) || p.apmId : "";
@@ -4712,7 +4729,7 @@ app.view("setjip_edit_modal", async ({ ack, view, client, body }) => {
   const id = view.private_metadata;
   console.log(`[setjip_edit_modal] 진입 — user=${body.user?.id} id=${id}`);
   try {
-    const p = pendingSetjip.get(id);
+    const p = pendingSetjip.getFresh(id);
     if (!p) { console.log(`[setjip_edit_modal] pendingSetjip에 ${id} 없음`); return; }
     if (body.user?.id !== DISPATCHER_USER_ID) { console.log("[setjip_edit_modal] 권한 없음, 무시"); return; }
     const v = (b) => view.state.values?.[b]?.v?.value?.trim() ?? "";
@@ -4965,7 +4982,8 @@ app.action("transstart_confirm", async ({ ack, body, client }) => {
   const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
-  const p = pendingTransStart.get(id);
+  const p = pendingTransStart.getFresh(id);
+  try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} transstart_confirm 클릭 — id=${id} found=${!!p} keys=[${[...pendingTransStart.keys()].join(",")}] msgTs=${body.message?.ts}\n`); } catch {}
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 발송이에요.");
   pendingTransStart.delete(id);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
@@ -5065,7 +5083,7 @@ app.action("transstart_edit", async ({ ack, body, client }) => {
   await ack();
   if (body.user?.id !== DISPATCHER_USER_ID) return;
   const id = body.actions?.[0]?.value;
-  const p = pendingTransStart.get(id);
+  const p = pendingTransStart.getFresh(id);
   if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정할 수 없어요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
   const inp = (block, label, init, opt = false, ml = false) => ({ type: "input", block_id: block, optional: opt, label: { type: "plain_text", text: label }, element: { type: "plain_text_input", action_id: "val", multiline: ml, initial_value: init || "" } });
   await client.views.open({
@@ -5089,7 +5107,7 @@ app.action("transstart_edit", async ({ ack, body, client }) => {
 app.view("transstart_edit_modal", async ({ ack, view, client, body }) => {
   await ack();
   const id = view.private_metadata;
-  const p = pendingTransStart.get(id);
+  const p = pendingTransStart.getFresh(id);
   if (!p || body.user?.id !== DISPATCHER_USER_ID) return;
   const v = (b) => view.state.values?.[b]?.val?.value?.trim() ?? "";
   p.koTitle = v("ko") || p.koTitle;
@@ -5111,7 +5129,7 @@ app.action("feedback_confirm", async ({ ack, body, client }) => {
   const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
-  const p = pendingFeedback.get(id);
+  const p = pendingFeedback.getFresh(id);
   // 진단(2026-08-26): "만료됐거나 이미 처리된 공유예요"가 저장소엔 멀쩡히 남은 id에도 뜨는 버그 재현용 — pid/id/현재 키 목록/메시지 ts 기록.
   try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_confirm 클릭 — id=${id} found=${!!p} keys=[${[...pendingFeedback.keys()].join(",")}] msgTs=${body.message?.ts} chan=${chan} user=${body.user?.id}\n`); } catch {}
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 공유예요.");
@@ -5143,7 +5161,7 @@ app.action("feedback_edit", async ({ ack, body, client }) => {
   await ack();
   if (body.user?.id !== DISPATCHER_USER_ID) return;
   const id = body.actions?.[0]?.value;
-  const p = pendingFeedback.get(id);
+  const p = pendingFeedback.getFresh(id);
   try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_edit 클릭 — id=${id} found=${!!p} keys=[${[...pendingFeedback.keys()].join(",")}] msgTs=${body.message?.ts}\n`); } catch {}
   if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정할 수 없어요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
   await client.views.open({
@@ -5164,7 +5182,7 @@ app.action("feedback_edit", async ({ ack, body, client }) => {
 app.view("feedback_edit_modal", async ({ ack, view, client, body }) => {
   await ack();
   const id = view.private_metadata;
-  const p = pendingFeedback.get(id);
+  const p = pendingFeedback.getFresh(id);
   if (!p || body.user?.id !== DISPATCHER_USER_ID) return;
   const nb = view.state.values?.body?.val?.value;
   if (typeof nb === "string" && nb.trim()) { p.body = nb; pendingFeedback.save(); }
@@ -5180,7 +5198,7 @@ app.action("retake_confirm", async ({ ack, body, client }) => {
   const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
-  const p = pendingRetakes.get(id);
+  const p = pendingRetakes.getFresh(id);
   try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} retake_confirm 클릭 — id=${id} found=${!!p} keys=[${[...pendingRetakes.keys()].join(",")}] msgTs=${body.message?.ts} chan=${chan}\n`); } catch {}
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 발송이에요.");
   pendingRetakes.delete(id);
@@ -5241,7 +5259,7 @@ app.action("retake_edit", async ({ ack, body, client }) => {
   await ack();
   if (body.user?.id !== DISPATCHER_USER_ID) return;
   const rkId = body.actions?.[0]?.value;
-  const p = pendingRetakes.get(rkId);
+  const p = pendingRetakes.getFresh(rkId);
   try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} retake_edit 클릭 — id=${rkId} found=${!!p} keys=[${[...pendingRetakes.keys()].join(",")}] msgTs=${body.message?.ts}\n`); } catch {}
   if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정할 수 없어요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
   await client.views.open({
@@ -5263,7 +5281,7 @@ app.action("retake_edit", async ({ ack, body, client }) => {
 app.view("retake_edit_modal", async ({ ack, view, client, body }) => {
   await ack();
   const rkId = view.private_metadata;
-  const p = pendingRetakes.get(rkId);
+  const p = pendingRetakes.getFresh(rkId);
   if (!p) return;
   if (body.user?.id !== DISPATCHER_USER_ID) return;
   const newBody = view.state.values?.body?.val?.value;
