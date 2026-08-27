@@ -3089,12 +3089,17 @@ const apmTools = createSdkMcpServer({
             }
           }
           let firstDelivery = first_delivery_date?.trim() || "", firstEpisode = first_episode?.trim() || "", koFromQuote = "", firstDeliveryRaw = "";
+          // ★버그 수정(2026-08-27): 사용자가 first_delivery_date를 직접 줬는데도 아래 TOTUS 견적 조회에서
+          // firstDeliveryRaw를 무조건 덮어써서, 납품 시트(G열=YMD)엔 TOTUS의 구 날짜가 그대로 들어가고
+          // 정작 확인 메시지 문구(firstDelivery)만 사용자 지정값으로 보이는 불일치가 있었음(PIVO 209834,
+          // "11/10"으로 요청했는데 시트엔 9/18로 기록됨). 사용자가 줬으면 그 값을 YMD로 먼저 확정해 우선시킨다.
+          if (firstDelivery) firstDeliveryRaw = submitDateToISO(firstDelivery) || "";
           if (pivo) {
             try {
               const q = await quotationByPivo(pivo);
               const d = Array.isArray(q?.data) ? q.data[0] : null;
               if (d) {
-                firstDeliveryRaw = d["초도작업_납품목표일"] || "";   // 납품 시트 G열(YMD)용 원시 날짜
+                if (!firstDeliveryRaw) firstDeliveryRaw = d["초도작업_납품목표일"] || "";   // 사용자가 안 줬을 때만 TOTUS 값 사용
                 if (!firstDelivery) firstDelivery = fmtKDate(d["초도작업_납품목표일"]);
                 if (!firstEpisode) firstEpisode = String(d["초도작업_총작업량표시"] || d["초도작업_총작업량"] || "").replace(/화$/, "").trim();
                 koFromQuote = d["pivoOriginalTitle"] || "";
