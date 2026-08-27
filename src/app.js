@@ -597,6 +597,88 @@ async function revokeSetjipAiTokens(pivo) {
     return updates.length / 2;
   } catch (e) { console.error("[revokeSetjipAiTokens] 토큰 폐기 실패:", e?.message ?? e); return 0; }
 }
+
+// ── 설정집 AI검수 토큰 "대기" 행 자동 재확인(2026-08-27): 요청 확인 시점엔 배정이 안 잡혀 토큰을 못 준 역할을,
+// 배정 현황(하루 1회 갱신)과 매일 대조해 배정이 잡히면 자동 발급 + 작업자 채널로 안내. 신규(=이전에 이 안내를 한 번도
+// 못 받은) 작업자면 AI 자가검사 툴 안내 HTML도 같이 첨부한다. 재상 님 요청, 2026-08-27.
+const SETJIP_GUIDE_HTML = "C:\\Users\\P-205\\Desktop\\개인 자동화\\_설정집_인터랙티브툴\\設定集.html";
+const notifiedSetjipGuide = new PersistMap("setjip-guide-notified");   // norm(작업자명) → { at }
+let _setjipGuideSeeded = false;
+let _setjipTokenAutoDate = null;   // 하루 1회만 실제 수행(배정 현황 자체가 하루 1회 갱신이라 더 자주 돌 이유 없음)
+
+// 이미 토큰을 발급받은 적 있는(대기 아닌) 작업자는 예전 일괄 안내를 이미 받은 것으로 간주 — 부팅 후 처음 한 번만 시딩.
+async function seedNotifiedSetjipGuideIfNeeded() {
+  if (_setjipGuideSeeded) return;
+  _setjipGuideSeeded = true;
+  try {
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_AI_TOKEN_TAB}!A2:L5000`);
+    for (const r of rows || []) {
+      const worker = String(r[1] || "").trim();
+      const status = String(r[10] || "").trim();
+      if (worker && status && status !== "대기") notifiedSetjipGuide.set(norm(worker), { at: "seed" });
+    }
+  } catch (e) { console.error("[setjip-guide-seed] 실패:", e?.message ?? e); }
+}
+
+async function uploadSetjipGuideToChannel(channel) {
+  try {
+    const buf = readFileSync(SETJIP_GUIDE_HTML);
+    const filename = "設定集.html";
+    const u = await (await fetch("https://slack.com/api/files.getUploadURLExternal", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ filename, length: String(buf.length) }),
+    })).json();
+    if (!u.ok) throw new Error(u.error);
+    const upRes = await fetch(u.upload_url, { method: "POST", body: buf });
+    if (!upRes.ok) throw new Error(`upload http ${upRes.status}`);
+    const c = await (await fetch("https://slack.com/api/files.completeUploadExternal", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`, "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ files: [{ id: u.file_id, title: filename }], channel_id: channel, initial_comment: "🔧 設定集AI自己検査ツールです。ご活用ください。" }),
+    })).json();
+    if (!c.ok) throw new Error(c.error);
+    return true;
+  } catch (e) { console.error("[setjip-guide-upload] 실패:", e?.message ?? e); return false; }
+}
+
+async function checkSetjipTokenAutoIssue() {
+  try {
+    if (!BRAIN_ON) return;
+    const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    if (_setjipTokenAutoDate === today) return;
+    _setjipTokenAutoDate = today;
+    await seedNotifiedSetjipGuideIfNeeded();
+    const rows = await readRangeRO(SETJIP_SCHEDULE_SHEET, `${SETJIP_AI_TOKEN_TAB}!A2:L5000`);
+    if (!rows?.length) return;
+    const waiting = [];
+    rows.forEach((r, i) => {
+      if (String(r[10] || "").trim() === "대기") {
+        waiting.push({ role: String(r[2] || "").trim(), pivo: String(r[3] || "").trim(), work: String(r[4] || "").trim(), submitDate: String(r[5] || "").trim() });
+      }
+    });
+    if (!waiting.length) return;
+    const wdb = await workerChannelMap();
+    for (const w of waiting) {
+      if (!w.pivo || !w.role) continue;
+      const assign = await lookupAssignment(w.pivo);
+      const workerName = w.role === "번역" ? assign.translator : assign.reviewer;
+      if (!workerName) continue;   // 아직 배정 안 됨 — 다음 날 재확인
+      const issued = await issueSetjipAiToken({ translator: workerName, role: w.role, pivo: w.pivo, work: w.work, submitDate: w.submitDate });
+      const info = wdb.get(norm(workerName));
+      const isNew = !notifiedSetjipGuide.has(norm(workerName));
+      if (!info?.channel) { console.log(`[setjip-token-auto] 발급됨(작업자 DB에 채널 없어 미발송) — ${w.work} ${w.role} → ${workerName}`); continue; }
+      const mention = info.slackId ? `<@${info.slackId}> さん\n` : `${workerName} さん\n`;
+      const text = `${mention}『${w.work}』の設定集 ${w.role === "번역" ? "翻訳" : "翻訳チェック"}担当に配置されましたので、AI検査認証番号をお送りします。\n\n🔑 認証番号: \`${issued.code}\`（${issued.limit}回まで利用可）\n\n設定集の自己検査ツールに入力してご利用ください。`;
+      await app.client.chat.postMessage({ channel: info.channel, text, ...SENDER }).catch((e) => console.error("[setjip-token-auto] 발송 실패:", e?.message ?? e));
+      if (isNew) {
+        const ok = await uploadSetjipGuideToChannel(info.channel);
+        if (ok) notifiedSetjipGuide.set(norm(workerName), { at: new Date().toISOString() });
+      }
+      console.log(`[setjip-token-auto] 발급+안내 — ${w.work} ${w.role} → ${workerName}${isNew ? "(신규, HTML 첨부)" : ""}`);
+    }
+  } catch (e) { console.error("[setjip-token-auto] 실패:", e?.message ?? e); }
+}
 // "7/24(金) 오전 중" 같은 표시용 문자열 → 비교용 ISO 날짜("2026-07-24"). 이미 지난 월/일이면 내년으로 보정(연말 경계 대비).
 function submitDateToISO(s) {
   const m = String(s || "").match(/^(\d{1,2})\/(\d{1,2})/);
@@ -5582,7 +5664,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
