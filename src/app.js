@@ -5129,29 +5129,37 @@ app.view("transstart_edit_modal", async ({ ack, view, client, body }) => {
 
 // ── 피드백 공유 확인/취소 (실제 발송 + 시트 표시는 LLM 밖, 여기서만) ──
 app.action("feedback_confirm", async ({ ack, body, client }) => {
-  await ack();
-  const id = body.actions?.[0]?.value;
-  const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
-  const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
-  if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
-  const p = pendingFeedback.getFresh(id);
-  // 진단(2026-08-26): "만료됐거나 이미 처리된 공유예요"가 저장소엔 멀쩡히 남은 id에도 뜨는 버그 재현용 — pid/id/현재 키 목록/메시지 ts 기록.
-  try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_confirm 클릭 — id=${id} found=${!!p} keys=[${[...pendingFeedback.keys()].join(",")}] msgTs=${body.message?.ts} chan=${chan} user=${body.user?.id}\n`); } catch {}
-  if (!p) return reply("⌛ 만료됐거나 이미 처리된 공유예요.");
-  pendingFeedback.delete(id);
-  if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
+  const chan0 = body.channel?.id, thread0 = body.message?.thread_ts || body.message?.ts;
+  try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_confirm 진입(ack 전) — value=${body.actions?.[0]?.value} msgTs=${body.message?.ts}\n`); } catch {}
   try {
-    const outText = p.mentionReal ? `${p.mentionReal}\n${p.body}` : p.text;   // 수정본 반영(body 편집 시)
-    await client.chat.postMessage({ channel: p.channel, text: outText, ...SENDER });
-    appendFileSync("logs/feedback.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, channel: p.channel, work: p.koTitle, episode: p.episode, rows: p.rowsToMark }) + "\n");
-    // 발송 성공 → 작업기록 '피드백 공유'(N열) TRUE 표시(베스트에포트: SA가 KP시트 편집자 아니면 실패해도 발송은 유지)
-    let mark = "";
+    await ack();
+    const id = body.actions?.[0]?.value;
+    const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
+    const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+    if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
+    const p = pendingFeedback.getFresh(id);
+    // 진단(2026-08-26): "만료됐거나 이미 처리된 공유예요"가 저장소엔 멀쩡히 남은 id에도 뜨는 버그 재현용 — pid/id/현재 키 목록/메시지 ts 기록.
+    try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_confirm 클릭 — id=${id} found=${!!p} keys=[${[...pendingFeedback.keys()].join(",")}] msgTs=${body.message?.ts} chan=${chan} user=${body.user?.id}\n`); } catch {}
+    if (!p) return reply("⌛ 만료됐거나 이미 처리된 공유예요.");
+    pendingFeedback.delete(id);
+    if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
     try {
-      if (p.rowsToMark?.length) await setCells(FEEDBACK_SHEET_ID, p.rowsToMark.map((r) => ({ a1: FEEDBACK_SHARE_RANGE(r), value: true })));
-    } catch (e) { mark = `\n⚠️ 시트 '피드백 공유' 표시 실패: ${e?.message ?? e} (KP평가 시트에 SA 편집자 권한 필요)`; }
-    await reply(`✅ 피드백 공유 완료 → <#${p.channel}> (${p.koTitle} ${p.episode}화)${mark}`);
+      const outText = p.mentionReal ? `${p.mentionReal}\n${p.body}` : p.text;   // 수정본 반영(body 편집 시)
+      await client.chat.postMessage({ channel: p.channel, text: outText, ...SENDER });
+      appendFileSync("logs/feedback.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, channel: p.channel, work: p.koTitle, episode: p.episode, rows: p.rowsToMark }) + "\n");
+      // 발송 성공 → 작업기록 '피드백 공유'(N열) TRUE 표시(베스트에포트: SA가 KP시트 편집자 아니면 실패해도 발송은 유지)
+      let mark = "";
+      try {
+        if (p.rowsToMark?.length) await setCells(FEEDBACK_SHEET_ID, p.rowsToMark.map((r) => ({ a1: FEEDBACK_SHARE_RANGE(r), value: true })));
+      } catch (e) { mark = `\n⚠️ 시트 '피드백 공유' 표시 실패: ${e?.message ?? e} (KP평가 시트에 SA 편집자 권한 필요)`; }
+      await reply(`✅ 피드백 공유 완료 → <#${p.channel}> (${p.koTitle} ${p.episode}화)${mark}`);
+    } catch (e) {
+      await reply(`❌ 발송 실패: ${e?.message ?? e}\n(봇이 그 채널 멤버인지 확인)`);
+    }
   } catch (e) {
-    await reply(`❌ 발송 실패: ${e?.message ?? e}\n(봇이 그 채널 멤버인지 확인)`);
+    try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_confirm 예외 — ${e?.message ?? e}\n`); } catch {}
+    console.error("[feedback_confirm] 핸들러 예외:", e?.message ?? e);
+    await client.chat.postMessage({ channel: chan0, thread_ts: thread0, text: `⚠️ 발송 처리 중 오류: ${e?.message ?? e}`, ...SENDER }).catch(() => {});
   }
 });
 
@@ -5163,25 +5171,34 @@ app.action("feedback_cancel", async ({ ack, body, client }) => {
 
 // 피드백 초안 수정 — 모달(본문 편집, 멘션 줄은 자동 고정)
 app.action("feedback_edit", async ({ ack, body, client }) => {
-  await ack();
-  if (body.user?.id !== DISPATCHER_USER_ID) return;
-  const id = body.actions?.[0]?.value;
-  const p = pendingFeedback.getFresh(id);
-  try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_edit 클릭 — id=${id} found=${!!p} keys=[${[...pendingFeedback.keys()].join(",")}] msgTs=${body.message?.ts}\n`); } catch {}
-  if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정할 수 없어요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
-  await client.views.open({
-    trigger_id: body.trigger_id,
-    view: {
-      type: "modal", callback_id: "feedback_edit_modal", private_metadata: id,
-      title: { type: "plain_text", text: "피드백 초안 수정" },
-      submit: { type: "plain_text", text: "적용" }, close: { type: "plain_text", text: "닫기" },
-      blocks: [
-        { type: "context", elements: [{ type: "mrkdwn", text: "받는이/CC 멘션 줄은 자동 고정이에요. 아래 본문(제목·문구·코멘트·등급)만 고치면 미리보기에 반영됩니다." }] },
-        { type: "input", block_id: "body", label: { type: "plain_text", text: "본문" },
-          element: { type: "plain_text_input", action_id: "val", multiline: true, initial_value: p.body } },
-      ],
-    },
-  }).catch((e) => console.error("[feedback_edit] views.open 실패:", e?.data?.error || e?.message));
+  // ★진단 강화(2026-08-27): 클릭이 서버까지 왔는지조차 안 찍히는 사례 발견 — ack() 전에 먼저 로그하고,
+  // 핸들러 전체를 try/catch로 감싸서 어떤 예외든(ack 실패 포함) 조용히 죽지 않고 원인이 남게 한다.
+  try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_edit 진입(ack 전) — value=${body.actions?.[0]?.value} msgTs=${body.message?.ts}\n`); } catch {}
+  try {
+    await ack();
+    if (body.user?.id !== DISPATCHER_USER_ID) return;
+    const id = body.actions?.[0]?.value;
+    const p = pendingFeedback.getFresh(id);
+    try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_edit 클릭 — id=${id} found=${!!p} keys=[${[...pendingFeedback.keys()].join(",")}] msgTs=${body.message?.ts}\n`); } catch {}
+    if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정할 수 없어요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
+    await client.views.open({
+      trigger_id: body.trigger_id,
+      view: {
+        type: "modal", callback_id: "feedback_edit_modal", private_metadata: id,
+        title: { type: "plain_text", text: "피드백 초안 수정" },
+        submit: { type: "plain_text", text: "적용" }, close: { type: "plain_text", text: "닫기" },
+        blocks: [
+          { type: "context", elements: [{ type: "mrkdwn", text: "받는이/CC 멘션 줄은 자동 고정이에요. 아래 본문(제목·문구·코멘트·등급)만 고치면 미리보기에 반영됩니다." }] },
+          { type: "input", block_id: "body", label: { type: "plain_text", text: "본문" },
+            element: { type: "plain_text_input", action_id: "val", multiline: true, initial_value: p.body } },
+        ],
+      },
+    }).catch((e) => console.error("[feedback_edit] views.open 실패:", e?.data?.error || e?.message));
+  } catch (e) {
+    try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_edit 예외 — ${e?.message ?? e}\n`); } catch {}
+    console.error("[feedback_edit] 핸들러 예외:", e?.message ?? e);
+    await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: `⚠️ 수정 처리 중 오류: ${e?.message ?? e}`, ...SENDER }).catch(() => {});
+  }
 });
 
 app.view("feedback_edit_modal", async ({ ack, view, client, body }) => {
