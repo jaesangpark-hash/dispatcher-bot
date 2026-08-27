@@ -8,9 +8,15 @@ const MASTER = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
 const RANGE = "출판사 드라이브 링크!A:I";
 const TITLE_COLS = [2, 3, 4]; // C 한국어, D 일본어가제, E FIX일본어
 
+// 판권사가 시트 드라이브 링크 대신 특정 플랫폼에서 직접 검색해야 하는 경우(재상 님 확인, 2026-08-26).
+// XINGYUE는 자체 드라이브가 없고 원본이 bilibili에 있음 — 원본/드라이브 링크 안내 시 이 이름으로 검색하라고 알려줄 것.
+const PUBLISHER_SEARCH_OVERRIDE = { XINGYUE: "bilibili" };
+export const originSearchName = (publisher) => PUBLISHER_SEARCH_OVERRIDE[String(publisher || "").trim()] || null;
+
 const mapRow = (r) => ({
   apm: r[0] || null, zhTitle: r[1] || null, koTitle: r[2] || null, jaTitle: r[3] || null,
   fixTitle: r[4] || null, publisher: r[6] || null, driveLink: r[7] || null, pivoId: r[8] || null,
+  ...(originSearchName(r[6]) ? { originSearchSite: originSearchName(r[6]) } : {}),
 });
 
 // 매칭 행 후보 전부 반환 (우선순위 단계별, 첫 단계에서 잡히면 그 단계 결과만)
@@ -76,7 +82,7 @@ export async function koTitleIndex() {
   for (const r of rows) {
     const ko = String(r[2] || "").trim();
     if (!ko) continue;
-    idx.push({ koTitle: ko, koNorm: norm(ko), pivoId: r[8] || null, driveLink: r[7] || null, publisher: r[6] || null, zhTitle: r[1] || null });
+    idx.push({ koTitle: ko, koNorm: norm(ko), pivoId: r[8] || null, driveLink: r[7] || null, publisher: r[6] || null, zhTitle: r[1] || null, originSearchSite: originSearchName(r[6]) });
   }
   _koIdx = idx; _koIdxAt = Date.now();
   return idx;

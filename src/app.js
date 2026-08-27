@@ -12,7 +12,7 @@ import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import { lookupDelivery } from "./delivery.js";
 import { gasReady, gasQuery } from "./gas.js";
-import { lookupWork, koTitleIndex, listWorkNotes, setWorkNote, resolveTitleAliases } from "./works.js";
+import { lookupWork, koTitleIndex, listWorkNotes, setWorkNote, resolveTitleAliases, originSearchName } from "./works.js";
 import { norm } from "./sheets.js";
 import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
@@ -1672,7 +1672,7 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "get_work_info",
-      "작품 기본정보 조회: PIVO ID, 한국어/일본어 타이틀, FIX 타이틀, 담당 APM, 출판사, 드라이브 링크. 작품명(한/일/중·앞글자·키워드) 또는 PIVO ID로 검색. 여러 작품이 걸리면 ambiguous=true + candidates를 반환하니, 그땐 임의로 고르지 말고 사용자에게 어느 작품인지 되물어라.",
+      "작품 기본정보 조회: PIVO ID, 한국어/일본어 타이틀, FIX 타이틀, 담당 APM, 출판사, 드라이브 링크. 작품명(한/일/중·앞글자·키워드) 또는 PIVO ID로 검색. 여러 작품이 걸리면 ambiguous=true + candidates를 반환하니, 그땐 임의로 고르지 말고 사용자에게 어느 작품인지 되물어라. ★결과에 originSearchSite가 있으면(현재 XINGYUE만 해당) 그 판권사는 자체 드라이브가 없다는 뜻 — 원본/드라이브 링크를 물으면 driveLink 대신 'originSearchSite(예: bilibili)에서 원제로 검색하라'고 안내할 것.",
       {
         query: z.string().describe("작품명(한국어 또는 일본어) 또는 PIVO ID 숫자"),
       },
@@ -2373,7 +2373,8 @@ const apmTools = createSdkMcpServer({
               rootId = hits[0].id;
               sourceNote = "시트에 링크가 없어서 Kuaikan 이름 검색으로 찾음";
             } else {
-              return { content: [{ type: "text", text: JSON.stringify({ error: `이 작품 드라이브 링크가 시트에 없고, 자동 검색 대상(Kuaikan)도 아니야 — 판권사: ${entry.publisher || "미상"}. baidu/arthub면 실제 링크를 url로 직접 줘.` }) }] };
+              const altSite = originSearchName(entry.publisher);
+              return { content: [{ type: "text", text: JSON.stringify({ error: altSite ? `이 작품 드라이브 링크가 시트에 없음 — 판권사(${entry.publisher})는 자체 드라이브가 없고 원본이 ${altSite}에 있어. 원제 「${entry.originalTitleCH || work}」로 ${altSite}에서 직접 찾아야 함(자동 다운로드 미지원).` : `이 작품 드라이브 링크가 시트에 없고, 자동 검색 대상(Kuaikan)도 아니야 — 판권사: ${entry.publisher || "미상"}. baidu/arthub면 실제 링크를 url로 직접 줘.` }) }] };
             }
           }
           if (platform === "baidu") return { content: [{ type: "text", text: JSON.stringify({ error: "baidu는 웹에서 자동 다운로드가 안 돼(앱 전용) — 사람이 직접 받아야 해." }) }] };
@@ -2468,7 +2469,8 @@ const apmTools = createSdkMcpServer({
                 rootId = hits[0].id;
                 sourceNote = "시트에 링크가 없어서 Kuaikan 이름 검색으로 찾음";
               } else {
-                return { content: [{ type: "text", text: JSON.stringify({ error: `이 작품 드라이브 링크가 시트에 없고, 자동 검색 대상(Kuaikan)도 아니야 — 판권사: ${entry.publisher || "미상"}. baidu/arthub면 실제 링크를 url로 직접 줘.` }) }] };
+                const altSite = originSearchName(entry.publisher);
+                return { content: [{ type: "text", text: JSON.stringify({ error: altSite ? `이 작품 드라이브 링크가 시트에 없음 — 판권사(${entry.publisher})는 자체 드라이브가 없고 원본이 ${altSite}에 있어. 원제 「${entry.originalTitleCH || work}」로 ${altSite}에서 직접 찾아야 함(자동 다운로드 미지원).` : `이 작품 드라이브 링크가 시트에 없고, 자동 검색 대상(Kuaikan)도 아니야 — 판권사: ${entry.publisher || "미상"}. baidu/arthub면 실제 링크를 url로 직접 줘.` }) }] };
               }
             }
             if (platform === "baidu") return { content: [{ type: "text", text: JSON.stringify({ error: "baidu는 웹에서 자동 다운로드가 안 돼(앱 전용) — 사람이 직접 받아야 해." }) }] };
@@ -3542,7 +3544,7 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
     } catch { /* 조회 실패 시 안내 유지 */ }
     const wantSrc = RESUPPLY_RE.test(text);
     const lines = [`📁 *${hit.koTitle}*`, urlLine];
-    if (wantSrc) lines.push(hit.driveLink ? `📦 원본: ${hit.driveLink}` : `📦 원본: 시트에 링크 없음 — ${hit.publisher || "출판사"}에서 원제 「${hit.zhTitle || "?"}」로 검색`);
+    if (wantSrc) lines.push(hit.driveLink ? `📦 원본: ${hit.driveLink}` : `📦 원본: 시트에 링크 없음 — ${hit.originSearchSite || hit.publisher || "출판사"}에서 원제 「${hit.zhTitle || "?"}」로 검색`);
     if (ORIGIN_ISSUE_RE.test(text) && REPORT_TO_CLIENT_PUBLISHERS.has(hit.publisher || "")) {
       lines.push(`⚠️ *${hit.publisher}* 소속 — 원본 관련 이슈는 내부에서 조용히 처리해도 고객사에 개별 보고 대상이에요(재수급까지 안 가는 사소한 작화/스토리 건도 포함). 잊지 말고 공유하세요.`);
     }
@@ -5022,6 +5024,8 @@ app.action("feedback_confirm", async ({ ack, body, client }) => {
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
   const p = pendingFeedback.get(id);
+  // 진단(2026-08-26): "만료됐거나 이미 처리된 공유예요"가 저장소엔 멀쩡히 남은 id에도 뜨는 버그 재현용 — pid/id/현재 키 목록/메시지 ts 기록.
+  try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_confirm 클릭 — id=${id} found=${!!p} keys=[${[...pendingFeedback.keys()].join(",")}] msgTs=${body.message?.ts} chan=${chan} user=${body.user?.id}\n`); } catch {}
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 공유예요.");
   pendingFeedback.delete(id);
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
@@ -5052,6 +5056,7 @@ app.action("feedback_edit", async ({ ack, body, client }) => {
   if (body.user?.id !== DISPATCHER_USER_ID) return;
   const id = body.actions?.[0]?.value;
   const p = pendingFeedback.get(id);
+  try { appendFileSync("logs/feedback-debug.log", `${new Date().toISOString()} pid=${process.pid} feedback_edit 클릭 — id=${id} found=${!!p} keys=[${[...pendingFeedback.keys()].join(",")}] msgTs=${body.message?.ts}\n`); } catch {}
   if (!p) { await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "⌛ 만료된 초안이라 수정할 수 없어요. 다시 요청해줘.", ...SENDER }).catch(() => {}); return; }
   await client.views.open({
     trigger_id: body.trigger_id,
