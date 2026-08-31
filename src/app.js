@@ -3978,13 +3978,20 @@ async function handleSupplyNotice({ message, client }) {
         lines.push(`• ${role}: ${nm} ${w?.channel ? `<#${w.channel}>` : "_(채널 미등록)_"}`);
       }
     }
-    let projLine = "";
+    let projLine = "", firstDueLine = "";
     if (kind === "FIX 설정집") {
       try { const fp = await findProject(row?.pivo_id || work); const proj = (fp?.data || [])[0]; if (proj?.uuid) projLine = `\n🔗 프로젝트: https://admin.totus.pro/ko/workProgressManagementDetail/?id=${proj.uuid}`; } catch { /* 무시 */ }
+      // ★1차 납품 제출 일자 = 발송일(오늘, 이 도착 안내 시각) + 1영업일 15시까지(재상 님 요청, 2026-08-28).
+      // 주말·한/일 공휴일은 영업일에서 제외(isWeekendOrKrJpHoliday 재사용, reviewStartMD와 동일 기준).
+      const apmId = (text.match(/<@([A-Z0-9]+)>/) || [])[1];
+      const kst = new Date(Date.now() + 9 * 3600 * 1000);
+      do { kst.setUTCDate(kst.getUTCDate() + 1); } while (isWeekendOrKrJpHoliday(kst));
+      const dueMD = `${kst.getUTCMonth() + 1}/${kst.getUTCDate()}(${KO_WD[kst.getUTCDay()]})`;
+      firstDueLine = `\n📅 ${apmId ? `<@${apmId}> ` : ""}1차 납품 제출 일자: ${dueMD} 15:00까지`;
     }
     const head = `📋 *${work}* — ${kind} 도착 · 배정 작업자`;
     const body = lines.length ? lines.join("\n") : "_배정 현황에서 작업자를 못 찾았어요 (한국어타이틀 표기 확인)_";
-    await client.chat.postMessage({ channel: message.channel, thread_ts: ts, text: `${head}\n${body}${projLine}`, ...SENDER, unfurl_links: false });
+    await client.chat.postMessage({ channel: message.channel, thread_ts: ts, text: `${head}\n${body}${projLine}${firstDueLine}`, ...SENDER, unfurl_links: false });
     console.log(`[supply] ${kind} ${work} → 작업자 ${lines.length}명`);
   } catch (e) { console.error("[supply] 실패:", e?.message ?? e); }
 }
