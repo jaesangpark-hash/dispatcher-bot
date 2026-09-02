@@ -5604,12 +5604,14 @@ const DELIVERY_NOTE_HOUR = Number(process.env.DELIVERY_NOTE_HOUR ?? 9);   // 이
 const DELIVERY_THREAD_CHANNEL = process.env.DELIVERY_THREAD_CHANNEL || "C09B8QLR5FG";   // 재팬_공지
 const DELIVERY_OWNER_ID = process.env.DELIVERY_OWNER_ID || "U07G8KC2EE6";   // 납품 담당자(고정) — 납품 전 특이사항 알림은 작품 APM이 아니라 이 사람에게(재상 님 확인, 2026-08-26)
 let _deliveryNoteDate = null, _deliveryNoteDmDate = null;
+// 반환: hits 배열(정상, 0건 포함) | null(GAS 조회 자체가 실패 — "오늘 대상 없음"과 반드시 구분해야 함, 2026-09-02)
 async function todayDeliveriesWithNotes() {
   if (!gasReady()) return [];
   const notes = await listWorkNotes();
   if (!notes.length) return [];
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
-  const j = await gasQuery({ sheet: "delivery", q: "byDate", date: today, lang: "both" }).catch(() => null);
+  const j = await gasQuery({ sheet: "delivery", q: "byDate", date: today, lang: "zh" }).catch((e) => { console.error("[delivery-note] GAS 조회 실패:", e?.message ?? e); return undefined; });   // 툰식이=중일 PM봇, 한일 조회 불필요(2026-09-02, 재상 님 확인 — GAS 응답속도 개선 겸)
+  if (j === undefined) return null;   // 조회 실패 — 빈 결과([])와 구분해 마킹하지 않고 재시도
   const rows = j?.rows || [];
   if (!rows.length) return [];
   const hits = [];
@@ -5677,6 +5679,7 @@ async function checkDeliveryNotes() {
     const kd = now.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
     if (kh < DELIVERY_NOTE_HOUR || _deliveryNoteDate === kd) return;
     const hits = await todayDeliveriesWithNotes();
+    if (hits === null) { console.log(`[delivery-note] GAS 조회 실패 — 날짜 미마킹(다음 tick 재시도)`); return; }   // 조회 실패를 "오늘 대상 없음"으로 오인해 하루 전체를 스킵하던 버그 수정(2026-09-02, 오버 이팅 미공지 사례)
     if (!hits.length) { _deliveryNoteDate = kd; return; }
     // ★2026-08-26 정정: 작품별 APM이 아니라 납품 담당자(고정)를 멘션해야 함(재상 님 확인) — 이 알림은 "오늘 납품 처리하는 사람"에게 가는 것이지 작품 담당 APM용이 아님.
     const lines = hits.map((h) => {
