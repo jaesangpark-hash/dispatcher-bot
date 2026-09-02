@@ -3,10 +3,12 @@
 
 // 파일명에서 [주번호, 부번호, 서브페이지] 추출 — 원본(fileOrderFlow.js) 로직 그대로.
 //   36-9.2.psd  → [36, 9, 2]   36-9.psd → [36, 9, 0]   龙头44-1.psd → [44, 1, 0]   001.psd → [1, 0, 0]
+// 구분자에 en dash(–)·em dash(—)도 포함 — 일부 작품 파일명이 하이픈 대신 대시 문자로 와서
+// 부번호를 못 읽고 같은 화 파일이 전부 동률로 묶여 매번 순서 확인을 요구하던 오탐 수정(PV-209317 사례).
 function extractSeqFromFilename(filename) {
-  const p0 = filename.match(/(\d+)[_\-](\d+)\.(\d+)/);
+  const p0 = filename.match(/(\d+)[_\-–—](\d+)\.(\d+)/);
   if (p0) return [parseInt(p0[1], 10), parseInt(p0[2], 10), parseInt(p0[3], 10)];
-  const p1 = filename.match(/(\d+)[_\-](\d+)/);
+  const p1 = filename.match(/(\d+)[_\-–—](\d+)/);
   if (p1) return [parseInt(p1[1], 10), parseInt(p1[2], 10), 0];
   const p2 = filename.match(/(\d+)/);
   if (p2) return [parseInt(p2[1], 10), 0, 0];
