@@ -80,6 +80,17 @@ async function verifyCookie(cookie) {
   log('검증 성공 — 쿠키 정상 동작 확인.');
 }
 
+function updateLocalProjectEnv(cookie) {
+  const localEnvPath = path.resolve(__dirname, '../../.env');
+  if (!fs.existsSync(localEnvPath)) { log('로컬 .env 없음 — 건너뜀'); return; }
+  const text = fs.readFileSync(localEnvPath, 'utf8');
+  const updated = /^KUAIKAN_SESSION_COOKIE=/m.test(text)
+    ? text.replace(/^KUAIKAN_SESSION_COOKIE=.*$/m, `KUAIKAN_SESSION_COOKIE=${cookie}`)
+    : text + `\nKUAIKAN_SESSION_COOKIE=${cookie}`;
+  fs.writeFileSync(localEnvPath, updated, 'utf8');
+  log('로컬 .env KUAIKAN_SESSION_COOKIE 갱신 완료.');
+}
+
 async function deployToEc2(cookie) {
   log('EC2 .env 갱신 중...');
   // 쿠키에 |, ", $, ` 등 셸 특수문자가 없다는 전제(세미콜론/등호만 있는 표준 쿠키 형식) — sed 구분자는 | 사용.
@@ -101,6 +112,7 @@ async function main() {
 
   const cookie = await loginAndExtractCookie(email, password);
   await verifyCookie(cookie);
+  updateLocalProjectEnv(cookie);
   await deployToEc2(cookie);
 
   log('✅ 전체 완료 — Kuaikan 세션 갱신 + EC2 반영 + 재기동까지 끝났어.');
