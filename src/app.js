@@ -21,11 +21,14 @@ import { readRange as readRangeRO } from "./sheets.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { quotationByPivo, findProject, projectByPivo, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, episodeSourceGroups, reorderFiles, completeSourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl, pivoEpisodeSourceFiles, pivoUploadSourceFile } from "./totus.js";
 import { patchMinRowHeight } from "./xlsxRowHeight.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
-import { detectDrivePlatform, parseDriveUrl, kuaikanSearchRoot, resolveEpisodePage, makeArthubAdapter, makeKuaikanAdapter, KuaikanSessionExpiredError, DriveFileUnsupportedError } from "./drive-download.js";
+import { detectDrivePlatform, parseDriveUrl, kuaikanSearchRoot, resolveEpisodePage, makeArthubAdapter, makeKuaikanAdapter, KuaikanSessionExpiredError, DriveFileUnsupportedError, matchByNumber } from "./drive-download.js";
 import { analyzeOrder, detectMissingPages } from "./file-order.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
@@ -92,6 +95,9 @@ const {
   REMINDER_CHANNEL = "C0B73GL3WAJ", // 리마인더(재촉·예약·미해결 문의/재수급) 발송 채널. 봇이 이 채널 멤버여야 함.
   INQUIRY_OVERDUE_DAYS = "2", // 문의/재수급 인입일로부터 이 일수 이상 완료 미체크면 미해결로 재촉
 } = process.env;
+
+const _APP_DIR = path.dirname(fileURLToPath(import.meta.url));
+const _KUAIKAN_REFRESH_SCRIPT = path.resolve(_APP_DIR, "../tools/kuaikan-cookie-refresh/refresh-and-deploy.mjs");
 
 // 사용 허용 = 재상(소유자) + APM들. 소유자만 = 변경·발송·리마인더(쓰기/개인기능). 그 외(APM)는 조회·검수만.
 const OWNER_ID = DISPATCHER_USER_ID;
@@ -302,6 +308,7 @@ const pendingReuploads = new Map();                  // ruId → { pivo, episode
 let reuploadSeq = 0;
 const pendingTaskRetake = new PersistMap("taskretake"); // trId → { work, operation, items[{episode,taskUuid,status}], createdAt } TOTUS 태스크 리테이크(연결 태스크 생성)
 const pendingFileOrderBatch = new PersistMap("fileorderbatch"); // fobId → { work, projectUuid, episodes[{episode,status,sourceGroupId,groupName,files,fileMap,suggested,simpleGroups,resolvedByStartIndex,complexNote,error}], channel, ts, createdAt }
+const processedResupply = new PersistMap("resupply-done");       // rowKey → { at, work, episodePage } — 재수급봇 자동 이관 처리 완료 기록
 let setjipSeq = 0;
 let editSeq = pendingEdits.maxSeq();
 let totusDateSeq = pendingTotusDates.maxSeq();
@@ -2632,6 +2639,19 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: false } }),
+    tool("refresh_kuaikan_cookie",
+      "Kuaikan 세션 쿠키를 갱신한다. 재상 님이 '갱신해줘', '쿠키 살려줘', '콰이칸 다시 로그인해줘' 등 Kuaikan 쿠키 갱신 의사를 표할 때 호출. 브라우저가 로컬에서 열리므로 캡차는 재상 님이 직접 풀어야 한다 — 이 점을 먼저 안내하고 실행할 것.",
+      {},
+      async () => {
+        try {
+          const ctx = currentCtx;
+          const ch = ctx?.channel || await app.client.conversations.open({ users: DISPATCHER_USER_ID }).then((d) => d.channel?.id).catch(() => null);
+          if (ch) _runKuaikanRefresh(ctx?.client || app.client, ch);
+          return { content: [{ type: "text", text: JSON.stringify({ started: true, note: "갱신 스크립트 실행 시작. 브라우저 창이 열리면 캡차를 풀어달라고 재상 님에게 안내할 것." }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      }),
     tool("check_and_fix_file_order",
       "TOTUS 원본 파일 순서를 회차 범위 단위로 일괄 점검하고 고친다('1~20화 파일 순서 체크하고 고쳐줘'). 설정집 요청 스레드 등에서 APM이 직접 호출 가능. 파일명 규칙(주번호-부번호.서브페이지, 예: 36-9.2.psd)으로 올바른 순서를 판정해 TOTUS 파일순서(에디터 파일관리 탭)에 반영하고 회차를 확정 처리한다. 원칙: 확인 게이트 없이 즉시 실행하되, 애매한 회차가 하나라도 있으면 전체를 멈추고 그 회차만 버튼/모달로 확인받은 뒤 배치 전체를 한 번에 실행한다. 애매함은 두 종류 — ①단순 동률(같은 순번으로 해석되는 파일 2개 이상, 수정본 표시 없음): 순서 확인 버튼을 보내고, 확인되면 그 회차까지 포함해 실행. ②수정본/교체본 표시가 섞인 동률(예: 汉字3话1 / 汉字3话1_改): 순서 문제가 아니라 어느 파일을 지울지의 별개 판단이라 이 도구가 처리하지 않음 — 건너뛰고 보고만 함. 단순 동률이 하나도 없으면 곧바로 전체 실행하고 결과 요약을 스레드에 올린다. 있으면 미리보기+버튼만 보내고 아직 아무 것도 반영 안 됐다고 답해야 한다(반영했다고 단정 금지). ★순서와 별개로 회차 내 페이지 번호 누락(빠진 페이지)도 함께 탐지해 results/미리보기에 표시한다 — 이건 휴리스틱(파일명에서 페이지 카운터로 보이는 자리의 연속성만 확인)이라 확정이 아니니, 있으면 반드시 '~페이지가 빠진 것 같다, 직접 확인 필요'로만 전달하고 실제로 빠졌다고 단정하지 말 것.",
       {
@@ -4030,6 +4050,11 @@ app.message(async ({ message, say, client }) => {
     }
     // 문의봇 '작업 관련 문의'의 원문 링크 메시지면 → 원문(이미지) 자동 해석 답글(내부에서 유형·이미지 게이트)
     if (!edited && fromInquiry) await handleInquiryInterpret({ message, client });
+    // 문의봇 '재수급 완료' 후속 메시지(resupply_upload_file 버튼 포함) → Kuaikan 자동 이관
+    if (!edited && fromInquiry) {
+      const hasResupplyBtn = message.blocks?.some(b => b.type === "actions" && b.elements?.some(e => e.action_id === "resupply_upload_file"));
+      if (hasResupplyBtn) _handleResupplyAutoTransfer({ message, client }).catch(e => console.error("[resupply-auto] 오류:", e?.message ?? e));
+    }
     return;   // 워치 채널은 여기서 종료(멘션은 app_mention이 별도 처리)
   }
   if (message.channel_type !== "im") return;           // DM만 (채널 노이즈 차단)
@@ -5283,6 +5308,12 @@ app.action("reupload_cancel", async ({ ack, body, client }) => {
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
 
+app.action("kuaikan_refresh", async ({ ack, body, client }) => {
+  await ack();
+  const ch = body.channel?.id || await client.conversations.open({ users: DISPATCHER_USER_ID }).then((d) => d.channel?.id).catch(() => null);
+  if (ch) _runKuaikanRefresh(client, ch);
+});
+
 // 리테이크 초안 수정 — 모달 열기(본문만 편집, 멘션 헤더는 고정)
 app.action("retake_edit", async ({ ack, body, client }) => {
   await ack();
@@ -5709,12 +5740,214 @@ async function checkDeliveryNotes() {
     }
   } catch (e) { console.error("[delivery-note] 실패:", e?.message ?? e); }
 }
+// ────────────────────────────────────────────────────────────────────────────
+// Kuaikan 세션 쿠키 만료 감지 + 갱신 실행
+// ────────────────────────────────────────────────────────────────────────────
+let _kuaikanCheckAt = 0;
+let _kuaikanAlerted = false;
+
+async function checkKuaikanCookie() {
+  if (Date.now() - _kuaikanCheckAt < 6 * 60 * 60 * 1000) return;
+  _kuaikanCheckAt = Date.now();
+  const cookie = process.env.KUAIKAN_SESSION_COOKIE;
+  if (!cookie) return;
+  try {
+    const r = await fetch("https://pan.kuaikanmanhua.com/v1/kkftp/entry/list/new?id=0&page=1&limit=1", {
+      headers: { accept: "application/json", cookie, language: "korean", logintype: "web", systemtype: "web" },
+      signal: AbortSignal.timeout(15000),
+    });
+    const j = await r.json().catch(() => null);
+    if (j?.code === 200) { _kuaikanAlerted = false; return; }
+    if (!_kuaikanAlerted) { _kuaikanAlerted = true; await _alertKuaikanExpired(); }
+  } catch (e) { console.error("[kuaikan-watch] 쿠키 확인 오류:", e?.message ?? e); }
+}
+
+async function _alertKuaikanExpired() {
+  const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID });
+  const ch = dm.channel?.id;
+  if (!ch) return;
+  await app.client.chat.postMessage({
+    channel: ch,
+    text: "⚠️ Kuaikan 세션 쿠키 만료 — 재수급 자동 이관이 중단됐어요. 갱신해주세요.",
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: "⚠️ *Kuaikan 세션 쿠키 만료*\nKuaikan 드라이브 접근이 안 되고 있어요 — 재수급 자동 이관이 중단된 상태예요.\n아래 버튼을 누르거나 *'갱신해줘'* 라고 말씀해주세요." } },
+      { type: "actions", elements: [
+        { type: "button", style: "primary", text: { type: "plain_text", text: "🔑 쿠키 갱신" }, action_id: "kuaikan_refresh" },
+      ] },
+    ],
+    ...SENDER,
+  });
+}
+
+function _runKuaikanRefresh(client, channel) {
+  const post = (text) => client.chat.postMessage({ channel, text, ...SENDER }).catch(() => {});
+  post("🔑 갱신 스크립트를 실행할게요. 브라우저가 열리면 캡차를 풀어주세요.").catch(() => {});
+  const proc = spawn("node", [_KUAIKAN_REFRESH_SCRIPT], {
+    cwd: path.dirname(_KUAIKAN_REFRESH_SCRIPT),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  proc.stdout.on("data", (d) => { const l = d.toString().trim(); if (l) post(`🔑 ${l}`); });
+  proc.stderr.on("data", (d) => { const l = d.toString().trim(); if (l) console.error("[kuaikan-refresh]", l); });
+  proc.on("error", (e) => post(`❌ 스크립트 실행 실패: ${e.message}\n로컬에서 직접 실행해줘: \`node tools/kuaikan-cookie-refresh/refresh-and-deploy.mjs\``));
+  proc.on("close", (code) => {
+    if (code === 0) { _kuaikanAlerted = false; _kuaikanCheckAt = 0; post("✅ Kuaikan 쿠키 갱신 완료 — 정상 동작해요."); }
+    else post(`❌ 갱신 실패 (종료코드 ${code}). 로컬에서 직접 실행해줘: \`node tools/kuaikan-cookie-refresh/refresh-and-deploy.mjs\``);
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 재수급봇 자동 이관 워처 — 5분마다 "재수급봇!A2:L" 폴링
+// L열 완료(TRUE) + 출판사 Kuaikan 조건 충족 시 Kuaikan 드라이브에서 자동 다운로드 후
+// PIVO 업로드 확인 버튼을 재상 님 DM으로 발송.
+// ────────────────────────────────────────────────────────────────────────────
+const _RS_DONE = (v) => /^(true|1|완료|y|yes|✓|checked|done)$/i.test(String(v ?? "").trim());
+const _RS_OPS = process.env.INQUIRY_SHEET_ID || "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
+
+function _parseEpisodePage(s) {
+  const str = String(s ?? "").trim();
+  if (/[-~]/.test(str) && /\d/.test(str)) return { episode: null, page: null, multi: true };
+  const nums = str.match(/\d+/g) || [];
+  return { episode: nums[0] || null, page: nums[1] || null };
+}
+
+let _resupplyCheckAt = 0;
+let _resupplySeeded = false;   // 기동 시 기존 완료 행 씨드 여부 플래그
+
+// 첫 기동 시 현재 L=TRUE인 행을 모두 "이미 처리됨"으로 등록(이관 트리거 없이).
+// 이후 새로 완료된 행만 이관 대상이 된다.
+async function _seedResupplyProcessed() {
+  if (_resupplySeeded || processedResupply.size > 0) { _resupplySeeded = true; return; }
+  try {
+    const rows = (await readRangeRO(_RS_OPS, "재수급봇!A2:L")) || [];
+    let seeded = 0;
+    for (const r of rows) {
+      const work = String(r[2] ?? "").trim();
+      if (!work || !_RS_DONE(r[11])) continue;
+      const episodePage = String(r[3] ?? "").trim();
+      const rowKey = `${work}|${r[5] ?? ""}|${episodePage}`;
+      if (!processedResupply.has(rowKey)) { processedResupply.set(rowKey, { at: "seed", work, episodePage }); seeded++; }
+    }
+    console.log(`[resupply-watch] 기존 완료 행 ${seeded}건 씨드 완료(이관 트리거 없음)`);
+  } catch (e) { console.error("[resupply-watch] 씨드 오류:", e?.message ?? e); }
+  _resupplySeeded = true;
+}
+
+async function checkResupplyWatcher() {
+  if (!_resupplySeeded) { await _seedResupplyProcessed(); return; }   // 첫 tick은 씨드만 하고 종료
+  if (Date.now() - _resupplyCheckAt < 5 * 60 * 1000) return;
+  _resupplyCheckAt = Date.now();
+  const rows = (await readRangeRO(_RS_OPS, "재수급봇!A2:L")) || [];
+  for (const r of rows) {
+    const work = String(r[2] ?? "").trim();
+    if (!work) continue;
+    if (!_RS_DONE(r[11])) continue;
+    const episodePage = String(r[3] ?? "").trim();
+    const rowKey = `${work}|${r[5] ?? ""}|${episodePage}`;
+    if (processedResupply.has(rowKey)) continue;
+    const sheetPub = String(r[9] ?? "").trim();
+    if (sheetPub && !/kuaikan/i.test(sheetPub)) continue;   // J열에 값이 있고 콰이칸 아니면 빠른 스킵
+    const entry = await lookupDriveEntryForWork(work).catch(() => null);
+    if (!entry?.pivo || !/kuaikan/i.test(entry.publisher || "")) continue;
+    processedResupply.set(rowKey, { at: new Date().toISOString(), work, episodePage });
+    await _triggerKuaikanReupload({ work, entry, episodePage, apm: String(r[1] ?? "").trim() }).catch((e) => {
+      console.error("[resupply-watch] 트리거 오류:", work, e?.message ?? e);
+    });
+  }
+}
+
+async function _triggerKuaikanReupload({ work, entry, episodePage, apm }) {
+  // 알림만 보냄 — 실제 다운로드·업로드는 재상 님이 직접 명령할 때만 실행(propose_original_reupload).
+  const { episode, page } = _parseEpisodePage(episodePage);
+  const epText = [episode && `${episode}화`, page && `${page}페이지`].filter(Boolean).join(" ") || episodePage;
+  const apmNote = apm ? `\n• 담당 APM: ${apm}` : "";
+  await dmOwner(`📥 *재수급 완료 감지 — 콰이칸 이관 필요*\n• 작품: *${work}* (PIVO ${entry.pivo})\n• 회차: ${epText}${apmNote}\n이관이 필요하면 \`propose_original_reupload\`를 실행해주세요.`);
+}
+
+// 문의봇 '재수급 완료' 감지 시 Kuaikan→PIVO 자동 이관. toon-원본재수급 채널에서 resupply_upload_file 버튼 메시지 수신 시 호출.
+async function _handleResupplyAutoTransfer({ message, client }) {
+  const btn = message.blocks?.find(b => b.type === "actions")?.elements?.find(e => e.action_id === "resupply_upload_file");
+  if (!btn?.value) return;
+  let meta;
+  try { meta = JSON.parse(btn.value); } catch { return; }
+
+  const { workName, episode: episodeRaw, apmUserId, ownerUserId, resupplyRowIndex, originalChannelId, originalTs } = meta;
+  if (!workName) return;
+
+  const replyTs = message.thread_ts || message.ts;
+  const postHere = (text) => client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text, ...SENDER }).catch(() => {});
+
+  await postHere(`⚙️ *${workName}* 원본 자동 이관을 시작합니다...`);
+  try {
+    // 1. 시트 D열에서 화수/페이지 읽기 (resupplyRowIndex = 실제 시트 행 번호)
+    let episodePage = episodeRaw ? `${episodeRaw}화` : "";
+    if (resupplyRowIndex) {
+      const rows = await readRangeRO(_RS_OPS, `재수급봇!D${resupplyRowIndex}`).catch(() => null);
+      const sheetVal = String(rows?.[0]?.[0] ?? "").trim();
+      if (sheetVal && sheetVal !== "-") episodePage = sheetVal;
+    }
+    const { episode, page } = _parseEpisodePage(episodePage);
+    if (!episode) throw new Error(`화수 파싱 실패: "${episodePage}"`);
+
+    // 2. 드라이브 항목 조회
+    const entry = await lookupDriveEntryForWork(workName).catch(() => null);
+    if (!entry?.pivo) throw new Error(`"${workName}" 드라이브 항목 없음 — 출판사 드라이브 링크 탭 확인`);
+    if (!/kuaikan/i.test(entry.publisher || "")) {
+      await postHere(`ℹ️ *${workName}* 출판사(${entry.publisher})가 Kuaikan이 아니어서 건너뜁니다.`);
+      return;
+    }
+
+    // 3. Kuaikan 검색
+    const searchTerm = entry.originalTitleCH || workName;
+    const hits = await kuaikanSearchRoot(searchTerm);
+    if (!hits.length) throw new Error(`Kuaikan "${searchTerm}" 검색 결과 없음`);
+    if (hits.length > 1) throw new Error(`Kuaikan 검색 결과 ${hits.length}건 — 특정 불가 (${hits.map(h => h.name).join(", ")})`);
+    const rootId = hits[0].id;
+
+    // 4. 파일 탐색
+    const adapter = makeKuaikanAdapter();
+    const found = await resolveEpisodePage(adapter, rootId, episode, page || "1", "psd");
+    if (!found.ok) throw new Error(`파일 탐색 실패: ${found.reason}`);
+    await postHere(`📁 파일 확인: ${found.name} — 다운로드 중...`);
+
+    // 5. 다운로드
+    const dlRes = await fetch(found.url, { signal: AbortSignal.timeout(600000) });
+    if (!dlRes.ok) throw new Error(`Kuaikan 다운로드 실패 (HTTP ${dlRes.status})`);
+    const buffer = Buffer.from(await dlRes.arrayBuffer());
+    await postHere(`⬆️ ${(buffer.length / (1024 * 1024)).toFixed(1)}MB 다운로드 완료 — PIVO ${entry.pivo} 업로드 중...`);
+
+    // 6. PIVO 파일명 결정 (기존 파일명 매칭)
+    const existing = await pivoEpisodeSourceFiles(entry.pivo, episode).catch(() => null);
+    const existingFiles = existing?.data?.파일목록 || [];
+    const m = matchByNumber(existingFiles, page || "1", "파일명");
+    const targetName = m.confident ? m.item.파일명 : found.name;
+    if (!m.confident) await postHere(`⚠️ 파일명 자동 매칭 실패 — Kuaikan 파일명(${found.name}) 그대로 사용`);
+
+    // 7. 업로드
+    await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
+
+    // 8. 완료 알림: 이 스레드 + 원본 요청 스레드에 APM 멘션
+    const epText = [episode && `${episode}화`, page && `${page}페이지`].filter(Boolean).join(" ") || episodePage;
+    await postHere(`✅ 이관 완료 — *${workName}* ${epText} → PIVO ${entry.pivo} (${targetName})`);
+    if (originalChannelId && originalTs) {
+      const mention = apmUserId ? `<@${apmUserId}> ` : ownerUserId ? `<@${ownerUserId}> ` : "";
+      await client.chat.postMessage({
+        channel: originalChannelId,
+        thread_ts: originalTs,
+        text: `${mention}✅ *${workName}* ${epText} 원본 이관 완료됐어요. (PIVO ${entry.pivo})`,
+        ...SENDER,
+      }).catch(() => {});
+    }
+  } catch (e) {
+    await postHere(`❌ 자동 이관 실패: ${e.message}`);
+  }
+}
+
 let _tickRunning = false;   // setInterval은 이전 tick()이 끝나든 말든 다음 틱을 쏨 — LLM 호출 등으로 60초 넘게 걸리면 겹쳐 재진입해 중복 발송(2026-07-22 스크럼 diff 4중발송 사고 원인). 락으로 겹침 자체를 차단.
 async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
