@@ -5874,9 +5874,22 @@ async function _handleResupplyAutoTransfer({ message, client }) {
   if (!workName) return;
 
   const replyTs = message.thread_ts || message.ts;
-  const postHere = (text) => client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text, ...SENDER }).catch(() => {});
+  // 진행상황: 메시지 하나를 편집하며 업데이트. 완료/실패 시 해당 메시지 삭제 후 최종 메시지 신규 전송.
+  let progressTs = null;
+  const updateProgress = async (text) => {
+    if (!progressTs) {
+      const r = await client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text, ...SENDER }).catch(() => null);
+      progressTs = r?.ts ?? null;
+    } else {
+      await client.chat.update({ channel: message.channel, ts: progressTs, text, ...SENDER }).catch(() => {});
+    }
+  };
+  const finalize = async (text) => {
+    if (progressTs) await client.chat.delete({ channel: message.channel, ts: progressTs }).catch(() => {});
+    await client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text, ...SENDER }).catch(() => {});
+  };
 
-  await postHere(`⚙️ *${workName}* 원본 자동 이관을 시작합니다...`);
+  await updateProgress(`⏳ *${workName}* 원본 자동 이관 준비 중...`);
   try {
     // 1. 시트 D열에서 화수/페이지 읽기 (resupplyRowIndex = 실제 시트 행 번호)
     let episodePage = episodeRaw ? `${episodeRaw}화` : "";
@@ -5892,42 +5905,45 @@ async function _handleResupplyAutoTransfer({ message, client }) {
     const entry = await lookupDriveEntryForWork(workName).catch(() => null);
     if (!entry?.pivo) throw new Error(`"${workName}" 드라이브 항목 없음 — 출판사 드라이브 링크 탭 확인`);
     if (!/kuaikan/i.test(entry.publisher || "")) {
-      await postHere(`ℹ️ *${workName}* 출판사(${entry.publisher})가 Kuaikan이 아니어서 건너뜁니다.`);
+      await finalize(`ℹ️ *${workName}* 출판사(${entry.publisher})가 Kuaikan이 아니어서 건너뜁니다.`);
       return;
     }
 
     // 3. Kuaikan 검색
     const searchTerm = entry.originalTitleCH || workName;
+    await updateProgress(`⏳ *${workName}* — Kuaikan 검색 중...`);
     const hits = await kuaikanSearchRoot(searchTerm);
     if (!hits.length) throw new Error(`Kuaikan "${searchTerm}" 검색 결과 없음`);
     if (hits.length > 1) throw new Error(`Kuaikan 검색 결과 ${hits.length}건 — 특정 불가 (${hits.map(h => h.name).join(", ")})`);
     const rootId = hits[0].id;
 
     // 4. 파일 탐색
+    const epText0 = [episode && `${episode}화`, page && `${page}페이지`].filter(Boolean).join(" ") || episodePage;
+    await updateProgress(`⏳ *${workName}* ${epText0} — 파일 탐색 중...`);
     const adapter = makeKuaikanAdapter();
     const found = await resolveEpisodePage(adapter, rootId, episode, page || "1", "psd");
     if (!found.ok) throw new Error(`파일 탐색 실패: ${found.reason}`);
-    await postHere(`📁 파일 확인: ${found.name} — 다운로드 중...`);
 
     // 5. 다운로드
+    await updateProgress(`⏳ *${workName}* ${epText0} — \`${found.name}\` 다운로드 중...`);
     const dlRes = await fetch(found.url, { signal: AbortSignal.timeout(600000) });
     if (!dlRes.ok) throw new Error(`Kuaikan 다운로드 실패 (HTTP ${dlRes.status})`);
     const buffer = Buffer.from(await dlRes.arrayBuffer());
-    await postHere(`⬆️ ${(buffer.length / (1024 * 1024)).toFixed(1)}MB 다운로드 완료 — PIVO ${entry.pivo} 업로드 중...`);
 
-    // 6. PIVO 파일명 결정 (기존 파일명 매칭)
+    // 6. PIVO 파일명 결정
     const existing = await pivoEpisodeSourceFiles(entry.pivo, episode).catch(() => null);
     const existingFiles = existing?.data?.파일목록 || [];
     const m = matchByNumber(existingFiles, page || "1", "파일명");
     const targetName = m.confident ? m.item.파일명 : found.name;
-    if (!m.confident) await postHere(`⚠️ 파일명 자동 매칭 실패 — Kuaikan 파일명(${found.name}) 그대로 사용`);
 
     // 7. 업로드
+    await updateProgress(`⏳ *${workName}* ${epText0} — ${(buffer.length / (1024 * 1024)).toFixed(1)}MB PIVO ${entry.pivo} 업로드 중...`);
     await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
 
-    // 8. 완료 알림: 이 스레드 + 원본 요청 스레드에 APM 멘션
+    // 8. 완료: 진행 메시지 삭제 후 최종 메시지 신규 전송
     const epText = [episode && `${episode}화`, page && `${page}페이지`].filter(Boolean).join(" ") || episodePage;
-    await postHere(`✅ 이관 완료 — *${workName}* ${epText} → PIVO ${entry.pivo} (${targetName})`);
+    const warnNote = m.confident ? "" : `\n⚠️ 파일명 자동 매칭 실패 — Kuaikan 파일명(${found.name}) 그대로 사용`;
+    await finalize(`✅ 원본 이관 완료 — *${workName}* ${epText} → PIVO ${entry.pivo} (\`${targetName}\`)${warnNote}`);
     if (originalChannelId && originalTs) {
       const mention = apmUserId ? `<@${apmUserId}> ` : ownerUserId ? `<@${ownerUserId}> ` : "";
       await client.chat.postMessage({
@@ -5938,7 +5954,7 @@ async function _handleResupplyAutoTransfer({ message, client }) {
       }).catch(() => {});
     }
   } catch (e) {
-    await postHere(`❌ 자동 이관 실패: ${e.message}`);
+    await finalize(`❌ 자동 이관 실패 — *${workName}*: ${e.message}`);
   }
 }
 
