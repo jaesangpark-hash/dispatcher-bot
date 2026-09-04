@@ -4212,6 +4212,12 @@ app.message(async ({ message, say, client }) => {
   if (message.channel_type !== "im") return;           // DM만 (채널 노이즈 차단)
   // 파일 첨부 메시지는 subtype="file_share"라 통과시켜야 함(설정집 업로드 등). 편집·삭제·봇 메시지만 무시.
   if ((message.subtype && message.subtype !== "file_share") || message.bot_id) return;
+  // 수동 이관 명령어
+  if (message.text) {
+    if (message.thread_ts && await _handleManualTransferDuplicateReply({ text: message.text, channel: message.channel, threadTs: message.thread_ts, client })) return;
+    const manualCmd = _parseManualTransferCommand(message.text);
+    if (manualCmd) { _handleManualTransferCommand({ ...manualCmd, channel: message.channel, ts: message.ts, threadTs: message.thread_ts, client }).catch(e => console.error("[manual-transfer] 오류:", e?.message ?? e)); return; }
+  }
   await handle({
     text: message.text, channel: message.channel, ts: message.ts,
     threadTs: message.thread_ts || message.ts, inThread: Boolean(message.thread_ts),
@@ -4226,6 +4232,12 @@ app.event("app_mention", async ({ event, say, client }) => {
   //  app_mention을 그대로 쏜다 — message 리스너들의 bot_id 필터가 여기엔 없어서 자기 메시지를
   //  새 사용자 요청으로 착각해 처리(앵무새처럼 그대로 반복)하는 사고가 있었음.
   if (event.bot_id || (SELF_BOT_USER && event.user === SELF_BOT_USER)) return;
+  // 수동 이관 명령어 (@멘션 포함)
+  if (event.text) {
+    if (event.thread_ts && await _handleManualTransferDuplicateReply({ text: event.text, channel: event.channel, threadTs: event.thread_ts, client })) return;
+    const manualCmd = _parseManualTransferCommand(event.text);
+    if (manualCmd) { _handleManualTransferCommand({ ...manualCmd, channel: event.channel, ts: event.ts, threadTs: event.thread_ts, client }).catch(e => console.error("[manual-transfer] 오류:", e?.message ?? e)); return; }
+  }
   await handle({
     text: event.text, channel: event.channel, ts: event.ts,
     threadTs: event.thread_ts || event.ts, inThread: Boolean(event.thread_ts),
@@ -6265,6 +6277,210 @@ async function _handleResupplyAutoTransfer({ message, client }) {
   } catch (e) {
     await finalize(`❌ 자동 이관 실패 — *${workName}*: ${e.message}`);
   }
+}
+
+// ── 수동 이관 명령어 ──────────────────────────────────────────────────────────
+const _pendingManualTransfers = new Map(); // replyTs → pending state
+
+function _mtNaturalSort(a, b) {
+  return (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" });
+}
+function _isGaiFile(name) {
+  return /-gai\b/i.test(name) || /改/.test(name);
+}
+function _getGaiBaseName(name) {
+  return name.replace(/-gai(\.[^.]+)$/i, "$1").replace(/（改）/g, "").replace(/改/g, "").trim();
+}
+
+// 파일 목록 정렬 + gai 중복 쌍 탐지. 중복이 아닌 파일만 mainFiles에 담김.
+function _resolveFileList(items) {
+  const sorted = [...items].sort(_mtNaturalSort);
+  const nameSet = new Set(sorted.map(f => f.name));
+  const dupSet = new Set();
+  const duplicatePairs = [];
+  for (const f of sorted) {
+    if (_isGaiFile(f.name)) {
+      const base = _getGaiBaseName(f.name);
+      if (nameSet.has(base) && !dupSet.has(base)) {
+        const orig = sorted.find(x => x.name === base);
+        if (orig) { duplicatePairs.push({ original: orig, gai: f }); dupSet.add(f.name); dupSet.add(base); }
+      }
+    }
+  }
+  return { mainFiles: sorted.filter(f => !dupSet.has(f.name)), duplicatePairs };
+}
+
+// "작품명 N화 [M페이지] 이관해줘" 파싱
+function _parseManualTransferCommand(text) {
+  const t = String(text || "").replace(/<[^>]+>/g, "").trim();
+  const m = t.match(/^(.+?)\s+(\d+(?:[-~]\d+)?화)\s*(?:(\d+)(?:[-~](\d+))?페이지)?\s*이관/);
+  if (!m) return null;
+  const [, rawWork, epRaw, pageFrom, pageTo] = m;
+  const workName = rawWork.trim();
+  const episodeList = _parseEpisodeList(epRaw);
+  if (!episodeList.length) return null;
+  return {
+    workName,
+    episodeList,
+    pageFrom: pageFrom ? parseInt(pageFrom, 10) : null,
+    pageTo: pageTo ? parseInt(pageTo, 10) : (pageFrom ? parseInt(pageFrom, 10) : null),
+  };
+}
+
+async function _handleManualTransferCommand({ workName, episodeList, pageFrom, pageTo, channel, ts, threadTs, client }) {
+  const replyTs = threadTs || ts;
+  let progressTs = null;
+  const completedItems = [];
+  const allWarns = [];
+  const allFileIds = [];
+  const epSummary = episodeList.map(e => `${e.episode}화`).join(", ");
+
+  const buildProgressText = (currentStatus) => {
+    const lines = [`⏳ *${workName}* ${epSummary} 이관 중`];
+    for (const item of completedItems) lines.push(item.ok ? `✅ \`${item.name}\`` : `❌ \`${item.name}\``);
+    if (currentStatus) lines.push(currentStatus);
+    return lines.join("\n");
+  };
+  const updateProgress = async (text) => {
+    if (!progressTs) {
+      const r = await client.chat.postMessage({ channel, thread_ts: replyTs, text, ...SENDER }).catch(() => null);
+      progressTs = r?.ts ?? null;
+    } else {
+      await client.chat.update({ channel, ts: progressTs, text, ...SENDER }).catch(() => {});
+    }
+  };
+  const finalize = async (text) => {
+    if (progressTs) await client.chat.delete({ channel, ts: progressTs }).catch(() => {});
+    await client.chat.postMessage({ channel, thread_ts: replyTs, text, ...SENDER }).catch(() => {});
+  };
+
+  try {
+    const entry = await lookupDriveEntryForWork(workName).catch(() => null);
+    if (!entry?.pivo) throw new Error(`"${workName}" 드라이브 항목 없음 — 시트 확인 필요`);
+    if (!/^\d+$/.test(entry.pivo)) throw new Error(`"${workName}" PIVO PID가 숫자가 아님 (${entry.pivo})`);
+    if (!/kuaikan/i.test(entry.publisher || "")) throw new Error(`"${workName}" 출판사(${entry.publisher})가 Kuaikan이 아님`);
+
+    const searchTerm = entry.originalTitleCH || workName;
+    await updateProgress(buildProgressText("Kuaikan 검색 중..."));
+    const hits = await kuaikanSearchRoot(searchTerm);
+    if (!hits.length) throw new Error(`Kuaikan "${searchTerm}" 검색 결과 없음`);
+    if (hits.length > 1) throw new Error(`Kuaikan 검색 결과 ${hits.length}건 — 특정 불가 (${hits.map(h => h.name).join(", ")})`);
+    const rootId = hits[0].id;
+    const pendingDuplicates = [];
+
+    for (const { episode } of episodeList) {
+      await updateProgress(buildProgressText(`${episode}화 폴더 탐색 중...`));
+      const epResult = await findEpisodeFolder(makeKuaikanAdapter().listChildren, isKuaikanDir, rootId, episode, "psd");
+      if (!epResult.ok) { allWarns.push(`⚠️ ${episode}화 폴더 탐색 실패: ${epResult.reason}`); continue; }
+
+      const allItems = await kuaikanListChildren(epResult.folder.id);
+      const psdItems = allItems.filter(it => !isKuaikanDir(it) && /\.psd$/i.test(it.name || ""));
+      const { mainFiles, duplicatePairs } = _resolveFileList(psdItems);
+
+      // 페이지 범위 적용 (1-indexed 위치 기준)
+      let filesToTransfer = mainFiles;
+      if (pageFrom !== null) {
+        filesToTransfer = mainFiles.slice(pageFrom - 1, pageTo ?? pageFrom);
+      }
+
+      const existingRes = await pivoEpisodeSourceFiles(entry.pivo, episode).catch(() => null);
+      const pivoFiles = existingRes?.data?.파일목록 || [];
+      const totalKuaikan = mainFiles.length + duplicatePairs.length;
+      if (pivoFiles.length && totalKuaikan < pivoFiles.length) {
+        allWarns.push(`⚠️ ${episode}화 누락 의심: PIVO ${pivoFiles.length}개 / Kuaikan ${totalKuaikan}개`);
+      }
+
+      for (const item of filesToTransfer) {
+        try {
+          const fileInfo = await kuaikanGetDownloadUrl(item.id);
+          await updateProgress(buildProgressText(`\`${fileInfo.name}\` 다운로드 중...`));
+          const dlRes = await fetch(fileInfo.url, { signal: AbortSignal.timeout(600000) });
+          if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`);
+          const buffer = Buffer.from(await dlRes.arrayBuffer());
+          if (buffer.length < 100 * 1024) allWarns.push(`⚠️ ${episode}화 \`${fileInfo.name}\` 깨짐 의심 (${(buffer.length / 1024).toFixed(0)}KB)`);
+
+          const pageNum = (fileInfo.name.match(/(\d+)/) || [])[1] || "1";
+          const mm = matchByNumber(pivoFiles, pageNum, "파일명");
+          const targetName = mm.confident ? mm.item.파일명 : fileInfo.name;
+          await updateProgress(buildProgressText(`\`${targetName}\` 업로드 중...`));
+          const uploadRes = await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
+          const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
+          if (fileId) allFileIds.push(fileId);
+          completedItems.push({ name: targetName, ok: true });
+        } catch (e) {
+          completedItems.push({ name: item.name, ok: false });
+          allWarns.push(`⚠️ ${episode}화 \`${item.name}\` 이관 실패: ${e.message}`);
+        }
+      }
+
+      for (const pair of duplicatePairs) pendingDuplicates.push({ episode, pair, pivoFiles });
+    }
+
+    if (pendingDuplicates.length) {
+      const dupLines = pendingDuplicates.map(({ episode, pair }) =>
+        `• *${episode}화* \`${pair.original.name}\` (원본) / \`${pair.gai.name}\` (수정본)`
+      ).join("\n");
+      await updateProgress(`${buildProgressText(null)}\n\n⚠️ 중복 파일이 있어요. 이관할 파일명을 이 스레드에 답장해주세요:\n${dupLines}`);
+      _pendingManualTransfers.set(replyTs, { workName, entry, pendingDuplicates, completedItems, allFileIds, allWarns, channel, replyTs, client });
+      return;
+    }
+
+    const summary = completedItems.map(i => i.ok ? `✅ \`${i.name}\`` : `❌ \`${i.name}\``).join("\n");
+    const warnNote = allWarns.join("\n");
+    await finalize(`✅ *${workName}* ${epSummary} 이관 완료\n${summary}${warnNote ? "\n\n" + warnNote : ""}`);
+  } catch (e) {
+    await finalize(`❌ *${workName}* 이관 실패: ${e.message}`);
+  }
+}
+
+// 중복 파일 선택 답장 처리. 처리했으면 true 반환.
+async function _handleManualTransferDuplicateReply({ text, channel, threadTs, client }) {
+  const state = _pendingManualTransfers.get(threadTs);
+  if (!state) return false;
+  const chosen = text.trim().replace(/`/g, "");
+  const resolved = [];
+  const remaining = [];
+  for (const item of state.pendingDuplicates) {
+    const { pair } = item;
+    const matchOrig = pair.original.name === chosen || pair.original.name.includes(chosen);
+    const matchGai = pair.gai.name === chosen || pair.gai.name.includes(chosen);
+    if (matchOrig || matchGai) resolved.push({ ...item, chosenFile: matchGai ? pair.gai : pair.original });
+    else remaining.push(item);
+  }
+  if (!resolved.length) return false;
+
+  for (const { episode, chosenFile, pivoFiles } of resolved) {
+    try {
+      const fileInfo = await kuaikanGetDownloadUrl(chosenFile.id);
+      const dlRes = await fetch(fileInfo.url, { signal: AbortSignal.timeout(600000) });
+      if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`);
+      const buffer = Buffer.from(await dlRes.arrayBuffer());
+      const pageNum = (fileInfo.name.match(/(\d+)/) || [])[1] || "1";
+      const mm = matchByNumber(pivoFiles, pageNum, "파일명");
+      const targetName = mm.confident ? mm.item.파일명 : fileInfo.name;
+      const uploadRes = await pivoUploadSourceFile(state.entry.pivo, episode, buffer, targetName);
+      const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
+      if (fileId) state.allFileIds.push(fileId);
+      state.completedItems.push({ name: targetName, ok: true });
+    } catch (e) {
+      state.completedItems.push({ name: chosenFile.name, ok: false });
+      state.allWarns.push(`⚠️ \`${chosenFile.name}\` 이관 실패: ${e.message}`);
+    }
+  }
+
+  state.pendingDuplicates = remaining;
+  if (!remaining.length) {
+    _pendingManualTransfers.delete(threadTs);
+    const summary = state.completedItems.map(i => i.ok ? `✅ \`${i.name}\`` : `❌ \`${i.name}\``).join("\n");
+    const warnNote = state.allWarns.join("\n");
+    await client.chat.postMessage({ channel, thread_ts: threadTs, text: `✅ *${state.workName}* 이관 완료\n${summary}${warnNote ? "\n\n" + warnNote : ""}`, ...SENDER }).catch(() => {});
+  } else {
+    const dupLines = remaining.map(({ episode, pair }) =>
+      `• *${episode}화* \`${pair.original.name}\` (원본) / \`${pair.gai.name}\` (수정본)`
+    ).join("\n");
+    await client.chat.postMessage({ channel, thread_ts: threadTs, text: `✅ \`${chosen}\` 이관 완료\n\n남은 중복 파일도 지정해주세요:\n${dupLines}`, ...SENDER }).catch(() => {});
+  }
+  return true;
 }
 
 let _tickRunning = false;   // setInterval은 이전 tick()이 끝나든 말든 다음 틱을 쏨 — LLM 호출 등으로 60초 넘게 걸리면 겹쳐 재진입해 중복 발송(2026-07-22 스크럼 diff 4중발송 사고 원인). 락으로 겹침 자체를 차단.
