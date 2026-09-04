@@ -24,7 +24,7 @@ import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { quotationByPivo, findProject, projectByPivo, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, episodeSourceGroups, reorderFiles, completeSourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl, pivoEpisodeSourceFiles, pivoUploadSourceFile } from "./totus.js";
+import { quotationByPivo, findProject, projectByPivo, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, episodeSourceGroups, reorderFiles, completeSourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl, pivoEpisodeSourceFiles, pivoUploadSourceFile, setupReferenceFiles, downloadReferenceFile } from "./totus.js";
 import { patchMinRowHeight } from "./xlsxRowHeight.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
@@ -78,6 +78,46 @@ async function shareSetjipXlsx({ client, channel, ts }) {
   catch (e) { console.error("[shareSetjipXlsx] 행 높이 패치 실패(원본 그대로 공유):", e?.message ?? e); }
   await client.files.uploadV2({ channel_id: channel, thread_ts: ts, initial_comment: `📎 설정집 원본 — ${work || projectUuid}`, file_uploads: [{ file: buffer, filename: fname }] });
   return { shared: true, work: work || null, projectUuid };
+}
+
+// ── 설정집 참조파일(원본/체크리스트) 스레드 첨부(2026-09-04) ─────────────
+// 설정집 에디터의 참조파일 중 "원본"·"체크리스트" 계열만 골라 요청 스레드에 첨부한다.
+// 파일명이 한국어(원본 체크리스트…)·일본어(原本チェック…) 양쪽으로 오므로 두 표기 다 잡는다.
+const SETJIP_REF_KEYWORDS = ["원본", "체크리스트", "原本", "チェック"];
+function matchesSetjipRefKeyword(filename) {
+  const n = String(filename || "").normalize("NFC");
+  return SETJIP_REF_KEYWORDS.some((k) => n.includes(k));
+}
+// projectKey: PIVO PID 또는 projectUuid. 반환 { attached, files:[파일명], skipped, error }
+async function attachSetjipRefFiles({ client, channel, ts, projectKey, work }) {
+  try {
+    const res = await setupReferenceFiles(projectKey);
+    const list = res?.data?.참조파일목록 || [];
+    if (!list.length) return { attached: 0, files: [], skipped: 0, error: null };
+    const hits = list.filter((f) => matchesSetjipRefKeyword(f?.파일명) && f?.다운로드URL);
+    if (!hits.length) return { attached: 0, files: [], skipped: list.length, error: null };
+    // 서명 URL이 단명이라 조회 직후 즉시 다운로드
+    const uploads = [];
+    for (const f of hits) {
+      try {
+        const buf = await downloadReferenceFile(f.다운로드URL);
+        uploads.push({ file: buf, filename: String(f.파일명).replace(/[\\/:*?"<>|]/g, "_") });
+      } catch (e) {
+        console.error(`[setjip-ref] 다운로드 실패(${f.파일명}):`, e?.message ?? e);
+      }
+    }
+    if (!uploads.length) return { attached: 0, files: [], skipped: list.length, error: "다운로드 전부 실패" };
+    await client.files.uploadV2({
+      channel_id: channel,
+      thread_ts: ts,
+      initial_comment: `📎 설정집 참조파일(원본·체크리스트) — ${work || projectKey}`,
+      file_uploads: uploads,
+    });
+    return { attached: uploads.length, files: uploads.map((u) => u.filename), skipped: list.length - uploads.length, error: null };
+  } catch (e) {
+    console.error("[setjip-ref] 참조파일 첨부 실패:", e?.message ?? e);
+    return { attached: 0, files: [], skipped: 0, error: String(e?.message ?? e) };
+  }
 }
 
 // ── 환경 ──────────────────────────────────────────────────────────
@@ -224,6 +264,7 @@ const DISPATCHER_PROMPT = [
   "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, [apm], [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 번역/식자/APM은 사용자가 이 대화에서 이미 줬으면 반영하고 없으면 전부 생략. 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. ★APM을 몰라도 절대 되묻지 말고 그냥 apm 생략하고 호출할 것 — 미리보기 메시지에 'APM 멘션 없음' 경고가 자동으로 뜨고, 재상 님이 그 자리에서 ✏️수정 모달로 직접 입력한다(이게 원래 설계된 입력 경로). 게이트(버튼)—'게시했다' 단정 금지. 게시하면 그 스레드에 '🔍 설정집 검수' 버튼도 자동으로 붙는다(신규 요청만 — 이 기능 이전에 만든 옛 요청 스레드엔 버튼이 없음).",
   "- 설정집 검수 실행('이 설정집 검수 실행해줘/검수 돌려줘/검수해줘', 특히 버튼이 없는 옛 설정집 작성 요청 스레드에서): run_setjip_review([thread]). 그 스레드 안에서 부르면 thread 생략. 실제 검수 버튼 클릭과 동일하게 n8n을 직접 트리거하고, 동시에 그 시점 최신 설정집 xlsx도 같은 자리에 바로 첨부한다(file.shared:true). ★검수 판정 결과(문제점 리스트) 자체는 안 준다 — n8n이 잠시 후 개인채널에 직접 올린다. '검수를 요청했다 + 파일 보냈다'까지만 말하고 '검수했다/판정 결과 나왔다'고 단정하지 말 것.",
   "- 설정집 원본 파일 공유('엑셀 파일 줘/설정집 파일 공유해줘/원본 파일 올려줘', 설정집 작성 요청 스레드에서): share_setjip_file([thread]). 그 스레드 안에서 부르면 thread 생략. TOTUS에서 그 시점 최신 xlsx를 받아 스레드에 바로 첨부(게이트 없음, 읽기성 공유라 즉시 실행).",
+  "- 설정집 참조파일 조회·첨부('참조파일 뭐 있어/원본 체크리스트 첨부해줘/롤이미지 있나'): setjip_reference_files(pivo, [attach], [thread], [only_keywords]). 설정집 에디터의 #번호 그룹 파일(원본 체크리스트·롤이미지·식자 폰트표 등) 목록을 준다. attach:true면 '원본/체크리스트/原本/チェック' 계열만 골라 스레드에 첨부(다른 파일을 원하면 only_keywords로 지정 — 예: 롤이미지). ★제출희망일 리마인드가 이 첨부를 자동으로 수행하니, 리마인드 받은 뒤 같은 걸 또 첨부하라고 하면 이미 올라가 있는지 스레드를 먼저 확인해라.",
   "- 설정집 일정 시트 수동 등록('이 PIVO 시트에 등록해줘/설정집 일정에 추가해줘', propose_setjip_request 흐름을 안 거치고 다른 경로로 요청 나갔을 때): register_setjip_schedule(pivo, [thread], [apm]). 설정집 요청 스레드 안에서 부르면 thread 생략. 스레드 본문에서 작품명·APM·제출희망일 자동 인식, 못 찾으면 apm 인자 필수. 이미 등록된 PIVO면 중복 스킵. 게이트 없이 즉시 실행.",
   "- 설정집 AI검수 인증번호 발급/재발급 — 재상 님뿐 아니라 APM도 쓸 수 있음. 트리거는 아주 짧은 문장이면 충분: '(PIVO 또는 작품명) 번역 배정 완료', '번역검수 배정 완료', '배정 끝났어 토큰 발급해줘' 류. → reissue_setjip_ai_token(pivo, [role], [worker], [thread]). ★설정집 작성 요청 스레드 안에서 멘션/DM으로 부르면 스레드 맥락이 이미 함께 전달되니(그 스레드 본문의 'PIVO : PV-XXXXXX'), 사용자가 PIVO를 따로 말 안 해도 그 본문에서 추출해서 채워라(pivo를 되묻지 마라) — 스레드 밖(DM에서 다른 작품 얘기하듯)이면 사용자가 준 PIVO/작품명 그대로 pivo에 넣는다. ★role 생략하면 TOTUS에서 그 작품 '설정집' JOB의 번역(OTC0052)·번역검수(OTC0054) 담당자를 실시간 조회해 배정된 역할 전부를 한 번에 발급(배정현황 구글시트는 하루 1번만 동기화라 방금 배정한 건 못 잡을 수 있어 TOTUS를 우선 씀, 못 찾으면 시트로 폴백). worker는 자동조회를 못 믿을 때만 수동 지정. 이메일이 작업자 DB에 있으면 결과 메시지에 Slack 멘션도 자동으로 붙는다. thread를 생략하면 지금 대화 중인 곳에 게시되는데, 설정집 스레드 안에서 부른 거면 자동으로 그 스레드(공개 채널)에 남아 — DM에서 pivo/작품명만 주고 불렀다면 결과가 DM에 남으니, 그럴 땐 '설정집 일정' 시트에서 그 PIVO의 등록된 스레드 링크를 찾아 thread로 넘겨 그 공개 스레드에 게시되게 하라(register_setjip_schedule이 기록한 threadLink). ★같은 PIVO+역할당 활성 토큰은 항상 1개만 유지된다 — 이미 발급된 게 있으면 새로 안 만들고 그 토큰(사용횟수 포함)을 그대로 다시 보여준다('재발급해줘'가 실제로는 같은 코드 재확인인 경우가 많다는 뜻). 게이트 없이 즉시 실행(발급은 되돌리기 쉬운 저위험 동작).",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
@@ -754,8 +795,17 @@ async function checkSetjipDeadline() {
       const r = rows[i];
       const iso = r[8], reminded = String(r[6] || "").trim().toUpperCase() === "TRUE";
       if (!iso || reminded || iso !== kd) continue;
-      const work = r[1] || "", thread = r[5] || "";
-      await dmOwner(`📅 *설정집 검수 리마인드* — *${work}* 제출 희망일이 오늘이에요.\n${thread ? thread : ""}\n설정집 task 완료 여부 확인하고 검수해주세요.`);
+      const work = r[1] || "", thread = r[5] || "", pivo = r[2] || "";
+      // 리마인드와 함께 설정집 참조파일(원본·체크리스트)을 요청 스레드에 첨부한다(2026-09-04).
+      let refNote = "";
+      const link = parseSlackLink(thread);
+      if (pivo && link?.channel && link?.ts) {
+        const ref = await attachSetjipRefFiles({ client: app.client, channel: link.channel, ts: link.ts, projectKey: pivo, work });
+        if (ref.attached) refNote = `\n📎 참조파일 ${ref.attached}건(${ref.files.join(", ")})을 요청 스레드에 첨부했어요.`;
+        else if (ref.error) refNote = `\n⚠️ 참조파일 첨부 실패: ${ref.error}`;
+        else refNote = `\n(참조파일 중 원본·체크리스트로 볼 파일은 없었어요${ref.skipped ? ` — 전체 ${ref.skipped}건 확인` : ""})`;
+      }
+      await dmOwner(`📅 *설정집 검수 리마인드* — *${work}* 제출 희망일이 오늘이에요.\n${thread ? thread : ""}\n설정집 task 완료 여부 확인하고 검수해주세요.${refNote}`);
       updates.push({ a1: `${SETJIP_SCHEDULE_TAB}!G${i + 2}`, value: "TRUE" });
       hit++;
     }
@@ -2447,6 +2497,56 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: false } }),
+    tool("setjip_reference_files",
+      "설정집 에디터에 등록된 참조파일(#번호 그룹 — 원본 체크리스트, 롤이미지, 식자 폰트표 등)을 조회하고, 원하면 슬랙 스레드에 첨부한다. pivo(또는 projectUuid) 필수. attach:false(기본)면 목록만 돌려주고, attach:true면 '원본·체크리스트' 계열 파일만 골라 스레드에 올린다(제출희망일 리마인드가 자동으로 하는 것과 같은 동작). only_keywords로 다른 키워드를 줄 수도 있다. 게이트 없이 즉시 실행(읽기성 공유).",
+      {
+        pivo: z.string().describe("PIVO PID 또는 프로젝트 UUID"),
+        attach: z.boolean().optional().describe("true면 스레드에 첨부까지. 생략하면 목록만 반환"),
+        thread: z.string().optional().describe("첨부할 스레드 슬랙 링크. 생략하면 지금 대화 중인 스레드"),
+        only_keywords: z.array(z.string()).optional().describe("첨부 대상 파일명 키워드(생략 시 원본/체크리스트/原本/チェック)"),
+      },
+      async ({ pivo, attach, thread, only_keywords }) => {
+        try {
+          const res = await setupReferenceFiles(pivo);
+          const list = res?.data?.참조파일목록 || [];
+          const summary = {
+            작품명: res?.data?.프로젝트명 || null,
+            pivo: res?.data?.PIVO_PID || pivo,
+            설정집에디터링크: res?.data?.설정집에디터링크 || null,
+            파일: list.map((f) => ({ 순번: f.순번, 파일명: f.파일명, 확장자: f.확장자, 등록일: f.등록일?.표시 || null })),
+          };
+          if (!attach) return { content: [{ type: "text", text: JSON.stringify(summary) }] };
+
+          const ctx = currentCtx;
+          let channel = ctx?.channel, ts = ctx?.ts;
+          if (thread) {
+            const p = parseSlackLink(thread);
+            if (!p) return { content: [{ type: "text", text: JSON.stringify({ error: `스레드 링크를 못 읽음: ${thread}` }) }] };
+            if (p.channel) channel = p.channel;
+            ts = p.ts;
+          }
+          if (!channel || !ts) return { content: [{ type: "text", text: JSON.stringify({ error: "채널/스레드를 특정 못 함 — 스레드 안에서 부르거나 thread 링크를 줘라." }) }] };
+
+          const kw = (only_keywords?.length ? only_keywords : SETJIP_REF_KEYWORDS).map((s) => String(s).normalize("NFC"));
+          const hits = list.filter((f) => f?.다운로드URL && kw.some((k) => String(f.파일명 || "").normalize("NFC").includes(k)));
+          if (!hits.length) return { content: [{ type: "text", text: JSON.stringify({ ...summary, attached: 0, note: `키워드(${kw.join(", ")})에 맞는 파일이 없음` }) }] };
+          const uploads = [];
+          for (const f of hits) {
+            try {
+              const buf = await downloadReferenceFile(f.다운로드URL);
+              uploads.push({ file: buf, filename: String(f.파일명).replace(/[\\/:*?"<>|]/g, "_") });
+            } catch (e) { console.error(`[setjip-ref] 다운로드 실패(${f.파일명}):`, e?.message ?? e); }
+          }
+          if (!uploads.length) return { content: [{ type: "text", text: JSON.stringify({ ...summary, attached: 0, error: "다운로드 전부 실패(서명 URL 만료 가능)" }) }] };
+          await ctx.client.files.uploadV2({
+            channel_id: channel, thread_ts: ts,
+            initial_comment: `📎 설정집 참조파일 — ${summary.작품명 || pivo}`,
+            file_uploads: uploads,
+          });
+          return { content: [{ type: "text", text: JSON.stringify({ ...summary, attached: uploads.length, 첨부파일: uploads.map((u) => u.filename) }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: false } }),
     tool("fetch_original_from_drive",
       "재수급 원본 파일(psd/jpg)을 baidu 제외 드라이브(Kuaikan/arthub)에서 직접 찾아 다운로드 링크를 가져온다('N화 M페이지 원본 psd/jpg 가져와'). work(작품명 또는 PIVO) 또는 url(드라이브 링크 직접 제공) 중 하나 필요 — url을 주면 그걸 우선 쓰고 시트 조회를 건너뜀. 회차/페이지 자동 매칭이 애매하면(후보가 여러 개거나 하나도 안 잡히면) 절대 추측하지 않고 후보 목록을 그대로 반환하니, 그때는 사용자에게 후보를 보여주고 어떤 게 맞는지 확인받은 다음 정확한 이름으로 다시 시도해야 한다 — 후보 중 아무거나 임의로 골라서 전달하면 안 됨. baidu이거나 자동화 대상이 아니면 수동 처리가 필요하다고 안내만 한다. 게이트 없이 즉시 실행(읽기성 조회).",
       {
@@ -3516,7 +3616,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__edit_posted_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__edit_posted_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__setjip_reference_files", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",

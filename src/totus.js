@@ -85,6 +85,24 @@ export const editorFiles = (taskUuid) => getJSON(`/tasks/${taskUuid}/editor-file
 // #26 태스크(식자/식자검수)의 원본 파일 — 이미 납품된 분. format: psd|jpg|ori|all
 export const deliveryFiles = (taskUuid, format = "all") => getJSON(`/tasks/${taskUuid}/delivery-files`, { format });
 
+// 설정집 에디터의 참조파일(#번호 그룹) 목록 + CloudFront 서명 다운로드URL. read-only.
+// projectKey: 프로젝트 UUID 또는 PIVO PID. name/match(exact|contains)로 파일명 필터 가능.
+// ★서명 URL은 유효시간이 짧다 — 받은 직후 바로 다운로드할 것.
+export const setupReferenceFiles = (projectKey, opts = {}) =>
+  getJSON(`/projects/${encodeURIComponent(projectKey)}/setup-reference-files`, {
+    name: opts.name,
+    match: opts.match,
+    targetLanguageCode: opts.targetLanguageCode,
+    includeDownloadUrl: opts.includeDownloadUrl === false ? "false" : undefined,
+  });
+
+// 참조파일 1건 다운로드(서명 URL → 버퍼). 목록 조회 직후 호출해야 만료되지 않는다.
+export async function downloadReferenceFile(downloadUrl) {
+  const r = await fetch(downloadUrl, { signal: AbortSignal.timeout(180000) });
+  if (!r.ok) throw new Error(`참조파일 다운로드 ${r.status}`);
+  return Buffer.from(await r.arrayBuffer());
+}
+
 // ── 쓰기(MUTATION) — JobProcess 납품예정일 일괄 변경 ────────────────
 // ★실제 변경. 봇의 게이트(확인 버튼) 핸들러에서만 호출할 것 (LLM 도구로 직접 노출 금지).
 async function sendJSON(method, path, body, extra = {}) {
