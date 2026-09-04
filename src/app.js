@@ -6103,6 +6103,7 @@ async function _handleResupplyAutoTransfer({ message, client }) {
     // 2. 드라이브 항목 조회
     const entry = await lookupDriveEntryForWork(workName).catch(() => null);
     if (!entry?.pivo) throw new Error(`"${workName}" 드라이브 항목 없음 — 출판사 드라이브 링크 탭 확인`);
+    if (!/^\d+$/.test(entry.pivo)) throw new Error(`"${workName}" PIVO PID가 숫자가 아님 (${entry.pivo}) — 시트 I열에 숫자 PID를 입력해주세요`);
     if (!/kuaikan/i.test(entry.publisher || "")) {
       await finalize(`ℹ️ *${workName}* 출판사(${entry.publisher})가 Kuaikan이 아니어서 건너뜁니다.`);
       return;
