@@ -1385,6 +1385,87 @@ function buildDailyReport(dateStr) {
     `• 토큰: 입력 ${fmtN(inTok)} · 출력 ${fmtN(outTok)}  (합 ${fmtN(inTok + outTok)})`,
   ].join("\n");
 }
+// ── 협업 로그 요약(아카이브용) ─────────────────────────────────
+// 목적: "누가 툰식이와 어떤 주제의 업무를 했는지"를 기간 단위로 뽑아 업무 아카이브에 남긴다.
+// 대화 전문을 모으는 게 아니라 업무유형·작품·요청 주제(앞 200자)·발동 도구만 집계한다.
+// 액션 로그만 보면 쓰기 작업(=주로 재상 님)만 잡히고, APM들이 하는 조회·상담이 통째로 빠지므로
+// usage.jsonl의 req/tools(2026-09-04 추가)를 함께 쓴다.
+const COLLAB_KINDS = [
+  ["logs/sends.jsonl", "메시지 발송 대행", (r) => (r.pivo ? `PIVO ${r.pivo}` : r.work)],
+  ["logs/retakes.jsonl", "리테이크 번역가 발송", (r) => r.work],
+  ["logs/feedback.jsonl", "번역 검수 피드백 공유", (r) => r.work],
+  ["logs/totus-dates.jsonl", "TOTUS 납품예정일 변경", (r) => r.work],
+  ["logs/totus-proj.jsonl", "TOTUS 프로젝트 정보 변경", (r) => r.projectName || r.ko || (r.pivo ? `PIVO ${r.pivo}` : null)],
+  ["logs/totus-retake.jsonl", "TOTUS 태스크 재생성", (r) => r.work || r.projectName],
+  ["logs/edits.jsonl", "시트 값 수정", (r) => r.work],
+  ["logs/totalk-sent.jsonl", "ToTalk 멘션 알림", (r) => r.work],
+];
+function buildCollabDigest(since, until) {
+  const nameOf = (id) => USER_NAMES[id] || (id ? `미확인(${id})` : "미확인");
+  const inRange = (r) => { const d = r.at ? kstDateOf(new Date(r.at)) : null; return d && d >= since && d <= until; };
+
+  // 1) 액션(쓰기) 로그 — 업무유형 × 요청자 × 작품
+  const kinds = new Map();
+  const userActs = new Map();
+  let total = 0;
+  for (const [file, label, workFn] of COLLAB_KINDS) {
+    for (const r of readJsonlSafe(file).filter(inRange)) {
+      total++;
+      const u = nameOf(r.user);
+      const w = workFn(r) || "(작품 미지정)";
+      if (!kinds.has(label)) kinds.set(label, { n: 0, users: new Map(), works: new Map() });
+      const e = kinds.get(label);
+      e.n++;
+      e.users.set(u, (e.users.get(u) || 0) + 1);
+      e.works.set(w, (e.works.get(w) || 0) + 1);
+      if (!userActs.has(u)) userActs.set(u, new Map());
+      userActs.get(u).set(label, (userActs.get(u).get(label) || 0) + 1);
+    }
+  }
+
+  // 2) 대화 턴 — 요청 주제·발동 도구(액션 없이 끝난 조회·상담까지 포함)
+  const usage = readJsonlSafe("logs/usage.jsonl").filter(inRange);
+  const main = usage.filter((u) => u.kind === "main");
+  const talks = new Map();
+  for (const u of main) {
+    const k = nameOf(u.user);
+    if (!talks.has(k)) talks.set(k, { turns: 0, subjects: [], tools: new Map() });
+    const e = talks.get(k);
+    e.turns++;
+    if (u.req) e.subjects.push(String(u.req).slice(0, 70));
+    for (const t of u.tools || []) e.tools.set(t, (e.tools.get(t) || 0) + 1);
+  }
+
+  if (!total && !main.length) return null;
+  const out = [`## 툰식이 협업 로그 (${since} ~ ${until})`, ""];
+  if (total) {
+    out.push(`### 실행 업무 (${total}건)`, "", "| 업무유형 | 건수 | 요청자 | 주요 작품 |", "|---|---|---|---|");
+    for (const [label, e] of [...kinds].sort((a, b) => b[1].n - a[1].n)) {
+      const users = [...e.users].sort((a, b) => b[1] - a[1]).map(([u, n]) => `${u} ${n}`).join(", ");
+      const works = [...e.works].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([w, n]) => (n > 1 ? `${w}(${n})` : w)).join(" · ");
+      out.push(`| ${label} | ${e.n} | ${users} | ${works}${e.works.size > 4 ? ` 외 ${e.works.size - 4}건` : ""} |`);
+    }
+    out.push("");
+  }
+  if (talks.size) {
+    out.push(`### 사람별 (대화 ${main.length}턴)`, "");
+    for (const [u, e] of [...talks].sort((a, b) => b[1].turns - a[1].turns)) {
+      const acts = userActs.get(u);
+      const actLine = acts ? [...acts].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(" / ") : "실행 액션 없음(조회·상담 위주)";
+      const toolLine = [...e.tools].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([t, n]) => `${t}${n > 1 ? `×${n}` : ""}`).join(", ") || "-";
+      out.push(`**${u}** — ${e.turns}턴`, `* 실행: ${actLine}`, `* 도구: ${toolLine}`);
+      if (e.subjects.length) {
+        out.push(`* 주제:`);
+        for (const s of e.subjects.slice(0, 12)) out.push(`  * ${s}`);
+        if (e.subjects.length > 12) out.push(`  * … 외 ${e.subjects.length - 12}건`);
+      } else {
+        out.push(`* 주제: (req 기록 이전 기간 — 2026-09-04부터 쌓임)`);
+      }
+      out.push("");
+    }
+  }
+  return out.join("\n");
+}
 async function checkDailyReport() {
   try {
     if (kstHourNow() < (Number(process.env.REPORT_HOUR) || 9)) return;
@@ -3491,7 +3572,7 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       }),
     tool("transfer_kuaikan_files",
-      "쿠아이칸(Kuaikan) 원본 파일을 PIVO로 이관한다. '작품명 N화 이관해줘', '1화 3페이지만 이관해줘', '1-3화 전체 올려줘' 등 수동 이관 요청 시 호출. 이관은 백그라운드로 진행되며 이 스레드에 실시간 진행상황을 업데이트한다. 중복 파일(원본+gai 수정본)이 발견되면 중복만 따로 물어보고 나머지는 먼저 이관한다. 누락 의심(PIVO 파일 수 < Kuaikan 파일 수) 및 깨짐 의심(100KB 미만)은 완료 메시지에 경고로 포함된다.",
+      "쿠아이칸(Kuaikan) 원본 파일을 PIVO로 이관한다. '작품명 N화 이관해줘', '원본 이관해', '1화 3페이지만 이관해줘' 등 수동 이관 요청 시 호출. ★이 도구를 호출할 때는 별도 응답 텍스트를 생성하지 말 것 — 도구가 직접 스레드에 ⏳ 파일별 진행상황을 실시간 업데이트하고 완료 시 새 메시지를 올린다. 중복 파일(원본+gai 수정본)이 발견되면 중복만 따로 물어보고 나머지는 먼저 이관한다. 누락 의심(PIVO 파일 수 < Kuaikan 파일 수) 및 깨짐 의심(100KB 미만)은 완료 메시지에 경고로 포함된다.",
       {
         workName: z.string().describe("작품 한국어 이름"),
         episodes: z.string().describe("회차. 단일: '1' / 범위: '1-3' / 복수: '1,2,3'. '화' 포함 가능 예: '1화', '1-3화'"),
@@ -3519,6 +3600,22 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: false } }),
+    tool("collab_digest",
+      "툰식이 협업 로그 요약(업무 아카이브용). 기간 내 '누가 툰식이와 어떤 주제의 업무를 했는지'를 업무유형·작품·요청 주제·발동 도구로 집계해 마크다운으로 돌려준다. 대화 전문은 담지 않는다(요청 앞 70자까지만). '이번 주 협업 로그 정리해줘', '지난주 무슨 일 했는지 요약해줘', '아카이브용 로그 뽑아줘' 류 요청에 사용. since/until 생략 시 최근 7일(KST).",
+      {
+        since: z.string().optional().describe("시작일 YYYY-MM-DD(KST). 생략 시 6일 전"),
+        until: z.string().optional().describe("종료일 YYYY-MM-DD(KST). 생략 시 오늘"),
+      },
+      async ({ since, until }) => {
+        try {
+          const today = kstDateOf();
+          let from = since;
+          if (!from) { const d = new Date(Date.now() + 9 * 3600 * 1000); d.setUTCDate(d.getUTCDate() - 6); from = d.toISOString().slice(0, 10); }
+          const md = buildCollabDigest(from, until || today);
+          return { content: [{ type: "text", text: md || JSON.stringify({ empty: true, since: from, until: until || today, note: "해당 기간 활동 기록 없음" }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
   ],
 });
 
@@ -3698,7 +3795,7 @@ function startSession() {
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
         "mcp__apm__send_message", "mcp__apm__edit_posted_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__setjip_reference_files", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
-        "mcp__apm__query_schedule", "mcp__apm__compute", "mcp__apm__translation_guide",
+        "mcp__apm__query_schedule", "mcp__apm__collab_digest", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
         "mcp__apm__check_totalk_mentions",
