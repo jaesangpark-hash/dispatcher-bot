@@ -61,10 +61,16 @@ async function getBlocks() {
     const title = String(rel[COL.title] || "").replace(/\s+/g, " ").trim();
     if (!title) continue;
     // 같은 블록의 라벨 행들 수집 (다음 'リリース日' 전까지)
+    // 공통번호(共通番号)는 블록 안쪽 행의 A열에 숫자로 들어있다(보통 '話数' 행) — 고객사와 주고받는 작품 식별자.
     const labeled = {};
+    let commonNo = null;
     for (let j = i + 1; j < rows.length; j++) {
       const lbl = String(rows[j]?.[COL.label] || "").trim();
       if (lbl === "リリース日") break;
+      if (commonNo == null) {
+        const a = String(rows[j]?.[0] ?? "").trim();
+        if (/^\d+$/.test(a)) commonNo = a;
+      }
       if (lbl && !labeled[lbl]) labeled[lbl] = rows[j];
     }
     // 완결작 제외용 텍스트
@@ -79,6 +85,7 @@ async function getBlocks() {
     })).filter((w) => w.launch || w.episodes || w.deliveryDate || w.deliveryEps);
     blocks.push({
       title,
+      commonNo,
       received: String(rel[COL.received] || "").trim(),
       receivedMax: receivedMax(rel[COL.received]),
       delivery: String(rel[COL.deliv] || "").trim(),
@@ -215,22 +222,34 @@ export async function missingOriginals({ monthsAhead = 1 } = {}) {
 }
 
 // 특정 날짜(M/D)에 납품 예정인 회차 집계 (納品予定日 행 매칭 → 納品話数)
+// 특정 날짜의 납품 대상. 納品予定日이 그 날짜인 주차를 모으되,
+// ★納品話数가 빈 칸(휴재·미배정)인 작품은 '작품 수'에 넣지 않는다(재상 님 기준, 2026-09-04) — pending에 따로 담아 보고만 한다.
 export async function deliveryOnDate(dateStr) {
   const want = parseMD(dateStr);
   if (!want) return { error: `날짜 형식 인식 불가: ${dateStr} (예: 6/19)` };
   const blocks = await getBlocks();
   const items = [];
+  const pending = [];
   let totalEps = 0;
   for (const b of blocks) {
     for (const w of b.weeks) {
       const dd = parseMD(w.deliveryDate);
       if (!dd || dd.month !== want.month || dd.day !== want.day) continue;
       const eps = parseEpisodes(w.deliveryEps);
-      items.push({ title: b.title, episodes: w.deliveryEps, count: eps.length });
-      totalEps += eps.length;
+      const row = { commonNo: b.commonNo, title: b.title, episodes: w.deliveryEps, count: eps.length };
+      if (eps.length) { items.push(row); totalEps += eps.length; }
+      else pending.push(row);           // 납품일만 잡히고 화수 미기재
     }
   }
-  return { date: `${want.month}/${want.day}`, works: items.length, totalEpisodes: totalEps, items };
+  return {
+    date: `${want.month}/${want.day}`,
+    works: items.length,
+    commonNos: items.map((i) => i.commonNo).filter(Boolean),
+    totalEpisodes: totalEps,
+    items,
+    pendingWorks: pending.length,
+    pending,
+  };
 }
 
 // ★주간 납품 배치 주기(예: "23-24"→2화, "25-26"→2화 = 주2화 납품) — 고객사 스케줄 시트의 週次 納品話数 기준.

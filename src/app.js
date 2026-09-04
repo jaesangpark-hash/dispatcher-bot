@@ -290,7 +290,7 @@ const DISPATCHER_PROMPT = [
   "- query_sheet 뷰에 없는 탭을 물으면 → read_tab(탭 이름). 시트 실제 헤더가 곧 필드명이라 사용자가 말한 헤더로 바로 거른다. 표 헤더가 중간 행이면 headerRow 지정. 알려진 6개 시트의 어떤 탭이든 조회 가능.",
   "★번역/식자 방침 문의 → translation_guide로 가이드 참조: 작업자 문의(또는 재상 님 질문)가 '번역 방침·표기 규칙·용어·후리가나·기호(가운데점/괄호 등)·식자 표기' 등 **가이드로 판정할 내용**이면, 추측하지 말고 translation_guide(kind:'translation')로 중일 번역 가이드 2종을 읽어 **해당 조항을 인용**해 답하라(가이드에 없으면 '가이드에 명시 없음'이라 하고 임의 규칙을 지어내지 마라). 단순 원문/수치 확인은 여기 해당 없음. ★설정집 작성 가이드(kind:'setjip')는 **재상 님이 '설정집'을 명시적으로 언급**할 때만 조회하고, 작업자 번역 방침 문의엔 쓰지 마라.",
   "- 스레드 찾기('○○ 작품 ~~ 스레드 찾아줘', '○○ 관련 논의 어디 있어', 과거 대화/스레드 내용): find_thread(query=작품명+키워드). 등록된 주요 업무 채널들에서 검색해 매칭 스레드를 찾고, 1개로 분명하면 내용(topContent)까지 와서 요약·답+링크. 여러 개면 후보를 보여주고 어느 건지 되묻거나 키워드를 좁힌다(임의 단정 금지). 사용자가 특정 채널을 말하면 channel 인자로. 특정 스레드/링크를 콕 집으면 read_thread. (등록 채널·봇 멤버 범위 내 — 전역 검색 아님)",
-  "- '고객사 스케줄 시트'(중일, =내부 납품 시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. '○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일=mode:launch(work나 pivo + episode), ★'이 납품(회차)이 스케줄 시트에 기재/반영됐나' 검증=**mode:delivery_check**(納品話数+納品予定日 기준, listedForDelivery로 판단 — 話数(런칭)로 보는 launch로 판단하면 오답이니 절대 launch로 납품 기재 여부를 판정하지 마라), 'N/일 납품 회차 카운트'=mode:delivery_on+date, '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. 여러 작품+회차를 한꺼번에 검증하면 각 항목마다 delivery_check를 돌려 결과를 모아 답한다. 블록 제목(正式+仮) 직접매칭이라 일본어 제목만으로도 잘 잡힌다. ID 묻지 말 것(이 도구가 그 시트임).",
+  "- '고객사 스케줄 시트'(중일, =내부 납품 시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. '○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일=mode:launch(work나 pivo + episode), ★'이 납품(회차)이 스케줄 시트에 기재/반영됐나' 검증=**mode:delivery_check**(納品話数+納品予定日 기준, listedForDelivery로 판단 — 話数(런칭)로 보는 launch로 판단하면 오답이니 절대 launch로 납품 기재 여부를 판정하지 마라), 'N/일 납품 회차 카운트'·'오늘 납품 뭐 있어/납품 대상 알려줘'=mode:delivery_on+date(응답에 works=작품 수, commonNos=공통번호 목록, totalEpisodes=총 회차, pendingWorks=납품일만 잡히고 화수 미기재라 작품 수에서 제외된 건수. 재상 님이 쓰는 리포트 형식은 '작품 수 + 공통번호'라 그 둘을 먼저 답하고 상세는 물으면 준다. 매일 아침 자동 DM도 같은 값으로 나간다), '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. 여러 작품+회차를 한꺼번에 검증하면 각 항목마다 delivery_check를 돌려 결과를 모아 답한다. 블록 제목(正式+仮) 직접매칭이라 일본어 제목만으로도 잘 잡힌다. ID 묻지 말 것(이 도구가 그 시트임).",
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
   "★채널 사전(2026-08-19 확정 — send_message 등에서 채널을 부를 때 이 이름들이면 재상 님께 ID를 다시 묻지 말고 바로 이 값을 target으로 써라): '재팬_요청'/'요청 채널'/'요청채널' = C09B8QHP7D4. '재팬_작업요청'/'작업요청 채널'/'작업요청채널'/'설정집 채널' = C09AUQN8GEB. '재팬_공지'/'공지 채널'/'공지채널' = C09B8QLR5FG. '리마인더 채널'/'리마인더채널' = C0B73GL3WAJ. '리테이크 채널'/'리테이크 감시 채널' = C09B8QBEC9L. 이 사전에 없는 채널명을 대면 지어내지 말고 '그 채널 ID(또는 링크)를 알려달라'고 되묻는다.",
   "- 학습/교정(영구): 재상 님이 '앞으로 ~로 기억해/외워둬', '이건 이렇게 이해해', 또는 내가 잘못 이해한 걸 바로잡아 주면 → remember(note)로 저장한다(재기동에도 유지, 다음부터 자동 적용). '그 규칙 잊어'=forget, '뭐 배웠어'=list_learned. ★단순 '나중에 ~할 일'은 add_reminder(리마인더), 항구적 동작 규칙·별칭·이해 교정은 remember로 구분. 모호하면 '리마인더로 할까요, 규칙으로 외울까요?' 한 줄 확인.",
@@ -1402,6 +1402,36 @@ async function checkDailyReport() {
     if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: report, ...SENDER });
     console.log(`[daily] ${yStr} 리포트 발송`);
   } catch (e) { console.error("[daily] 실패:", e?.message ?? e); }
+}
+
+// ── 오늘 납품 대상 리포트(2026-09-04) ────────────────────────────
+// 중일 고객사 스케줄 시트의 納品予定日이 오늘인 작품 = 작품 수 + 공통번호만 간단히.
+// ★納品話数가 빈 칸(휴재·미배정)인 작품은 작품 수에서 빼고 "화수 미기재" 건수로만 알린다(재상 님 기준).
+const DELIVERY_REPORT_HOUR = Number(process.env.DELIVERY_REPORT_HOUR ?? 9);
+async function checkDeliveryTodayReport() {
+  try {
+    if (kstHourNow() < DELIVERY_REPORT_HOUR) return;
+    const today = kstDateOf();
+    let state = {};
+    try { state = JSON.parse(readFileSync("data/delivery-today-report.json", "utf8")); } catch { /* 첫 실행 */ }
+    if (state.lastDate === today) return;                       // 오늘 이미 발송
+    const k = new Date(Date.now() + 9 * 3600 * 1000);
+    const md = `${k.getUTCMonth() + 1}/${k.getUTCDate()}`;
+    const r = await deliveryOnDate(md);
+    state.lastDate = today;
+    try { writeFileSync("data/delivery-today-report.json", JSON.stringify(state)); } catch { /* 무시 */ }
+    if (r?.error) { console.error("[delivery-today] 조회 실패:", r.error); return; }
+    // 주말처럼 아무 납품도 없는 날은 발송 생략(매일 "0작품" DM은 노이즈).
+    if (!r.works && !r.pendingWorks) { console.log(`[delivery-today] ${md} 납품 대상 없음 — 발송 생략`); return; }
+    const lines = [
+      `📦 *오늘(${md}) 납품 대상* — *${r.works}작품* (${r.totalEpisodes}화)`,
+      `공통번호: ${r.commonNos.length ? r.commonNos.join(", ") : "없음"}`,
+    ];
+    if (r.pendingWorks) lines.push(`_※ 납품일만 잡히고 화수 미기재 ${r.pendingWorks}작품은 제외했어요._`);
+    const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID });
+    if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: lines.join("\n"), ...SENDER });
+    console.log(`[delivery-today] ${md} 리포트 발송 — ${r.works}작품`);
+  } catch (e) { console.error("[delivery-today] 실패:", e?.message ?? e); }
 }
 
 // ── 견적 동기화 완료 행 점검 ─────────────────────────────────
@@ -6067,7 +6097,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
