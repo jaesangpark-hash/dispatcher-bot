@@ -1407,7 +1407,8 @@ async function checkDailyReport() {
 // ── 오늘 납품 대상 리포트(2026-09-04) ────────────────────────────
 // 고객사 납품 시트의 納品予定日이 오늘인 작품 = 작품 수 + 공통번호만 간단히.
 // ★納品話数가 빈 칸(휴재·미배정)인 작품은 작품 수에서 빼고 "화수 미기재" 건수로만 알린다(재상 님 기준).
-const DELIVERY_REPORT_HOUR = Number(process.env.DELIVERY_REPORT_HOUR ?? 9);
+// 발송 시각: 재상 님 지정 오전 10시(2026-09-04). DELIVERY_REPORT_HOUR로 덮어쓸 수 있음.
+const DELIVERY_REPORT_HOUR = Number(process.env.DELIVERY_REPORT_HOUR ?? 10);
 async function checkDeliveryTodayReport() {
   try {
     if (kstHourNow() < DELIVERY_REPORT_HOUR) return;
