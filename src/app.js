@@ -34,7 +34,7 @@ import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot,
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock } from "./learned.js";
-import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode, deliveryReconcile, dailyCheckList } from "./schedule.js";
+import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode, deliveryReconcile, dailyCheckList, koTitlesByCommonNo } from "./schedule.js";
 import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText, findUndelivered } from "./deliveryNotice.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
@@ -1423,9 +1423,13 @@ async function checkDeliveryTodayReport() {
     if (r?.error) { console.error("[delivery-today] 조회 실패:", r.error); return; }
     // 주말처럼 아무 납품도 없는 날은 발송 생략(매일 "0작품" DM은 노이즈).
     if (!r.works && !r.pendingWorks) { console.log(`[delivery-today] ${md} 납품 대상 없음 — 발송 생략`); return; }
+    // 한국어 타이틀 — ①APM 납품 시트 프로젝트명 ②타이틀리스트→마스터 시트. 둘 다 없으면 고객사 시트의 일본어 제목으로 폴백.
+    const koMap = await koTitlesByCommonNo(r.commonNos, today).catch(() => new Map());
+    const jaByNo = new Map(r.items.map((i) => [i.commonNo, String(i.title || "").split("\n")[0].trim()]));
+    const nameOf = (no) => koMap.get(no) || jaByNo.get(no) || "(제목 미확인)";
     const lines = [
       `📦 *오늘(${md}) 납품 대상* — *${r.works}작품* (${r.totalEpisodes}화)`,
-      `공통번호: ${r.commonNos.length ? r.commonNos.join(", ") : "없음"}`,
+      ...r.items.map((i) => `· *${i.commonNo}* ${nameOf(i.commonNo)} — ${i.episodes}화`),
     ];
     if (r.pendingWorks) lines.push(`_※ 납품일만 잡히고 화수 미기재 ${r.pendingWorks}작품은 제외했어요._`);
     // APM 납품 시트(중일_YYYYMMDD 탭)와 대조 — 작품 수·공통번호가 어긋나면 납품 누락 신호.
@@ -1436,10 +1440,10 @@ async function checkDeliveryTodayReport() {
       else if (rec.match) lines.push(`\n🔍 APM 납품 시트 대조: ✅ 일치 (${rec.daily.works}작품/${rec.daily.episodes}화)`);
       else {
         lines.push(`\n🔍 APM 납품 시트 대조: ⚠️ *불일치* — APM ${rec.daily.works}작품/${rec.daily.episodes}화`);
-        if (rec.onlySchedule.length) lines.push(`· APM 납품 시트에 없음(누락 의심): *${rec.onlySchedule.join(", ")}*`);
-        if (rec.onlyDaily.length) lines.push(`· 고객사 납품 시트에 없음: *${rec.onlyDaily.join(", ")}*`);
+        if (rec.onlySchedule.length) lines.push(`· APM 납품 시트에 없음(누락 의심): ${rec.onlySchedule.map((n) => `*${n}* ${nameOf(n)}`).join(" / ")}`);
+        if (rec.onlyDaily.length) lines.push(`· 고객사 납품 시트에 없음: ${rec.onlyDaily.map((n) => `*${n}* ${nameOf(n)}`).join(" / ")}`);
         for (const d of rec.episodeDiff.slice(0, 10)) {
-          lines.push(`· ${d.commonNo} 회차 차이 — 고객사 ${d.schedule} / APM ${d.daily}`);
+          lines.push(`· *${d.commonNo}* ${nameOf(d.commonNo)} 회차 차이 — 고객사 ${d.schedule} / APM ${d.daily}`);
         }
         if (rec.episodeDiff.length > 10) lines.push(`· … 회차 차이 ${rec.episodeDiff.length - 10}건 더`);
       }

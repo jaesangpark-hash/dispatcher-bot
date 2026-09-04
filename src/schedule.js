@@ -100,7 +100,7 @@ async function getBlocks() {
 // 타이틀리스트(PIVO 인덱스) 로드 (TTL 캐시). pivo → {pivo, launch(初回), seika(F正式), ka(G仮), wonje(H原題), titles[]}
 async function titleListIndex() {
   if (fresh(_cache.titles)) return _cache.titles.v;
-  const rows = (await readRange(SCHEDULE_ID, `${TITLE_TAB}!A2:H400`)) || [];
+  const rows = (await readRange(SCHEDULE_ID, `${TITLE_TAB}!A2:H`)) || [];
   const byPivo = new Map();
   const list = [];
   for (const r of rows) {
@@ -258,24 +258,66 @@ export async function deliveryOnDate(dateStr) {
 // APM 납품 시트엔 매일 `중일_YYYYMMDD` 탭이 생성되며
 // 회차 1건당 1행(E열 共通番号, I열 話数)이다. 두 시트의 작품 수·공통번호가 어긋나면 납품 누락 신호.
 const DAILY_CHECK_ID = "1ruHyVXA8JV84pQ3ZWvQiOwaxLkKjSXz5W5tgXO_QfOE";
+// 한국어 타이틀 폴백용 마스터(운영통합 '출판사 드라이브 링크' A:I — C=한국어타이틀, I=PIVO ID)
+const MASTER_ID = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
+const MASTER_RANGE = "출판사 드라이브 링크!A:I";
 const DAILY_TAB = (dateISO) => `중일_${String(dateISO).replace(/-/g, "")}`;
 
-// 그날 APM 납품 시트 탭 → { works, commonNos, episodes, byNo:Map(공통번호→Set(화수)) }. 탭이 없으면 { missingTab:true }
+// 그날 APM 납품 시트 탭 → { works, commonNos, episodes, byNo:Map(공통번호→Set(화수)), koByNo:Map(공통번호→한국어 프로젝트명) }.
+// 탭이 없으면 { missingTab:true }
 export async function dailyCheckList(dateISO) {
   const tab = DAILY_TAB(dateISO);
   let rows;
   try { rows = (await readRange(DAILY_CHECK_ID, `${tab}!A2:K1000`)) || []; }
   catch (e) { return { missingTab: true, tab, error: String(e?.message ?? e) }; }
   const byNo = new Map();
+  const koByNo = new Map();
   for (const r of rows) {
     const no = String(r?.[4] ?? "").trim();      // E열 共通番号
     const ep = String(r?.[8] ?? "").trim();      // I열 話数
     if (!no) continue;
     if (!byNo.has(no)) byNo.set(no, new Set());
     if (ep) byNo.get(no).add(ep);
+    const ko = String(r?.[2] ?? "").trim();      // C열 프로젝트명(한국어)
+    if (ko && !koByNo.has(no)) koByNo.set(no, ko);
   }
   const episodes = [...byNo.values()].reduce((a, s) => a + s.size, 0);
-  return { tab, works: byNo.size, commonNos: [...byNo.keys()], episodes, byNo };
+  return { tab, works: byNo.size, commonNos: [...byNo.keys()], episodes, byNo, koByNo };
+}
+
+// 공통번호 → 한국어 타이틀. ①APM 납품 시트 그날 탭의 프로젝트명(C열) ②타이틀리스트(A共通番号→B作品ID=PIVO)로
+// 마스터 '출판사 드라이브 링크'의 한국어타이틀 조회. 둘 다 없으면 null.
+export async function koTitlesByCommonNo(commonNos, dateISO) {
+  const want = new Set(commonNos.map(String));
+  const out = new Map();
+  if (dateISO) {
+    const daily = await dailyCheckList(dateISO).catch(() => null);
+    if (daily?.koByNo) for (const [no, ko] of daily.koByNo) if (want.has(no)) out.set(no, ko);
+  }
+  const rest = [...want].filter((no) => !out.has(no));
+  if (!rest.length) return out;
+  // 타이틀리스트로 공통번호 → PIVO, 그 PIVO로 마스터 시트 한국어타이틀
+  const tl = (await readRange(SCHEDULE_ID, `${TITLE_TAB}!A2:H`).catch(() => [])) || [];
+  const pivoByNo = new Map();
+  for (const r of tl) {
+    const no = String(r?.[0] ?? "").trim(), pivo = String(r?.[1] ?? "").trim();
+    if (no && pivo) pivoByNo.set(no, pivo);
+  }
+  const needPivo = rest.map((no) => ({ no, pivo: pivoByNo.get(no) })).filter((x) => x.pivo);
+  if (needPivo.length) {
+    // 마스터 '출판사 드라이브 링크'(A:I) — C=한국어타이틀, I=PIVO ID. PIVO 정확일치로만 매칭(제목 매칭 안 씀).
+    const master = (await readRange(MASTER_ID, MASTER_RANGE).catch(() => [])) || [];
+    const koByPivo = new Map();
+    for (const r of master.slice(1)) {
+      const pivo = String(r?.[8] ?? "").trim(), ko = String(r?.[2] ?? "").trim();
+      if (pivo && ko) koByPivo.set(pivo, ko);
+    }
+    for (const { no, pivo } of needPivo) {
+      const ko = koByPivo.get(String(pivo).trim());
+      if (ko) out.set(no, ko);
+    }
+  }
+  return out;
 }
 
 // 고객사 납품 시트(예정) ↔ APM 납품 시트(실제) 대조. dateISO: YYYY-MM-DD
