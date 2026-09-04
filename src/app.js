@@ -5805,6 +5805,10 @@ const _RS_OPS = process.env.INQUIRY_SHEET_ID || "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMt
 
 function _parseEpisodePage(s) {
   const str = String(s ?? "").trim();
+  // "82화 / 82-4" 형식: 화수 + 파일번호(N화 / N-M, 단일 파일)
+  const epFileMatch = str.match(/^(\d+)화\s*\/\s*\d+-(\d+)\s*$/);
+  if (epFileMatch) return { episode: epFileMatch[1], page: epFileMatch[2] };
+  // 하이픈/틸드 범위 표기 → multi
   if (/[-~]/.test(str) && /\d/.test(str)) return { episode: null, page: null, multi: true };
   const nums = str.match(/\d+/g) || [];
   return { episode: nums[0] || null, page: nums[1] || null };
