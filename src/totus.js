@@ -134,6 +134,8 @@ export const pivoEpisodeSourceFiles = (pid, episode) => getJSON(`/pivo/${encodeU
 // ★2026-08-23 실측 검증 완료: PV-210986 1화 4.psd(26.6MB)를 그대로 재업로드→"기존 파일 덮어쓰기 완료(재조회 검증됨)" 응답, 파일수 그대로 11개·크기 일치 확인.
 // PIVO 허용 확장자(psd·psb·png·jpg·pdf 등) 외 파일이 회차 폴더에 섞이면 그 폴더 전체 동기화가 스킵됨(409 EPISODE_MATCH_SKIPPED_UNSUPPORTED_EXTENSION).
 export async function pivoUploadSourceFile(pid, episode, buffer, fileName) {
+  // 50MB 이상은 multipart 직접 업로드(S3 직접 PUT → Cloudflare 우회)
+  if (buffer.length > 50 * 1024 * 1024) return _pivoUploadLarge(pid, episode, buffer, fileName);
   const { url, tok } = creds();
   const form = new FormData();
   form.append("file", new Blob([buffer]), fileName);
@@ -141,9 +143,51 @@ export async function pivoUploadSourceFile(pid, episode, buffer, fileName) {
     method: "POST",
     headers: { Authorization: `Bearer ${tok}`, "X-Confirm-Mutation": "I-UNDERSTAND-PROD" },
     body: form,
-    signal: AbortSignal.timeout(600000),   // 대용량(원본 PSD 수백MB~1GB급) 대비 10분
+    signal: AbortSignal.timeout(600000),
   });
   const text = await r.text();
   if (!r.ok) throw new Error(`TOTUS ${r.status}: ${text.slice(0, 500)}`);
   try { return JSON.parse(text); } catch { return text; }
+}
+
+async function _pivoUploadLarge(pid, episode, buffer, fileName) {
+  const { url, tok } = creds();
+  const authHeaders = { Authorization: `Bearer ${tok}`, "X-Confirm-Mutation": "I-UNDERSTAND-PROD", "Content-Type": "application/json" };
+  const base = `${url}/api/v1/pivo/${encodeURIComponent(pid)}/episodes/${encodeURIComponent(episode)}/source-files`;
+
+  // 1. upload-init
+  const initR = await fetch(`${base}/upload-init`, {
+    method: "POST", headers: authHeaders,
+    body: JSON.stringify({ fileName, fileSize: buffer.length }),
+    signal: AbortSignal.timeout(60000),
+  });
+  const initText = await initR.text();
+  if (!initR.ok) throw new Error(`TOTUS upload-init ${initR.status}: ${initText.slice(0, 500)}`);
+  const { data: { fileId, parts } } = JSON.parse(initText);
+
+  // 2. 각 파트를 S3에 직접 PUT (Cloudflare 우회)
+  const completedParts = [];
+  for (const part of parts) {
+    const slice = buffer.slice(part.byteStart, part.byteEnd + 1);
+    const putR = await fetch(part.url, {
+      method: "PUT",
+      headers: { "Content-Length": String(slice.length) },
+      body: slice,
+      signal: AbortSignal.timeout(300000),
+    });
+    if (!putR.ok) throw new Error(`S3 파트 ${part.partNumber} PUT 실패: HTTP ${putR.status}`);
+    const eTag = putR.headers.get("ETag");
+    if (!eTag) throw new Error(`S3 파트 ${part.partNumber} ETag 없음`);
+    completedParts.push({ partNumber: part.partNumber, eTag });
+  }
+
+  // 3. upload-complete
+  const completeR = await fetch(`${base}/upload-complete`, {
+    method: "POST", headers: authHeaders,
+    body: JSON.stringify({ fileId, parts: completedParts }),
+    signal: AbortSignal.timeout(120000),
+  });
+  const completeText = await completeR.text();
+  if (!completeR.ok) throw new Error(`TOTUS upload-complete ${completeR.status}: ${completeText.slice(0, 500)}`);
+  try { return JSON.parse(completeText); } catch { return completeText; }
 }
