@@ -359,6 +359,7 @@ export {
   findCategoryFolders,
   isKuaikanDir,
   isArthubDir,
+  findEpisodeFolder,
   resolveEpisodePage,
   makeArthubAdapter,
   makeKuaikanAdapter,

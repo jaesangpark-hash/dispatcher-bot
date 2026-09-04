@@ -28,7 +28,7 @@ import { quotationByPivo, findProject, projectByPivo, scheduleSummary, projectJo
 import { patchMinRowHeight } from "./xlsxRowHeight.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
-import { detectDrivePlatform, parseDriveUrl, kuaikanSearchRoot, resolveEpisodePage, makeArthubAdapter, makeKuaikanAdapter, KuaikanSessionExpiredError, DriveFileUnsupportedError, matchByNumber } from "./drive-download.js";
+import { detectDrivePlatform, parseDriveUrl, kuaikanSearchRoot, kuaikanListChildren, kuaikanGetDownloadUrl, resolveEpisodePage, findEpisodeFolder, isKuaikanDir, makeArthubAdapter, makeKuaikanAdapter, KuaikanSessionExpiredError, DriveFileUnsupportedError, matchByNumber } from "./drive-download.js";
 import { analyzeOrder, detectMissingPages } from "./file-order.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
@@ -5954,15 +5954,51 @@ function _runKuaikanRefresh(client, channel) {
 const _RS_DONE = (v) => /^(true|1|완료|y|yes|✓|checked|done)$/i.test(String(v ?? "").trim());
 const _RS_OPS = process.env.INQUIRY_SHEET_ID || "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
 
-function _parseEpisodePage(s) {
+// 화수/페이지 문자열 → [{episode, page}] 배열 반환(다중 회차 지원)
+// "82화 / 82-4" → [{episode:"82", page:"4"}]  (특정 파일)
+// "81-83" / "81~83" / "81화-83화" → [{episode:"81"}, {episode:"82"}, {episode:"83"}]  (범위, 최대 50화)
+// "81,82" / "81화, 82화" → [{episode:"81"}, {episode:"82"}]  (쉼표 열거)
+// "82화" → [{episode:"82", page:null}]  (단일 회차 전체)
+function _parseEpisodeList(s) {
   const str = String(s ?? "").trim();
-  // "82화 / 82-4" 형식: 화수 + 파일번호(N화 / N-M, 단일 파일)
+  // "N화 / N-M" 형식 → 특정 파일(단일)
   const epFileMatch = str.match(/^(\d+)화\s*\/\s*\d+-(\d+)\s*$/);
-  if (epFileMatch) return { episode: epFileMatch[1], page: epFileMatch[2] };
-  // 하이픈/틸드 범위 표기 → multi
-  if (/[-~]/.test(str) && /\d/.test(str)) return { episode: null, page: null, multi: true };
-  const nums = str.match(/\d+/g) || [];
-  return { episode: nums[0] || null, page: nums[1] || null };
+  if (epFileMatch) return [{ episode: epFileMatch[1], page: epFileMatch[2] }];
+  // 괄호 제거(예: "262-263 (출장편3-4)"), 화 접미사 제거
+  const clean = str.replace(/\([^)]*\)/g, "").replace(/화/g, "").trim();
+  // 쉼표 열거
+  if (/,/.test(clean)) {
+    const eps = clean.split(/,\s*/).map(p => p.match(/(\d+)/)?.[1]).filter(Boolean);
+    if (eps.length) return eps.map(ep => ({ episode: ep, page: null }));
+  }
+  // 범위: "81-83" / "81~83"
+  const rangeMatch = clean.match(/^(\d+)\s*[-~]\s*(\d+)$/);
+  if (rangeMatch) {
+    const from = parseInt(rangeMatch[1], 10), to = parseInt(rangeMatch[2], 10);
+    if (from < to && to - from <= 50) {
+      const result = [];
+      for (let i = from; i <= to; i++) result.push({ episode: String(i), page: null });
+      return result;
+    }
+  }
+  // 단일 숫자
+  const num = clean.match(/^(\d+)$/);
+  if (num) return [{ episode: num[1], page: null }];
+  return [];
+}
+
+// 문의봇 슬랙 메시지 본문에서 회차 문자열 추출
+// "- 회차 : 82화" + "- 파일/페이지 번호 : 82-4" → "82화 / 82-4"
+// "- 회차 : 81-83화" (페이지 없음) → "81-83화"
+function _extractEpisodeFromText(text) {
+  const lines = String(text ?? "").split("\n");
+  const epLine  = lines.find(l => /[·•\-]\s*회차\s*[:：]/.test(l));
+  const pgLine  = lines.find(l => /[·•\-]\s*파일\s*[\/·]\s*페이지\s*(번호\s*)?[:：]/.test(l));
+  const epRaw = epLine?.replace(/.*회차\s*[:：]\s*/i, "").trim();
+  const pgRaw = pgLine?.replace(/.*페이지\s*(번호\s*)?[:：]\s*/i, "").trim();
+  if (!epRaw) return null;
+  if (pgRaw && pgRaw !== "-" && pgRaw !== "") return `${epRaw} / ${pgRaw}`;
+  return epRaw;
 }
 
 let _resupplyCheckAt = 0;
@@ -6012,8 +6048,10 @@ async function checkResupplyWatcher() {
 
 async function _triggerKuaikanReupload({ work, entry, episodePage, apm }) {
   // 알림만 보냄 — 실제 다운로드·업로드는 재상 님이 직접 명령할 때만 실행(propose_original_reupload).
-  const { episode, page } = _parseEpisodePage(episodePage);
-  const epText = [episode && `${episode}화`, page && `${page}페이지`].filter(Boolean).join(" ") || episodePage;
+  const list = _parseEpisodeList(episodePage);
+  const epText = list.length
+    ? list.map(e => [e.episode && `${e.episode}화`, e.page && `${e.page}페이지`].filter(Boolean).join(" ")).join(", ")
+    : episodePage;
   const apmNote = apm ? `\n• 담당 APM: ${apm}` : "";
   await dmOwner(`📥 *재수급 완료 감지 — 콰이칸 이관 필요*\n• 작품: *${work}* (PIVO ${entry.pivo})\n• 회차: ${epText}${apmNote}\n이관이 필요하면 \`propose_original_reupload\`를 실행해주세요.`);
 }
@@ -6046,15 +6084,21 @@ async function _handleResupplyAutoTransfer({ message, client }) {
 
   await updateProgress(`⏳ *${workName}* 원본 자동 이관 준비 중...`);
   try {
-    // 1. 시트 D열에서 화수/페이지 읽기 (resupplyRowIndex = 실제 시트 행 번호)
-    let episodePage = episodeRaw ? `${episodeRaw}화` : "";
+    // 1. 화수 결정: 시트 D열 → 슬랙 본문 → 버튼 메타 순으로 시도
+    let episodePage = "";
     if (resupplyRowIndex) {
       const rows = await readRangeRO(_RS_OPS, `재수급봇!D${resupplyRowIndex}`).catch(() => null);
       const sheetVal = String(rows?.[0]?.[0] ?? "").trim();
       if (sheetVal && sheetVal !== "-") episodePage = sheetVal;
     }
-    const { episode, page } = _parseEpisodePage(episodePage);
-    if (!episode) throw new Error(`화수 파싱 실패: "${episodePage}"`);
+    if (!episodePage) {
+      const fromText = _extractEpisodeFromText(message.text);
+      if (fromText) episodePage = fromText;
+    }
+    if (!episodePage && episodeRaw) episodePage = `${episodeRaw}화`;
+
+    const episodeList = _parseEpisodeList(episodePage);
+    if (!episodeList.length) throw new Error(`화수 파싱 실패: "${episodePage}"`);
 
     // 2. 드라이브 항목 조회
     const entry = await lookupDriveEntryForWork(workName).catch(() => null);
@@ -6071,58 +6115,121 @@ async function _handleResupplyAutoTransfer({ message, client }) {
     if (!hits.length) throw new Error(`Kuaikan "${searchTerm}" 검색 결과 없음`);
     if (hits.length > 1) throw new Error(`Kuaikan 검색 결과 ${hits.length}건 — 특정 불가 (${hits.map(h => h.name).join(", ")})`);
     const rootId = hits[0].id;
-
-    // 4. 파일 탐색
-    const epText0 = [episode && `${episode}화`, page && `${page}페이지`].filter(Boolean).join(" ") || episodePage;
-    await updateProgress(`⏳ *${workName}* ${epText0} — 파일 탐색 중...`);
     const adapter = makeKuaikanAdapter();
-    const found = await resolveEpisodePage(adapter, rootId, episode, page || "1", "psd");
-    if (!found.ok) throw new Error(`파일 탐색 실패: ${found.reason}`);
 
-    // 5. 다운로드
-    await updateProgress(`⏳ *${workName}* ${epText0} — \`${found.name}\` 다운로드 중...`);
-    const dlRes = await fetch(found.url, { signal: AbortSignal.timeout(600000) });
-    if (!dlRes.ok) throw new Error(`Kuaikan 다운로드 실패 (HTTP ${dlRes.status})`);
-    const buffer = Buffer.from(await dlRes.arrayBuffer());
+    // 4. 에피소드별 다운로드 + 업로드 (fileId 수집)
+    const allFileIds = [];
+    const allWarns = [];
+    const uploadedEpisodes = [];   // 소스그룹 확정용
 
-    // 6. PIVO 파일명 결정
-    const existing = await pivoEpisodeSourceFiles(entry.pivo, episode).catch(() => null);
-    const existingFiles = existing?.data?.파일목록 || [];
-    const m = matchByNumber(existingFiles, page || "1", "파일명");
-    const targetName = m.confident ? m.item.파일명 : found.name;
+    for (let idx = 0; idx < episodeList.length; idx++) {
+      const { episode, page } = episodeList[idx];
+      const epLabel = `${episode}화${page ? ` ${page}p` : ""}`;
+      const progress = episodeList.length > 1 ? ` (${idx + 1}/${episodeList.length})` : "";
 
-    // 7. 업로드
-    await updateProgress(`⏳ *${workName}* ${epText0} — ${(buffer.length / (1024 * 1024)).toFixed(1)}MB PIVO ${entry.pivo} 업로드 중...`);
-    const uploadRes = await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
-    const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
+      if (page) {
+        // 특정 파일만 이관
+        await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — 파일 탐색 중...`);
+        const found = await resolveEpisodePage(adapter, rootId, episode, page, "psd");
+        if (!found.ok) { allWarns.push(`⚠️ ${epLabel} 탐색 실패: ${found.reason}`); continue; }
 
-    // 8. 전처리 완료 대기 (최대 10분, 30초 간격)
-    const epText = [episode && `${episode}화`, page && `${page}페이지`].filter(Boolean).join(" ") || episodePage;
-    let preprocessWarn = "";
-    if (fileId) {
-      await updateProgress(`⏳ *${workName}* ${epText} — 전처리 중...`);
-      const maxWait = 10 * 60 * 1000;
-      const start = Date.now();
-      let done = false;
-      while (Date.now() - start < maxWait) {
-        await new Promise(r => setTimeout(r, 30000));
-        const s = await getPreprocessingStatus([fileId]).catch(() => null);
-        if (s?.meta?.오류있음) { preprocessWarn = "\n⚠️ 전처리 오류 발생 — 수동 확인 필요"; break; }
-        if (s?.meta?.전체완료) { done = true; break; }
+        await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — \`${found.name}\` 다운로드 중...`);
+        const dlRes = await fetch(found.url, { signal: AbortSignal.timeout(600000) });
+        if (!dlRes.ok) { allWarns.push(`⚠️ ${epLabel} 다운로드 실패 (HTTP ${dlRes.status})`); continue; }
+        const buffer = Buffer.from(await dlRes.arrayBuffer());
+        if (buffer.length < 100 * 1024) allWarns.push(`⚠️ ${epLabel} \`${found.name}\` 파일 크기 의심스러움 (${(buffer.length/1024).toFixed(0)}KB) — 수동 확인 필요`);
+
+        const existing = await pivoEpisodeSourceFiles(entry.pivo, episode).catch(() => null);
+        const existingFiles = existing?.data?.파일목록 || [];
+        const m = matchByNumber(existingFiles, page, "파일명");
+        const targetName = m.confident ? m.item.파일명 : found.name;
+        if (!m.confident) allWarns.push(`⚠️ ${epLabel} 파일명 매칭 실패 — \`${found.name}\` 그대로 사용`);
+
+        await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — ${(buffer.length/1024/1024).toFixed(1)}MB 업로드 중...`);
+        const uploadRes = await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
+        const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
+        if (fileId) allFileIds.push(fileId);
+        uploadedEpisodes.push(episode);
+      } else {
+        // 에피소드 전체 파일 이관
+        await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — 폴더 탐색 중...`);
+        const epResult = await findEpisodeFolder(adapter.listChildren, isKuaikanDir, rootId, episode, "psd");
+        if (!epResult.ok) { allWarns.push(`⚠️ ${epLabel} 폴더 탐색 실패: ${epResult.reason}`); continue; }
+
+        const allItems = await kuaikanListChildren(epResult.folder.id);
+        const psdFiles = allItems.filter(it => !isKuaikanDir(it) && /\.psd$/i.test(it.name || ""));
+        if (!psdFiles.length) { allWarns.push(`⚠️ ${epLabel} PSD 파일 없음`); continue; }
+
+        const existing = await pivoEpisodeSourceFiles(entry.pivo, episode).catch(() => null);
+        const existingFiles = existing?.data?.파일목록 || [];
+
+        // PIVO 원본 목록과 비교해 누락 파일 감지
+        const uploadedNames = new Set();
+
+        for (const item of psdFiles) {
+          try {
+            const fileInfo = await kuaikanGetDownloadUrl(item.id);
+            await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — \`${fileInfo.name}\` 다운로드 중...`);
+            const dlRes = await fetch(fileInfo.url, { signal: AbortSignal.timeout(600000) });
+            if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`);
+            const buffer = Buffer.from(await dlRes.arrayBuffer());
+            if (buffer.length < 100 * 1024) allWarns.push(`⚠️ ${epLabel} \`${fileInfo.name}\` 파일 크기 의심스러움 (${(buffer.length/1024).toFixed(0)}KB) — 수동 확인 필요`);
+
+            const pageNum = (fileInfo.name.match(/(\d+)/) || [])[1] || "1";
+            const m = matchByNumber(existingFiles, pageNum, "파일명");
+            const targetName = m.confident ? m.item.파일명 : fileInfo.name;
+            if (!m.confident) allWarns.push(`⚠️ ${epLabel} \`${fileInfo.name}\` 파일명 매칭 실패 — 그대로 사용`);
+
+            await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — \`${fileInfo.name}\` ${(buffer.length/1024/1024).toFixed(1)}MB 업로드 중...`);
+            const uploadRes = await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
+            const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
+            if (fileId) allFileIds.push(fileId);
+            uploadedNames.add(targetName);
+          } catch (e) {
+            allWarns.push(`⚠️ ${epLabel} \`${item.name}\` 이관 실패: ${e.message}`);
+          }
+        }
+
+        // PIVO에 있던 파일 중 이번에 이관하지 못한 것 감지
+        const missed = existingFiles.filter(f => f.파일명 && !uploadedNames.has(f.파일명));
+        if (missed.length) allWarns.push(`⚠️ ${epLabel} PIVO 기존 파일 중 이관 누락: ${missed.map(f => `\`${f.파일명}\``).join(", ")}`);
+
+        uploadedEpisodes.push(episode);
       }
-      if (!done && !preprocessWarn) preprocessWarn = "\n⚠️ 전처리 확인 시간 초과 — 수동 확인 필요";
     }
 
-    // 9. 소스그룹 확정
+    if (!uploadedEpisodes.length) throw new Error("이관된 파일 없음");
+
+    // 5. 전처리 완료 대기 (전체 fileId 한 번에)
+    const epSummary = episodeList.map(e => `${e.episode}화${e.page ? ` ${e.page}p` : ""}`).join(", ");
+    let preprocessWarn = "";
+    if (allFileIds.length) {
+      await updateProgress(`⏳ *${workName}* ${epSummary} — 전처리 중... (${allFileIds.length}개 파일)`);
+      const maxWait = 10 * 60 * 1000;
+      const start = Date.now();
+      let ppDone = false;
+      while (Date.now() - start < maxWait) {
+        await new Promise(r => setTimeout(r, 30000));
+        const s = await getPreprocessingStatus(allFileIds).catch(() => null);
+        if (s?.meta?.오류있음) { preprocessWarn = "\n⚠️ 전처리 오류 발생 — 수동 확인 필요"; break; }
+        if (s?.meta?.전체완료) { ppDone = true; break; }
+      }
+      if (!ppDone && !preprocessWarn) preprocessWarn = "\n⚠️ 전처리 확인 시간 초과 — 수동 확인 필요";
+    }
+
+    // 6. 소스그룹 확정 (에피소드 전체 일괄)
     let sgWarn = "";
     if (!preprocessWarn) {
       try {
         const proj = await projectByPivo(entry.pivo).catch(() => null);
         const projectUuid = proj?.data?.[0]?.uuid;
         if (projectUuid) {
-          const sgs = await episodeSourceGroups(projectUuid, episode).catch(() => null);
-          const sgIds = (sgs?.data || []).map(sg => sg.id).filter(Boolean);
-          if (sgIds.length) await completeSourceGroups(sgIds);
+          const allSgIds = [];
+          for (const ep of [...new Set(uploadedEpisodes)]) {
+            const sgs = await episodeSourceGroups(projectUuid, ep).catch(() => null);
+            (sgs?.data || []).forEach(sg => { if (sg.id) allSgIds.push(sg.id); });
+          }
+          if (allSgIds.length) await completeSourceGroups(allSgIds);
         } else {
           sgWarn = "\n⚠️ TOTUS 프로젝트 UUID 조회 실패 — 소스그룹 확정 스킵";
         }
@@ -6131,19 +6238,15 @@ async function _handleResupplyAutoTransfer({ message, client }) {
       }
     }
 
-    // 10. 완료
-    const warnNote = [
-      m.confident ? "" : `⚠️ 파일명 자동 매칭 실패 — Kuaikan 파일명(${found.name}) 그대로 사용`,
-      preprocessWarn.trim(),
-      sgWarn.trim(),
-    ].filter(Boolean).join("\n");
-    await finalize(`✅ 원본 이관 완료 — *${workName}* ${epText} → PIVO ${entry.pivo} (\`${targetName}\`)${warnNote ? "\n" + warnNote : ""}`);
+    // 7. 완료
+    const warnNote = [...allWarns, preprocessWarn.trim(), sgWarn.trim()].filter(Boolean).join("\n");
+    await finalize(`✅ 원본 이관 완료 — *${workName}* ${epSummary} → PIVO ${entry.pivo}${warnNote ? "\n" + warnNote : ""}`);
     if (originalChannelId && originalTs) {
       const mention = apmUserId ? `<@${apmUserId}> ` : ownerUserId ? `<@${ownerUserId}> ` : "";
       await client.chat.postMessage({
         channel: originalChannelId,
         thread_ts: originalTs,
-        text: `${mention}✅ *${workName}* ${epText} 원본 이관 완료됐어요. (PIVO ${entry.pivo})`,
+        text: `${mention}✅ *${workName}* ${epSummary} 원본 이관 완료됐어요. (PIVO ${entry.pivo})`,
         ...SENDER,
       }).catch(() => {});
     }
