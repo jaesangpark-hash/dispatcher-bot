@@ -3707,16 +3707,27 @@ function startSession() {
   });
   (async () => {
     let buf = "";
+    // 이 턴에서 실제로 발동한 도구 이름 — usage.jsonl에 남겨 "무슨 주제의 업무를 했는지" 집계에 쓴다
+    // (토큰·턴수만으론 조회·상담처럼 액션 로그를 안 남기는 대화가 통째로 안 잡힘, 2026-09-04)
+    let turnTools = new Set();
     for await (const m of session) {
       if (m.type === "assistant") {
-        for (const b of m.message?.content || []) if (b.type === "text" && b.text) buf += b.text;
+        for (const b of m.message?.content || []) {
+          if (b.type === "text" && b.text) buf += b.text;
+          else if (b.type === "tool_use" && b.name) turnTools.add(String(b.name).replace(/^mcp__[^_]+__/, ""));
+        }
       } else if (m.type === "result") {
         const ctx = currentTurn?.ctx;            // 지금 처리 중인 그 턴의 자리 (도착순 FIFO 추측 아님)
         const text = (m.result || buf || "(브레인이 빈 응답을 반환했어)").trim();
         buf = "";
         const elapsed = ctx?.startedAt ? ((Date.now() - ctx.startedAt) / 1000).toFixed(1) : "?";
         console.log(`[brain] 응답 완료 (${elapsed}s, ${text.length}자${m.is_error ? ", is_error" : ""})`);
-        logUsage({ kind: "main", user: currentTurn?.user || null, channel: ctx?.channel || null, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, chars: text.length, isError: !!m.is_error, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null, cacheRead: m.usage?.cache_read_input_tokens ?? null, cacheWrite: m.usage?.cache_creation_input_tokens ?? null });
+        // req: 요청 앞부분(주제 파악용, 200자로 자름) / tools: 이 턴에 발동한 도구 — 업무 주제 집계용
+        const reqRaw = typeof currentTurn?.content === "string"
+          ? currentTurn.content
+          : (currentTurn?.content || []).find((b) => b?.type === "text")?.text || "";
+        logUsage({ kind: "main", user: currentTurn?.user || null, channel: ctx?.channel || null, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, chars: text.length, isError: !!m.is_error, req: reqRaw.replace(/\s+/g, " ").trim().slice(0, 200) || null, tools: turnTools.size ? [...turnTools] : null, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null, cacheRead: m.usage?.cache_read_input_tokens ?? null, cacheWrite: m.usage?.cache_creation_input_tokens ?? null });
+        turnTools = new Set();
         if (m.is_error) console.log(`[brain] 에러내용: ${text.slice(0, 200).replace(/\n/g, " ")}`);
         const rlTurn = currentTurn;   // rate-limit 재시도용 캡처
         currentTurn = null;
