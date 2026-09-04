@@ -34,7 +34,7 @@ import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot,
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock } from "./learned.js";
-import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode } from "./schedule.js";
+import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode, deliveryReconcile, dailyCheckList } from "./schedule.js";
 import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText, findUndelivered } from "./deliveryNotice.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
@@ -1428,6 +1428,22 @@ async function checkDeliveryTodayReport() {
       `공통번호: ${r.commonNos.length ? r.commonNos.join(", ") : "없음"}`,
     ];
     if (r.pendingWorks) lines.push(`_※ 납품일만 잡히고 화수 미기재 ${r.pendingWorks}작품은 제외했어요._`);
+    // 납품 데일리 체크 시트(중일_YYYYMMDD 탭)와 대조 — 작품 수·공통번호가 어긋나면 납품 누락 신호.
+    try {
+      const rec = await deliveryReconcile(today);
+      if (rec?.error) lines.push(`\n🔍 데일리 체크 대조 실패: ${rec.error}`);
+      else if (rec.missingTab) lines.push(`\n🔍 데일리 체크 대조: 오늘 탭(\`${rec.tab}\`)이 아직 없어요.`);
+      else if (rec.match) lines.push(`\n🔍 데일리 체크 대조: ✅ 일치 (${rec.daily.works}작품/${rec.daily.episodes}화)`);
+      else {
+        lines.push(`\n🔍 데일리 체크 대조: ⚠️ *불일치* — 데일리 ${rec.daily.works}작품/${rec.daily.episodes}화`);
+        if (rec.onlySchedule.length) lines.push(`· 데일리에 없음(누락 의심): *${rec.onlySchedule.join(", ")}*`);
+        if (rec.onlyDaily.length) lines.push(`· 스케줄에 없음: *${rec.onlyDaily.join(", ")}*`);
+        for (const d of rec.episodeDiff.slice(0, 10)) {
+          lines.push(`· ${d.commonNo} 회차 차이 — 스케줄 ${d.schedule} / 데일리 ${d.daily}`);
+        }
+        if (rec.episodeDiff.length > 10) lines.push(`· … 회차 차이 ${rec.episodeDiff.length - 10}건 더`);
+      }
+    } catch (e) { lines.push(`\n🔍 데일리 체크 대조 오류: ${e?.message ?? e}`); }
     const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID });
     if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: lines.join("\n"), ...SENDER });
     console.log(`[delivery-today] ${md} 리포트 발송 — ${r.works}작품`);
@@ -3177,14 +3193,15 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("query_schedule",
-      "중일 '고객사 스케줄 시트'(내부 납품 시트와 다름) 조회. 블록 구조라 일반 query_sheet/read_tab으로는 안 되고 이 도구로만. mode: 'launch'(특정 회차의 런칭일=주차별 リリース日 + 그 주차 납품예정일. 회차 매칭 기준=話数(런칭 회차). work나 pivo + episode) · 'delivery_check'(★특정 회차가 '납품'으로 스케줄 시트에 기재됐는지 검증 — 기준=納品話数(납품 회차)+納品予定日. 납품 리스트가 시트에 반영됐는지 확인할 때 이걸 써라. work나 pivo + episode. 반환 listedForDelivery=true면 기재됨) · 'delivery_on'(특정 날짜에 납품 예정인 회차 집계, date 필수 예 '6/19') · 'missing'(런칭 임박인데 原本 미수급 회차, monthsAhead 기본1) · 'work'(작품별 주차 스케줄 전체, work 필수). ★블록 제목(正式+仮)으로 직접 매칭하니 일본어 제목만으로도 잘 잡힌다. ★'납품(회차)이 스케줄 시트에 들어갔나/기재됐나' = **반드시 delivery_check**(話数 기준 launch로 판단하면 오답). '○○ N화 런칭일' = launch.",
-      { mode: z.enum(["launch", "delivery_check", "delivery_on", "missing", "work"]).describe("조회 종류"), date: z.string().optional().describe("delivery_on용 날짜 M/D (예 6/19)"), work: z.string().optional().describe("work/launch/delivery_check용 작품명(한/일/중 무엇이든)"), pivo: z.string().optional().describe("PIVO ID(있으면 병행). 작품명 대신/병행 사용"), episode: z.string().optional().describe("launch/delivery_check용 회차 번호(예 '289'). 생략 시 주차 전체 반환"), monthsAhead: z.number().optional().describe("missing용 런칭 임박 개월(기본 1)") },
+      "중일 '고객사 스케줄 시트'(내부 납품 시트와 다름) 조회. 블록 구조라 일반 query_sheet/read_tab으로는 안 되고 이 도구로만. mode: 'launch'(특정 회차의 런칭일=주차별 リリース日 + 그 주차 납품예정일. 회차 매칭 기준=話数(런칭 회차). work나 pivo + episode) · 'delivery_check'(★특정 회차가 '납품'으로 스케줄 시트에 기재됐는지 검증 — 기준=納品話数(납품 회차)+納品予定日. 납품 리스트가 시트에 반영됐는지 확인할 때 이걸 써라. work나 pivo + episode. 반환 listedForDelivery=true면 기재됨) · 'delivery_on'(특정 날짜에 납품 예정인 회차 집계, date 필수 예 '6/19') · 'reconcile'(★그날 납품 리스트 대조 — 고객사 스케줄 시트(예정) vs '납품 데일리 체크' 시트의 중일_YYYYMMDD 탭(실제). date는 YYYY-MM-DD, 생략 시 오늘. match=true면 일치, false면 onlySchedule(데일리에 없음=누락 의심)·onlyDaily(스케줄에 없음)·episodeDiff(회차 차이)를 보고 그 공통번호를 짚어 답해라. 매일 아침 자동 DM에도 같은 대조가 붙는다) · 'missing'(런칭 임박인데 原本 미수급 회차, monthsAhead 기본1) · 'work'(작품별 주차 스케줄 전체, work 필수). ★블록 제목(正式+仮)으로 직접 매칭하니 일본어 제목만으로도 잘 잡힌다. ★'납품(회차)이 스케줄 시트에 들어갔나/기재됐나' = **반드시 delivery_check**(話数 기준 launch로 판단하면 오답). '○○ N화 런칭일' = launch.",
+      { mode: z.enum(["launch", "delivery_check", "delivery_on", "reconcile", "missing", "work"]).describe("조회 종류"), date: z.string().optional().describe("delivery_on용 날짜 M/D (예 6/19), reconcile용 날짜 YYYY-MM-DD(생략 시 오늘)"), work: z.string().optional().describe("work/launch/delivery_check용 작품명(한/일/중 무엇이든)"), pivo: z.string().optional().describe("PIVO ID(있으면 병행). 작품명 대신/병행 사용"), episode: z.string().optional().describe("launch/delivery_check용 회차 번호(예 '289'). 생략 시 주차 전체 반환"), monthsAhead: z.number().optional().describe("missing용 런칭 임박 개월(기본 1)") },
       async ({ mode, date, work, pivo, episode, monthsAhead }) => {
         try {
           let r;
           if (mode === "launch") r = await episodeLaunch({ work, pivo, episode });
           else if (mode === "delivery_check") r = await episodeDelivery({ work, pivo, episode });
           else if (mode === "delivery_on") r = await deliveryOnDate(date);
+          else if (mode === "reconcile") r = await deliveryReconcile(date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : kstDateOf());
           else if (mode === "missing") r = await missingOriginals({ monthsAhead: monthsAhead ?? 1 });
           else if (mode === "work") r = await workSchedule(work);
           else r = { error: "mode는 launch|delivery_check|delivery_on|missing|work 중 하나" };

@@ -252,6 +252,72 @@ export async function deliveryOnDate(dateStr) {
   };
 }
 
+// ── 납품 데일리 체크 시트 대조(2026-09-04) ─────────────────────────
+// 고객사 스케줄 시트(예정)와 별개로, "납품 데일리 체크" 시트엔 매일 `중일_YYYYMMDD` 탭이 생성되며
+// 회차 1건당 1행(E열 共通番号, I열 話数)이다. 두 시트의 작품 수·공통번호가 어긋나면 납품 누락 신호.
+const DAILY_CHECK_ID = "1ruHyVXA8JV84pQ3ZWvQiOwaxLkKjSXz5W5tgXO_QfOE";
+const DAILY_TAB = (dateISO) => `중일_${String(dateISO).replace(/-/g, "")}`;
+
+// 그날 데일리 체크 탭 → { works, commonNos, episodes, byNo:Map(공통번호→Set(화수)) }. 탭이 없으면 { missingTab:true }
+export async function dailyCheckList(dateISO) {
+  const tab = DAILY_TAB(dateISO);
+  let rows;
+  try { rows = (await readRange(DAILY_CHECK_ID, `${tab}!A2:K1000`)) || []; }
+  catch (e) { return { missingTab: true, tab, error: String(e?.message ?? e) }; }
+  const byNo = new Map();
+  for (const r of rows) {
+    const no = String(r?.[4] ?? "").trim();      // E열 共通番号
+    const ep = String(r?.[8] ?? "").trim();      // I열 話数
+    if (!no) continue;
+    if (!byNo.has(no)) byNo.set(no, new Set());
+    if (ep) byNo.get(no).add(ep);
+  }
+  const episodes = [...byNo.values()].reduce((a, s) => a + s.size, 0);
+  return { tab, works: byNo.size, commonNos: [...byNo.keys()], episodes, byNo };
+}
+
+// 스케줄 시트(예정) ↔ 데일리 체크 시트(실제) 대조. dateISO: YYYY-MM-DD
+export async function deliveryReconcile(dateISO) {
+  const d = new Date(`${dateISO}T00:00:00Z`);
+  const md = `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+  const [sched, daily] = await Promise.all([deliveryOnDate(md), dailyCheckList(dateISO)]);
+  if (sched?.error) return { error: sched.error };
+
+  const schedByNo = new Map();
+  for (const it of sched.items) {
+    if (!it.commonNo) continue;
+    schedByNo.set(it.commonNo, new Set(parseEpisodes(it.episodes).map(String)));
+  }
+  if (daily.missingTab) {
+    return {
+      date: dateISO, md, missingTab: true, tab: daily.tab,
+      schedule: { works: schedByNo.size, commonNos: [...schedByNo.keys()], episodes: sched.totalEpisodes },
+      match: false,
+    };
+  }
+
+  const onlySchedule = [...schedByNo.keys()].filter((k) => !daily.byNo.has(k));
+  const onlyDaily = [...daily.byNo.keys()].filter((k) => !schedByNo.has(k));
+  const episodeDiff = [];
+  for (const [no, set] of schedByNo) {
+    const dset = daily.byNo.get(no);
+    if (!dset) continue;
+    const missing = [...set].filter((e) => !dset.has(e));
+    const extra = [...dset].filter((e) => !set.has(e));
+    if (missing.length || extra.length) {
+      episodeDiff.push({ commonNo: no, schedule: [...set].join(","), daily: [...dset].join(","), missing, extra });
+    }
+  }
+  return {
+    date: dateISO, md,
+    schedule: { works: schedByNo.size, commonNos: [...schedByNo.keys()], episodes: sched.totalEpisodes },
+    daily: { works: daily.works, commonNos: daily.commonNos, episodes: daily.episodes, tab: daily.tab },
+    match: !onlySchedule.length && !onlyDaily.length && !episodeDiff.length,
+    onlySchedule, onlyDaily, episodeDiff,
+    schedulePendingWorks: sched.pendingWorks,   // 납품일만 있고 화수 미기재라 비교 대상에서 뺀 건수
+  };
+}
+
 // ★주간 납품 배치 주기(예: "23-24"→2화, "25-26"→2화 = 주2화 납품) — 고객사 스케줄 시트의 週次 納品話数 기준.
 // 원고수급 비고 자동기재(annotateWongoNotes)용. 재상 님 확인(2026-07-16): 배치 주기는 납품일 그룹핑이 아니라
 // 이 시트의 週次 納品話数 칸(예 "23-24"/"25-26" 밑에 적힌 "2") 기준으로 판단해야 함.
