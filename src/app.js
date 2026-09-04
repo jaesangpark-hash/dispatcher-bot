@@ -290,7 +290,7 @@ const DISPATCHER_PROMPT = [
   "- query_sheet 뷰에 없는 탭을 물으면 → read_tab(탭 이름). 시트 실제 헤더가 곧 필드명이라 사용자가 말한 헤더로 바로 거른다. 표 헤더가 중간 행이면 headerRow 지정. 알려진 6개 시트의 어떤 탭이든 조회 가능.",
   "★번역/식자 방침 문의 → translation_guide로 가이드 참조: 작업자 문의(또는 재상 님 질문)가 '번역 방침·표기 규칙·용어·후리가나·기호(가운데점/괄호 등)·식자 표기' 등 **가이드로 판정할 내용**이면, 추측하지 말고 translation_guide(kind:'translation')로 중일 번역 가이드 2종을 읽어 **해당 조항을 인용**해 답하라(가이드에 없으면 '가이드에 명시 없음'이라 하고 임의 규칙을 지어내지 마라). 단순 원문/수치 확인은 여기 해당 없음. ★설정집 작성 가이드(kind:'setjip')는 **재상 님이 '설정집'을 명시적으로 언급**할 때만 조회하고, 작업자 번역 방침 문의엔 쓰지 마라.",
   "- 스레드 찾기('○○ 작품 ~~ 스레드 찾아줘', '○○ 관련 논의 어디 있어', 과거 대화/스레드 내용): find_thread(query=작품명+키워드). 등록된 주요 업무 채널들에서 검색해 매칭 스레드를 찾고, 1개로 분명하면 내용(topContent)까지 와서 요약·답+링크. 여러 개면 후보를 보여주고 어느 건지 되묻거나 키워드를 좁힌다(임의 단정 금지). 사용자가 특정 채널을 말하면 channel 인자로. 특정 스레드/링크를 콕 집으면 read_thread. (등록 채널·봇 멤버 범위 내 — 전역 검색 아님)",
-  "- '고객사 스케줄 시트'(중일, =내부 납품 시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. '○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일=mode:launch(work나 pivo + episode), ★'이 납품(회차)이 스케줄 시트에 기재/반영됐나' 검증=**mode:delivery_check**(納品話数+納品予定日 기준, listedForDelivery로 판단 — 話数(런칭)로 보는 launch로 판단하면 오답이니 절대 launch로 납품 기재 여부를 판정하지 마라), 'N/일 납품 회차 카운트'·'오늘 납품 뭐 있어/납품 대상 알려줘'=mode:delivery_on+date(응답에 works=작품 수, commonNos=공통번호 목록, totalEpisodes=총 회차, pendingWorks=납품일만 잡히고 화수 미기재라 작품 수에서 제외된 건수. 재상 님이 쓰는 리포트 형식은 '작품 수 + 공통번호'라 그 둘을 먼저 답하고 상세는 물으면 준다. 매일 아침 자동 DM도 같은 값으로 나간다), '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. 여러 작품+회차를 한꺼번에 검증하면 각 항목마다 delivery_check를 돌려 결과를 모아 답한다. 블록 제목(正式+仮) 직접매칭이라 일본어 제목만으로도 잘 잡힌다. ID 묻지 말 것(이 도구가 그 시트임).",
+  "- '고객사 납품 시트'(중일 일본어 스케줄 시트, =APM 납품 시트/내부 납품관리시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. '○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일=mode:launch(work나 pivo + episode), ★'이 납품(회차)이 스케줄 시트에 기재/반영됐나' 검증=**mode:delivery_check**(納品話数+納品予定日 기준, listedForDelivery로 판단 — 話数(런칭)로 보는 launch로 판단하면 오답이니 절대 launch로 납품 기재 여부를 판정하지 마라), 'N/일 납품 회차 카운트'·'오늘 납품 뭐 있어/납품 대상 알려줘'=mode:delivery_on+date(응답에 works=작품 수, commonNos=공통번호 목록, totalEpisodes=총 회차, pendingWorks=납품일만 잡히고 화수 미기재라 작품 수에서 제외된 건수. 재상 님이 쓰는 리포트 형식은 '작품 수 + 공통번호'라 그 둘을 먼저 답하고 상세는 물으면 준다. 매일 아침 자동 DM도 같은 값으로 나간다), '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. 여러 작품+회차를 한꺼번에 검증하면 각 항목마다 delivery_check를 돌려 결과를 모아 답한다. 블록 제목(正式+仮) 직접매칭이라 일본어 제목만으로도 잘 잡힌다. ID 묻지 말 것(이 도구가 그 시트임).",
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
   "★채널 사전(2026-08-19 확정 — send_message 등에서 채널을 부를 때 이 이름들이면 재상 님께 ID를 다시 묻지 말고 바로 이 값을 target으로 써라): '재팬_요청'/'요청 채널'/'요청채널' = C09B8QHP7D4. '재팬_작업요청'/'작업요청 채널'/'작업요청채널'/'설정집 채널' = C09AUQN8GEB. '재팬_공지'/'공지 채널'/'공지채널' = C09B8QLR5FG. '리마인더 채널'/'리마인더채널' = C0B73GL3WAJ. '리테이크 채널'/'리테이크 감시 채널' = C09B8QBEC9L. 이 사전에 없는 채널명을 대면 지어내지 말고 '그 채널 ID(또는 링크)를 알려달라'고 되묻는다.",
   "- 학습/교정(영구): 재상 님이 '앞으로 ~로 기억해/외워둬', '이건 이렇게 이해해', 또는 내가 잘못 이해한 걸 바로잡아 주면 → remember(note)로 저장한다(재기동에도 유지, 다음부터 자동 적용). '그 규칙 잊어'=forget, '뭐 배웠어'=list_learned. ★단순 '나중에 ~할 일'은 add_reminder(리마인더), 항구적 동작 규칙·별칭·이해 교정은 remember로 구분. 모호하면 '리마인더로 할까요, 규칙으로 외울까요?' 한 줄 확인.",
@@ -376,7 +376,7 @@ async function wongoPost(dryRun) {
 // ①납품일까지 14일 미만 남으면 "일정 타이트". PIVO+화수로 납품 시트(중일 V5)에서 그 회차들의 가장 이른
 //   납품일을 찾아 계산. 납품일이 아직 시트에 없는 회차(원고가 번역 진행분보다 앞서 있는 경우)는 판단 불가라 스킵.
 // ②①에 해당 안 하면, 그 작품의 납품 주기를 계산해 1·2화는 기본값 취급(라벨 없음), 3화 이상이면 "주{N}화 납품".
-//   ★주기 판단은 고객사 스케줄 시트(deliveryBatchMode, schedule.js)의 週次 納品話数 기준 — 처음엔 내부 납품
+//   ★주기 판단은 고객사 납품 시트(deliveryBatchMode, schedule.js)의 週次 納品話数 기준 — 처음엔 내부 납품
 //   시트(중일 V5)의 납품일 그룹핑으로 계산했는데, 초도(1화 포함) 배치만 있고 아직 週次 데이터가 없는 신작에서
 //   그 초도 배치 크기를 그대로 주기로 오인하는 문제가 있었음(예: 좀비 나이트메어 — 초도 20화 몰아내고 이후
 //   매주 1화씩인데 "주20화"로 잘못 라벨됨, 재상 님 확인 2026-07-16). 스케줄 시트는 이미 週 단위로 나뉘어
@@ -1405,7 +1405,7 @@ async function checkDailyReport() {
 }
 
 // ── 오늘 납품 대상 리포트(2026-09-04) ────────────────────────────
-// 중일 고객사 스케줄 시트의 納品予定日이 오늘인 작품 = 작품 수 + 공통번호만 간단히.
+// 고객사 납품 시트의 納品予定日이 오늘인 작품 = 작품 수 + 공통번호만 간단히.
 // ★納品話数가 빈 칸(휴재·미배정)인 작품은 작품 수에서 빼고 "화수 미기재" 건수로만 알린다(재상 님 기준).
 const DELIVERY_REPORT_HOUR = Number(process.env.DELIVERY_REPORT_HOUR ?? 9);
 async function checkDeliveryTodayReport() {
@@ -1428,22 +1428,22 @@ async function checkDeliveryTodayReport() {
       `공통번호: ${r.commonNos.length ? r.commonNos.join(", ") : "없음"}`,
     ];
     if (r.pendingWorks) lines.push(`_※ 납품일만 잡히고 화수 미기재 ${r.pendingWorks}작품은 제외했어요._`);
-    // 납품 데일리 체크 시트(중일_YYYYMMDD 탭)와 대조 — 작품 수·공통번호가 어긋나면 납품 누락 신호.
+    // APM 납품 시트(중일_YYYYMMDD 탭)와 대조 — 작품 수·공통번호가 어긋나면 납품 누락 신호.
     try {
       const rec = await deliveryReconcile(today);
-      if (rec?.error) lines.push(`\n🔍 데일리 체크 대조 실패: ${rec.error}`);
-      else if (rec.missingTab) lines.push(`\n🔍 데일리 체크 대조: 오늘 탭(\`${rec.tab}\`)이 아직 없어요.`);
-      else if (rec.match) lines.push(`\n🔍 데일리 체크 대조: ✅ 일치 (${rec.daily.works}작품/${rec.daily.episodes}화)`);
+      if (rec?.error) lines.push(`\n🔍 APM 납품 시트 대조 실패: ${rec.error}`);
+      else if (rec.missingTab) lines.push(`\n🔍 APM 납품 시트 대조: 오늘 탭(\`${rec.tab}\`)이 아직 없어요.`);
+      else if (rec.match) lines.push(`\n🔍 APM 납품 시트 대조: ✅ 일치 (${rec.daily.works}작품/${rec.daily.episodes}화)`);
       else {
-        lines.push(`\n🔍 데일리 체크 대조: ⚠️ *불일치* — 데일리 ${rec.daily.works}작품/${rec.daily.episodes}화`);
-        if (rec.onlySchedule.length) lines.push(`· 데일리에 없음(누락 의심): *${rec.onlySchedule.join(", ")}*`);
-        if (rec.onlyDaily.length) lines.push(`· 스케줄에 없음: *${rec.onlyDaily.join(", ")}*`);
+        lines.push(`\n🔍 APM 납품 시트 대조: ⚠️ *불일치* — APM ${rec.daily.works}작품/${rec.daily.episodes}화`);
+        if (rec.onlySchedule.length) lines.push(`· APM 납품 시트에 없음(누락 의심): *${rec.onlySchedule.join(", ")}*`);
+        if (rec.onlyDaily.length) lines.push(`· 고객사 납품 시트에 없음: *${rec.onlyDaily.join(", ")}*`);
         for (const d of rec.episodeDiff.slice(0, 10)) {
-          lines.push(`· ${d.commonNo} 회차 차이 — 스케줄 ${d.schedule} / 데일리 ${d.daily}`);
+          lines.push(`· ${d.commonNo} 회차 차이 — 고객사 ${d.schedule} / APM ${d.daily}`);
         }
         if (rec.episodeDiff.length > 10) lines.push(`· … 회차 차이 ${rec.episodeDiff.length - 10}건 더`);
       }
-    } catch (e) { lines.push(`\n🔍 데일리 체크 대조 오류: ${e?.message ?? e}`); }
+    } catch (e) { lines.push(`\n🔍 APM 납품 시트 대조 오류: ${e?.message ?? e}`); }
     const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID });
     if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: lines.join("\n"), ...SENDER });
     console.log(`[delivery-today] ${md} 리포트 발송 — ${r.works}작품`);
@@ -3193,7 +3193,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("query_schedule",
-      "중일 '고객사 스케줄 시트'(내부 납품 시트와 다름) 조회. 블록 구조라 일반 query_sheet/read_tab으로는 안 되고 이 도구로만. mode: 'launch'(특정 회차의 런칭일=주차별 リリース日 + 그 주차 납품예정일. 회차 매칭 기준=話数(런칭 회차). work나 pivo + episode) · 'delivery_check'(★특정 회차가 '납품'으로 스케줄 시트에 기재됐는지 검증 — 기준=納品話数(납품 회차)+納品予定日. 납품 리스트가 시트에 반영됐는지 확인할 때 이걸 써라. work나 pivo + episode. 반환 listedForDelivery=true면 기재됨) · 'delivery_on'(특정 날짜에 납품 예정인 회차 집계, date 필수 예 '6/19') · 'reconcile'(★그날 납품 리스트 대조 — 고객사 스케줄 시트(예정) vs '납품 데일리 체크' 시트의 중일_YYYYMMDD 탭(실제). date는 YYYY-MM-DD, 생략 시 오늘. match=true면 일치, false면 onlySchedule(데일리에 없음=누락 의심)·onlyDaily(스케줄에 없음)·episodeDiff(회차 차이)를 보고 그 공통번호를 짚어 답해라. 매일 아침 자동 DM에도 같은 대조가 붙는다) · 'missing'(런칭 임박인데 原本 미수급 회차, monthsAhead 기본1) · 'work'(작품별 주차 스케줄 전체, work 필수). ★블록 제목(正式+仮)으로 직접 매칭하니 일본어 제목만으로도 잘 잡힌다. ★'납품(회차)이 스케줄 시트에 들어갔나/기재됐나' = **반드시 delivery_check**(話数 기준 launch로 판단하면 오답). '○○ N화 런칭일' = launch.",
+      "중일 '고객사 납품 시트'(=일본어 스케줄 시트. 재상 님 호칭이 이것이며 APM 납품 시트·내부 납품관리시트와 다름) 조회. 블록 구조라 일반 query_sheet/read_tab으로는 안 되고 이 도구로만. mode: 'launch'(특정 회차의 런칭일=주차별 リリース日 + 그 주차 납품예정일. 회차 매칭 기준=話数(런칭 회차). work나 pivo + episode) · 'delivery_check'(★특정 회차가 '납품'으로 스케줄 시트에 기재됐는지 검증 — 기준=納品話数(납품 회차)+納品予定日. 납품 리스트가 시트에 반영됐는지 확인할 때 이걸 써라. work나 pivo + episode. 반환 listedForDelivery=true면 기재됨) · 'delivery_on'(특정 날짜에 납품 예정인 회차 집계, date 필수 예 '6/19') · 'reconcile'(★그날 납품 리스트 대조 — 고객사 납품 시트(예정) vs APM 납품 시트(스프레드시트 '납품 데일리 체크')의 중일_YYYYMMDD 탭(실제). date는 YYYY-MM-DD, 생략 시 오늘. match=true면 일치, false면 onlySchedule(APM 납품 시트에 없음=누락 의심)·onlyDaily(고객사 납품 시트에 없음)·episodeDiff(회차 차이)를 보고 그 공통번호를 짚어 답해라. 매일 아침 자동 DM에도 같은 대조가 붙는다) · 'missing'(런칭 임박인데 原本 미수급 회차, monthsAhead 기본1) · 'work'(작품별 주차 스케줄 전체, work 필수). ★블록 제목(正式+仮)으로 직접 매칭하니 일본어 제목만으로도 잘 잡힌다. ★'납품(회차)이 스케줄 시트에 들어갔나/기재됐나' = **반드시 delivery_check**(話数 기준 launch로 판단하면 오답). '○○ N화 런칭일' = launch.",
       { mode: z.enum(["launch", "delivery_check", "delivery_on", "reconcile", "missing", "work"]).describe("조회 종류"), date: z.string().optional().describe("delivery_on용 날짜 M/D (예 6/19), reconcile용 날짜 YYYY-MM-DD(생략 시 오늘)"), work: z.string().optional().describe("work/launch/delivery_check용 작품명(한/일/중 무엇이든)"), pivo: z.string().optional().describe("PIVO ID(있으면 병행). 작품명 대신/병행 사용"), episode: z.string().optional().describe("launch/delivery_check용 회차 번호(예 '289'). 생략 시 주차 전체 반환"), monthsAhead: z.number().optional().describe("missing용 런칭 임박 개월(기본 1)") },
       async ({ mode, date, work, pivo, episode, monthsAhead }) => {
         try {

@@ -1,4 +1,4 @@
-// 중일 고객사 스케줄 시트 파서 (read-only).
+// 고객사 납품 시트 파서 (read-only). ※명칭: 스프레드시트 제목은 '중일 고객사 스케쥴 시트'지만 재상 님 호칭은 "고객사 납품 시트"(2026-09-04).
 // 시트 12y4jtsP… 탭 "スケジュールシート" — 블록 구조:
 //   col J(idx9)=행 라벨(リリース日/話数/配信数/原本共有日/納品予定日/納品話数/提案),
 //   C(2)=日本語タイトル, I(8)=原本(수급 현황), H(7)=納品, K+(idx10~)=주차별 데이터(헤더는 1행).
@@ -176,7 +176,7 @@ export async function episodeLaunch({ work, pivo, episode } = {}) {
 }
 
 // ★특정 회차의 '납품 기재 여부' 확인 — 기준 = 納品話数(납품 회차) + 納品予定日.
-// 납품 리스트가 고객사 스케줄 시트에 반영됐는지 검증할 때 쓴다(런칭 회차 話数가 아니라 납품 회차 기준).
+// 납품 리스트가 고객사 납품 시트에 반영됐는지 검증할 때 쓴다(런칭 회차 話数가 아니라 납품 회차 기준).
 export async function episodeDelivery({ work, pivo, episode } = {}) {
   const { block: b, pivo: rp } = await resolveBlock({ work, pivo });
   if (!b) { const key = pivo != null && String(pivo).trim() ? pivo : work; return { found: false, pivo: rp || null, msg: `'${key}'를 스케줄 시트 블록에서 못 찾음(제목 표기나 PIVO ID 확인 필요).` }; }
@@ -252,13 +252,15 @@ export async function deliveryOnDate(dateStr) {
   };
 }
 
-// ── 납품 데일리 체크 시트 대조(2026-09-04) ─────────────────────────
-// 고객사 스케줄 시트(예정)와 별개로, "납품 데일리 체크" 시트엔 매일 `중일_YYYYMMDD` 탭이 생성되며
+// ── APM 납품 시트 대조(2026-09-04) ─────────────────────────────────
+// ★두 시트 호칭(재상 님 기준): 고객사 납품 시트 = 이 파일이 파싱하는 일본어 스케줄 시트(예정),
+//   APM 납품 시트 = 스프레드시트 '납품 데일리 체크'(실제 납품 리스트). 서로 다른 소스라 어긋날 수 있어 매일 대조한다.
+// APM 납품 시트엔 매일 `중일_YYYYMMDD` 탭이 생성되며
 // 회차 1건당 1행(E열 共通番号, I열 話数)이다. 두 시트의 작품 수·공통번호가 어긋나면 납품 누락 신호.
 const DAILY_CHECK_ID = "1ruHyVXA8JV84pQ3ZWvQiOwaxLkKjSXz5W5tgXO_QfOE";
 const DAILY_TAB = (dateISO) => `중일_${String(dateISO).replace(/-/g, "")}`;
 
-// 그날 데일리 체크 탭 → { works, commonNos, episodes, byNo:Map(공통번호→Set(화수)) }. 탭이 없으면 { missingTab:true }
+// 그날 APM 납품 시트 탭 → { works, commonNos, episodes, byNo:Map(공통번호→Set(화수)) }. 탭이 없으면 { missingTab:true }
 export async function dailyCheckList(dateISO) {
   const tab = DAILY_TAB(dateISO);
   let rows;
@@ -276,7 +278,7 @@ export async function dailyCheckList(dateISO) {
   return { tab, works: byNo.size, commonNos: [...byNo.keys()], episodes, byNo };
 }
 
-// 스케줄 시트(예정) ↔ 데일리 체크 시트(실제) 대조. dateISO: YYYY-MM-DD
+// 고객사 납품 시트(예정) ↔ APM 납품 시트(실제) 대조. dateISO: YYYY-MM-DD
 export async function deliveryReconcile(dateISO) {
   const d = new Date(`${dateISO}T00:00:00Z`);
   const md = `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
@@ -318,7 +320,7 @@ export async function deliveryReconcile(dateISO) {
   };
 }
 
-// ★주간 납품 배치 주기(예: "23-24"→2화, "25-26"→2화 = 주2화 납품) — 고객사 스케줄 시트의 週次 納品話数 기준.
+// ★주간 납품 배치 주기(예: "23-24"→2화, "25-26"→2화 = 주2화 납품) — 고객사 납품 시트의 週次 納品話数 기준.
 // 원고수급 비고 자동기재(annotateWongoNotes)용. 재상 님 확인(2026-07-16): 배치 주기는 납품일 그룹핑이 아니라
 // 이 시트의 週次 納品話数 칸(예 "23-24"/"25-26" 밑에 적힌 "2") 기준으로 판단해야 함.
 // 週次 데이터가 이미 週 단위로 나뉘어 있어 날짜 그룹핑 불필요 — 각 週의 회차수(parseEpisodes 길이)로 바로 최빈값 계산.
