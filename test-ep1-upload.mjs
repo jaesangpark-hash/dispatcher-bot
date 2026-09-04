@@ -35,35 +35,58 @@ const existingRes = await pivoEpisodeSourceFiles(PIVO, EPISODE).catch(() => null
 const existingFiles = existingRes?.data?.파일목록 || [];
 console.log(`[4] PIVO 기존 파일 ${existingFiles.length}개\n`);
 
-// 5. 다운로드 + 업로드
+// 파일 다운로드(스트리밍 진행률 표시) → Buffer 반환
+async function downloadWithProgress(item, label, total) {
+  const fileInfo = await kuaikanGetDownloadUrl(item.id);
+  const dlStart = Date.now();
+  const dlRes = await fetch(fileInfo.url, { signal: AbortSignal.timeout(600000) });
+  if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`);
+  const totalBytes = parseInt(dlRes.headers.get("content-length") || "0", 10);
+  const totalMb = totalBytes ? `/${(totalBytes/1024/1024).toFixed(1)}MB` : "";
+  process.stdout.write(`  ⬇ ${label} ${fileInfo.name}  0.0MB${totalMb}`);
+  const reader = dlRes.body.getReader();
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    process.stdout.write(`\r  ⬇ ${label} ${fileInfo.name}  ${(received/1024/1024).toFixed(1)}MB${totalMb}`);
+  }
+  const buffer = Buffer.concat(chunks);
+  const dlSec = ((Date.now() - dlStart) / 1000).toFixed(1);
+  process.stdout.write(`\r  ⬇ ${label} ${fileInfo.name}  ${(buffer.length/1024/1024).toFixed(1)}MB 완료 (${dlSec}s)\n`);
+  return { buffer, fileInfo };
+}
+
+// 5. 파이프라인: 파일 N 업로드하는 동안 파일 N+1 다운로드 동시 진행
 const allFileIds = [];
 let ok = 0, fail = 0;
 const totalStart = Date.now();
 
+// 첫 번째 파일 다운로드 시작
+let nextDl = downloadWithProgress(psdFiles[0], `(1/${psdFiles.length})`, psdFiles.length).catch(e => ({ error: e, item: psdFiles[0] }));
+
 for (let i = 0; i < psdFiles.length; i++) {
-  const item = psdFiles[i];
   const label = `(${i + 1}/${psdFiles.length})`;
+
+  // 다음 파일 다운로드 미리 시작 (현재 파일 업로드와 병렬)
+  const currentDlPromise = nextDl;
+  if (i + 1 < psdFiles.length) {
+    const nextLabel = `(${i + 2}/${psdFiles.length})`;
+    nextDl = downloadWithProgress(psdFiles[i + 1], nextLabel, psdFiles.length).catch(e => ({ error: e, item: psdFiles[i + 1] }));
+  }
+
+  const dlResult = await currentDlPromise;
+  if (dlResult.error) {
+    console.error(`  ❌ ${label} ${psdFiles[i].name} 다운로드 실패: ${dlResult.error.message}\n`);
+    fail++;
+    continue;
+  }
+
+  const { buffer, fileInfo } = dlResult;
   try {
-    const fileInfo = await kuaikanGetDownloadUrl(item.id);
-    const dlStart = Date.now();
-    const dlRes = await fetch(fileInfo.url, { signal: AbortSignal.timeout(600000) });
-    if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`);
-    const totalBytes = parseInt(dlRes.headers.get("content-length") || "0", 10);
-    const totalMb = totalBytes ? `/${(totalBytes/1024/1024).toFixed(1)}MB` : "";
-    process.stdout.write(`  ⬇ ${label} ${fileInfo.name}  0.0MB${totalMb}`);
-    const reader = dlRes.body.getReader();
-    const chunks = [];
-    let received = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.length;
-      process.stdout.write(`\r  ⬇ ${label} ${fileInfo.name}  ${(received/1024/1024).toFixed(1)}MB${totalMb}`);
-    }
-    const buffer = Buffer.concat(chunks);
-    const dlSec = ((Date.now() - dlStart) / 1000).toFixed(1);
-    process.stdout.write(`\r  ⬇ ${label} ${fileInfo.name}  ${(buffer.length/1024/1024).toFixed(1)}MB 완료 (${dlSec}s)\n`);
     if (buffer.length < 100 * 1024) console.warn(`     ⚠️ 파일 크기 의심스러움 (${(buffer.length/1024).toFixed(0)}KB)`);
 
     const pageNum = (fileInfo.name.match(/(\d+)/) || [])[1] || String(i + 1);
@@ -80,7 +103,7 @@ for (let i = 0; i < psdFiles.length; i++) {
     console.log(`  ✅ ${label} 완료 (업로드 ${upSec}s) — fileId: ${fileId ?? "(없음)"}\n`);
     ok++;
   } catch (e) {
-    console.error(`  ❌ ${label} ${item.name} 실패: ${e.message}\n`);
+    console.error(`  ❌ ${label} ${fileInfo.name} 업로드 실패: ${e.message}\n`);
     fail++;
   }
 }
