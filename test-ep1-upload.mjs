@@ -35,57 +35,63 @@ const existingRes = await pivoEpisodeSourceFiles(PIVO, EPISODE).catch(() => null
 const existingFiles = existingRes?.data?.파일목록 || [];
 console.log(`[4] PIVO 기존 파일 ${existingFiles.length}개\n`);
 
-// 파일 다운로드(스트리밍 진행률 표시) → Buffer 반환
-async function downloadWithProgress(item, label, total) {
-  const fileInfo = await kuaikanGetDownloadUrl(item.id);
-  const dlStart = Date.now();
-  const dlRes = await fetch(fileInfo.url, { signal: AbortSignal.timeout(600000) });
-  if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`);
-  const totalBytes = parseInt(dlRes.headers.get("content-length") || "0", 10);
-  const totalMb = totalBytes ? `/${(totalBytes/1024/1024).toFixed(1)}MB` : "";
-  process.stdout.write(`  ⬇ ${label} ${fileInfo.name}  0.0MB${totalMb}`);
-  const reader = dlRes.body.getReader();
-  const chunks = [];
-  let received = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    process.stdout.write(`\r  ⬇ ${label} ${fileInfo.name}  ${(received/1024/1024).toFixed(1)}MB${totalMb}`);
+// 파일 다운로드(스트리밍 진행률 표시, 실패 시 최대 2회 재시도) → Buffer 반환
+async function downloadWithProgress(item, label, maxRetry = 2) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxRetry + 1; attempt++) {
+    if (attempt > 1) process.stdout.write(`\n     ↩️ 재시도 ${attempt - 1}/${maxRetry}...\n`);
+    try {
+      const fileInfo = await kuaikanGetDownloadUrl(item.id);  // 재시도마다 URL 새로 받음
+      const dlStart = Date.now();
+      const dlRes = await fetch(fileInfo.url, { signal: AbortSignal.timeout(600000) });
+      if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`);
+      const totalBytes = parseInt(dlRes.headers.get("content-length") || "0", 10);
+      const totalMb = totalBytes ? `/${(totalBytes/1024/1024).toFixed(1)}MB` : "";
+      process.stdout.write(`  ⬇ ${label} ${fileInfo.name}  0.0MB${totalMb}`);
+      const reader = dlRes.body.getReader();
+      const chunks = [];
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        process.stdout.write(`\r  ⬇ ${label} ${fileInfo.name}  ${(received/1024/1024).toFixed(1)}MB${totalMb}`);
+      }
+      const buffer = Buffer.concat(chunks);
+      const dlSec = ((Date.now() - dlStart) / 1000).toFixed(1);
+      process.stdout.write(`\r  ⬇ ${label} ${fileInfo.name}  ${(buffer.length/1024/1024).toFixed(1)}MB 완료 (${dlSec}s)\n`);
+      return { buffer, fileInfo };
+    } catch (e) {
+      lastErr = e;
+      process.stdout.write(`\r  ⬇ ${label} ${item.name}  실패: ${e.message}\n`);
+    }
   }
-  const buffer = Buffer.concat(chunks);
-  const dlSec = ((Date.now() - dlStart) / 1000).toFixed(1);
-  process.stdout.write(`\r  ⬇ ${label} ${fileInfo.name}  ${(buffer.length/1024/1024).toFixed(1)}MB 완료 (${dlSec}s)\n`);
-  return { buffer, fileInfo };
+  throw lastErr;
 }
 
-// 5. 파이프라인: 파일 N 업로드하는 동안 파일 N+1 다운로드 동시 진행
+// 5. 파이프라인: 파일 N 다운 완료 → 업로드N + 다운N+1 동시 진행
 const allFileIds = [];
 let ok = 0, fail = 0;
 const totalStart = Date.now();
 
-// 첫 번째 파일 다운로드 시작
-let nextDl = downloadWithProgress(psdFiles[0], `(1/${psdFiles.length})`, psdFiles.length).catch(e => ({ error: e, item: psdFiles[0] }));
+// 첫 번째 파일 다운로드(순차 — 아직 업로드할 것 없음)
+let currentDl = await downloadWithProgress(psdFiles[0], `(1/${psdFiles.length})`).catch(e => ({ error: e }));
 
 for (let i = 0; i < psdFiles.length; i++) {
   const label = `(${i + 1}/${psdFiles.length})`;
 
-  // 다음 파일 다운로드 미리 시작 (현재 파일 업로드와 병렬)
-  const currentDlPromise = nextDl;
-  if (i + 1 < psdFiles.length) {
-    const nextLabel = `(${i + 2}/${psdFiles.length})`;
-    nextDl = downloadWithProgress(psdFiles[i + 1], nextLabel, psdFiles.length).catch(e => ({ error: e, item: psdFiles[i + 1] }));
-  }
-
-  const dlResult = await currentDlPromise;
-  if (dlResult.error) {
-    console.error(`  ❌ ${label} ${psdFiles[i].name} 다운로드 실패: ${dlResult.error.message}\n`);
+  if (currentDl.error) {
+    console.error(`  ❌ ${label} ${psdFiles[i].name} 다운로드 실패: ${currentDl.error.message}\n`);
     fail++;
+    // 다음 파일 다운로드(에러 복구)
+    if (i + 1 < psdFiles.length) {
+      currentDl = await downloadWithProgress(psdFiles[i + 1], `(${i + 2}/${psdFiles.length})`).catch(e => ({ error: e }));
+    }
     continue;
   }
 
-  const { buffer, fileInfo } = dlResult;
+  const { buffer, fileInfo } = currentDl;
   try {
     if (buffer.length < 100 * 1024) console.warn(`     ⚠️ 파일 크기 의심스러움 (${(buffer.length/1024).toFixed(0)}KB)`);
 
@@ -94,17 +100,27 @@ for (let i = 0; i < psdFiles.length; i++) {
     const targetName = m.confident ? m.item.파일명 : fileInfo.name;
     if (!m.confident) console.warn(`     ⚠️ 파일명 매칭 실패 — ${fileInfo.name} 그대로 사용`);
 
+    // 업로드 시작 + 동시에 다음 파일 다운로드
     console.log(`  ⬆ ${label} ${targetName} 업로드 중...`);
     const upStart = Date.now();
-    const res = await pivoUploadSourceFile(PIVO, EPISODE, buffer, targetName);
+    const [uploadRes, nextDl] = await Promise.all([
+      pivoUploadSourceFile(PIVO, EPISODE, buffer, targetName),
+      i + 1 < psdFiles.length
+        ? downloadWithProgress(psdFiles[i + 1], `(${i + 2}/${psdFiles.length})`).catch(e => ({ error: e }))
+        : Promise.resolve(null),
+    ]);
     const upSec = ((Date.now() - upStart) / 1000).toFixed(1);
-    const fileId = res?.data?.fileId || res?.data?.파일Id || res?.파일Id;
+    const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
     if (fileId) allFileIds.push(fileId);
     console.log(`  ✅ ${label} 완료 (업로드 ${upSec}s) — fileId: ${fileId ?? "(없음)"}\n`);
     ok++;
+    currentDl = nextDl;
   } catch (e) {
     console.error(`  ❌ ${label} ${fileInfo.name} 업로드 실패: ${e.message}\n`);
     fail++;
+    if (i + 1 < psdFiles.length) {
+      currentDl = await downloadWithProgress(psdFiles[i + 1], `(${i + 2}/${psdFiles.length})`).catch(e => ({ error: e }));
+    }
   }
 }
 
