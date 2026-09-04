@@ -187,20 +187,34 @@ async function _pivoUploadLarge(pid, episode, buffer, fileName) {
   if (!initR.ok) throw new Error(`TOTUS upload-init ${initR.status}: ${initText.slice(0, 500)}`);
   const { data: { fileId, parts } } = JSON.parse(initText);
 
-  // 2. 각 파트를 S3에 직접 PUT (Cloudflare 우회)
+  // 2. 각 파트를 S3에 직접 PUT (Cloudflare 우회, 실패 시 최대 3회 재시도)
   const completedParts = [];
   for (const part of parts) {
     const slice = buffer.slice(part.byteStart, part.byteEnd + 1);
-    const putR = await fetch(part.url, {
-      method: "PUT",
-      headers: { "Content-Length": String(slice.length) },
-      body: slice,
-      signal: AbortSignal.timeout(300000),
-    });
-    if (!putR.ok) throw new Error(`S3 파트 ${part.partNumber} PUT 실패: HTTP ${putR.status}`);
-    const eTag = putR.headers.get("ETag");
-    if (!eTag) throw new Error(`S3 파트 ${part.partNumber} ETag 없음`);
-    completedParts.push({ partNumber: part.partNumber, eTag });
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const putR = await fetch(part.url, {
+          method: "PUT",
+          headers: { "Content-Length": String(slice.length) },
+          body: slice,
+          signal: AbortSignal.timeout(300000),
+        });
+        if (!putR.ok) {
+          const body = await putR.text().catch(() => "");
+          throw new Error(`HTTP ${putR.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+        }
+        const eTag = putR.headers.get("ETag");
+        if (!eTag) throw new Error("ETag 없음");
+        completedParts.push({ partNumber: part.partNumber, eTag });
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (attempt < 3) await new Promise(r => setTimeout(r, 3000 * attempt));
+      }
+    }
+    if (lastErr) throw new Error(`S3 파트 ${part.partNumber} PUT 실패 (3회 시도): ${lastErr.message}`);
   }
 
   // 3. upload-complete
