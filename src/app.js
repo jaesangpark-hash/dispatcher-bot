@@ -6123,6 +6123,14 @@ async function _handleResupplyAutoTransfer({ message, client }) {
     const allFileIds = [];
     const allWarns = [];
     const uploadedEpisodes = [];   // 소스그룹 확정용
+    const completedItems = [];     // 진행상황 누적 표시용
+    const epSummary = episodeList.map(e => `${e.episode}화${e.page ? ` ${e.page}p` : ""}`).join(", ");
+    const buildProgressText = (currentStatus) => {
+      const lines = [`⏳ *${workName}* ${epSummary} 이관 중`];
+      for (const item of completedItems) lines.push(item.ok ? `✅ \`${item.name}\`` : `❌ \`${item.name}\``);
+      if (currentStatus) lines.push(currentStatus);
+      return lines.join("\n");
+    };
 
     for (let idx = 0; idx < episodeList.length; idx++) {
       const { episode, page } = episodeList[idx];
@@ -6131,13 +6139,13 @@ async function _handleResupplyAutoTransfer({ message, client }) {
 
       if (page) {
         // 특정 파일만 이관
-        await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — 파일 탐색 중...`);
+        await updateProgress(buildProgressText(`파일 탐색 중... (${epLabel})`));
         const found = await resolveEpisodePage(adapter, rootId, episode, page, "psd");
-        if (!found.ok) { allWarns.push(`⚠️ ${epLabel} 탐색 실패: ${found.reason}`); continue; }
+        if (!found.ok) { allWarns.push(`⚠️ ${epLabel} 탐색 실패: ${found.reason}`); completedItems.push({ name: epLabel, ok: false }); continue; }
 
-        await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — \`${found.name}\` 다운로드 중...`);
+        await updateProgress(buildProgressText(`\`${found.name}\` 다운로드 중...`));
         const dlRes = await fetch(found.url, { signal: AbortSignal.timeout(600000) });
-        if (!dlRes.ok) { allWarns.push(`⚠️ ${epLabel} 다운로드 실패 (HTTP ${dlRes.status})`); continue; }
+        if (!dlRes.ok) { allWarns.push(`⚠️ ${epLabel} 다운로드 실패 (HTTP ${dlRes.status})`); completedItems.push({ name: found.name, ok: false }); continue; }
         const buffer = Buffer.from(await dlRes.arrayBuffer());
         if (buffer.length < 100 * 1024) allWarns.push(`⚠️ ${epLabel} \`${found.name}\` 파일 크기 의심스러움 (${(buffer.length/1024).toFixed(0)}KB) — 수동 확인 필요`);
 
@@ -6147,10 +6155,11 @@ async function _handleResupplyAutoTransfer({ message, client }) {
         const targetName = m.confident ? m.item.파일명 : found.name;
         if (!m.confident) allWarns.push(`⚠️ ${epLabel} 파일명 매칭 실패 — \`${found.name}\` 그대로 사용`);
 
-        await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — ${(buffer.length/1024/1024).toFixed(1)}MB 업로드 중...`);
+        await updateProgress(buildProgressText(`\`${targetName}\` ${(buffer.length/1024/1024).toFixed(1)}MB 업로드 중...`));
         const uploadRes = await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
         const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
         if (fileId) allFileIds.push(fileId);
+        completedItems.push({ name: targetName, ok: true });
         uploadedEpisodes.push(episode);
       } else {
         // 에피소드 전체 파일 이관
@@ -6171,7 +6180,7 @@ async function _handleResupplyAutoTransfer({ message, client }) {
         for (const item of psdFiles) {
           try {
             const fileInfo = await kuaikanGetDownloadUrl(item.id);
-            await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — \`${fileInfo.name}\` 다운로드 중...`);
+            await updateProgress(buildProgressText(`\`${fileInfo.name}\` 다운로드 중...`));
             const dlRes = await fetch(fileInfo.url, { signal: AbortSignal.timeout(600000) });
             if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`);
             const buffer = Buffer.from(await dlRes.arrayBuffer());
@@ -6182,12 +6191,14 @@ async function _handleResupplyAutoTransfer({ message, client }) {
             const targetName = m.confident ? m.item.파일명 : fileInfo.name;
             if (!m.confident) allWarns.push(`⚠️ ${epLabel} \`${fileInfo.name}\` 파일명 매칭 실패 — 그대로 사용`);
 
-            await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — \`${fileInfo.name}\` ${(buffer.length/1024/1024).toFixed(1)}MB 업로드 중...`);
+            await updateProgress(buildProgressText(`\`${targetName}\` ${(buffer.length/1024/1024).toFixed(1)}MB 업로드 중...`));
             const uploadRes = await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
             const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
             if (fileId) allFileIds.push(fileId);
             uploadedNames.add(targetName);
+            completedItems.push({ name: targetName, ok: true });
           } catch (e) {
+            completedItems.push({ name: item.name, ok: false });
             allWarns.push(`⚠️ ${epLabel} \`${item.name}\` 이관 실패: ${e.message}`);
           }
         }
@@ -6203,10 +6214,9 @@ async function _handleResupplyAutoTransfer({ message, client }) {
     if (!uploadedEpisodes.length) throw new Error("이관된 파일 없음");
 
     // 5. 전처리 완료 대기 (전체 fileId 한 번에)
-    const epSummary = episodeList.map(e => `${e.episode}화${e.page ? ` ${e.page}p` : ""}`).join(", ");
     let preprocessWarn = "";
     if (allFileIds.length) {
-      await updateProgress(`⏳ *${workName}* ${epSummary} — 전처리 중... (${allFileIds.length}개 파일)`);
+      await updateProgress(buildProgressText(`전처리 중... (${allFileIds.length}개 파일)`));
       const maxWait = 10 * 60 * 1000;
       const start = Date.now();
       let ppDone = false;
