@@ -3490,6 +3490,35 @@ const apmTools = createSdkMcpServer({
           return { content: [{ type: "text", text: JSON.stringify(result) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       }),
+    tool("transfer_kuaikan_files",
+      "쿠아이칸(Kuaikan) 원본 파일을 PIVO로 이관한다. '작품명 N화 이관해줘', '1화 3페이지만 이관해줘', '1-3화 전체 올려줘' 등 수동 이관 요청 시 호출. 이관은 백그라운드로 진행되며 이 스레드에 실시간 진행상황을 업데이트한다. 중복 파일(원본+gai 수정본)이 발견되면 중복만 따로 물어보고 나머지는 먼저 이관한다. 누락 의심(PIVO 파일 수 < Kuaikan 파일 수) 및 깨짐 의심(100KB 미만)은 완료 메시지에 경고로 포함된다.",
+      {
+        workName: z.string().describe("작품 한국어 이름"),
+        episodes: z.string().describe("회차. 단일: '1' / 범위: '1-3' / 복수: '1,2,3'. '화' 포함 가능 예: '1화', '1-3화'"),
+        fileNames: z.array(z.string()).optional().describe("특정 파일명 지정 시 사용. 예: ['14-5.psd', '14-8.psd']. 지정하면 pageFrom/pageTo 무시"),
+        pageFrom: z.number().optional().describe("이관 시작 페이지 위치(1-indexed, 정렬 후 순서 기준). fileNames 없을 때만 사용"),
+        pageTo: z.number().optional().describe("이관 끝 페이지 위치(포함). 생략 시 pageFrom과 동일(단일 페이지)"),
+      },
+      async ({ workName, episodes, fileNames, pageFrom, pageTo }) => {
+        try {
+          const ctx = currentCtx;
+          if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "컨텍스트 없음" }) }] };
+          const episodeList = _parseEpisodeList(episodes);
+          if (!episodeList.length) return { content: [{ type: "text", text: JSON.stringify({ error: `회차 파싱 실패: "${episodes}"` }) }] };
+          _handleManualTransferCommand({
+            workName, episodeList,
+            fileNames: fileNames ?? null,
+            pageFrom: pageFrom ?? null,
+            pageTo: pageTo ?? null,
+            channel: ctx.channel,
+            ts: ctx.ts,
+            threadTs: ctx.ts,
+            client: ctx.client,
+          }).catch(e => console.error("[transfer_kuaikan_files] 오류:", e?.message ?? e));
+          return { content: [{ type: "text", text: JSON.stringify({ started: true, note: "이 스레드에 진행상황 실시간 업데이트" }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: false } }),
   ],
 });
 
@@ -4212,12 +4241,8 @@ app.message(async ({ message, say, client }) => {
   if (message.channel_type !== "im") return;           // DM만 (채널 노이즈 차단)
   // 파일 첨부 메시지는 subtype="file_share"라 통과시켜야 함(설정집 업로드 등). 편집·삭제·봇 메시지만 무시.
   if ((message.subtype && message.subtype !== "file_share") || message.bot_id) return;
-  // 수동 이관 명령어
-  if (message.text) {
-    if (message.thread_ts && await _handleManualTransferDuplicateReply({ text: message.text, channel: message.channel, threadTs: message.thread_ts, client })) return;
-    const manualCmd = _parseManualTransferCommand(message.text);
-    if (manualCmd) { _handleManualTransferCommand({ ...manualCmd, channel: message.channel, ts: message.ts, threadTs: message.thread_ts, client }).catch(e => console.error("[manual-transfer] 오류:", e?.message ?? e)); return; }
-  }
+  // 중복 파일 답장 처리 (이관 대기 중 스레드에서 어떤 파일을 쓸지 답할 때)
+  if (message.text && message.thread_ts && await _handleManualTransferDuplicateReply({ text: message.text, channel: message.channel, threadTs: message.thread_ts, client })) return;
   await handle({
     text: message.text, channel: message.channel, ts: message.ts,
     threadTs: message.thread_ts || message.ts, inThread: Boolean(message.thread_ts),
@@ -4232,12 +4257,8 @@ app.event("app_mention", async ({ event, say, client }) => {
   //  app_mention을 그대로 쏜다 — message 리스너들의 bot_id 필터가 여기엔 없어서 자기 메시지를
   //  새 사용자 요청으로 착각해 처리(앵무새처럼 그대로 반복)하는 사고가 있었음.
   if (event.bot_id || (SELF_BOT_USER && event.user === SELF_BOT_USER)) return;
-  // 수동 이관 명령어 (@멘션 포함)
-  if (event.text) {
-    if (event.thread_ts && await _handleManualTransferDuplicateReply({ text: event.text, channel: event.channel, threadTs: event.thread_ts, client })) return;
-    const manualCmd = _parseManualTransferCommand(event.text);
-    if (manualCmd) { _handleManualTransferCommand({ ...manualCmd, channel: event.channel, ts: event.ts, threadTs: event.thread_ts, client }).catch(e => console.error("[manual-transfer] 오류:", e?.message ?? e)); return; }
-  }
+  // 중복 파일 답장 처리
+  if (event.text && event.thread_ts && await _handleManualTransferDuplicateReply({ text: event.text, channel: event.channel, threadTs: event.thread_ts, client })) return;
   await handle({
     text: event.text, channel: event.channel, ts: event.ts,
     threadTs: event.thread_ts || event.ts, inThread: Boolean(event.thread_ts),
@@ -6313,7 +6334,7 @@ function _resolveFileList(items) {
 // "작품명 N화 [M페이지] 이관해줘" 파싱
 function _parseManualTransferCommand(text) {
   const t = String(text || "").replace(/<[^>]+>/g, "").trim();
-  const m = t.match(/^(.+?)\s+(\d+(?:[-~]\d+)?화)\s*(?:(\d+)(?:[-~](\d+))?페이지)?\s*이관/);
+  const m = t.match(/^(.+?)\s+(\d+(?:[-~]\d+)?화)\s*(?:(\d+)(?:[-~](\d+))?페이지)?\s*만?\s*이관/);
   if (!m) return null;
   const [, rawWork, epRaw, pageFrom, pageTo] = m;
   const workName = rawWork.trim();
@@ -6327,7 +6348,7 @@ function _parseManualTransferCommand(text) {
   };
 }
 
-async function _handleManualTransferCommand({ workName, episodeList, pageFrom, pageTo, channel, ts, threadTs, client }) {
+async function _handleManualTransferCommand({ workName, episodeList, pageFrom, pageTo, fileNames, channel, ts, threadTs, client }) {
   const replyTs = threadTs || ts;
   let progressTs = null;
   const completedItems = [];
@@ -6377,9 +6398,23 @@ async function _handleManualTransferCommand({ workName, episodeList, pageFrom, p
       const psdItems = allItems.filter(it => !isKuaikanDir(it) && /\.psd$/i.test(it.name || ""));
       const { mainFiles, duplicatePairs } = _resolveFileList(psdItems);
 
-      // 페이지 범위 적용 (1-indexed 위치 기준)
+      // 파일 범위 적용: fileNames 우선, 없으면 pageFrom/pageTo 위치 기준
       let filesToTransfer = mainFiles;
-      if (pageFrom !== null) {
+      if (fileNames && fileNames.length) {
+        const normNames = new Set(fileNames.map(n => n.toLowerCase().trim()));
+        filesToTransfer = mainFiles.filter(f => {
+          const name = (f.name || "").toLowerCase();
+          if (normNames.has(name)) return true;
+          // 확장자 제거 비교 (14-5.psd vs 14-5)
+          const noExt = name.replace(/\.[^.]+$/, "");
+          if (normNames.has(noExt)) return true;
+          // 파일명에서 숫자 추출해 비교 (14-5.psd → "5")
+          const num = (name.match(/[-_](\d+)\.[^.]+$/) || [])[1];
+          if (num) return normNames.has(num) || fileNames.some(fn => (fn.match(/[-_](\d+)\.[^.]+$/) || fn.match(/^(\d+)$/) || [])[1] === num);
+          return false;
+        });
+        if (!filesToTransfer.length) allWarns.push(`⚠️ ${episode}화 지정 파일명 매칭 실패: ${fileNames.join(", ")}`);
+      } else if (pageFrom !== null) {
         filesToTransfer = mainFiles.slice(pageFrom - 1, pageTo ?? pageFrom);
       }
 
