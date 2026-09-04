@@ -141,6 +141,10 @@ export const reorderFiles = (sources) =>
 export const completeSourceGroups = (sourceGroupIds) =>
   sendJSON("POST", `/source-groups/complete`, { sourceGroupIds }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
 
+// 파일별 전처리 상태 조회. fileIds: string[] → meta.전체완료:bool, meta.오류있음:bool
+export const getPreprocessingStatus = (fileIds) =>
+  getJSON(`/files/preprocessing-status`, { fileIds: Array.isArray(fileIds) ? fileIds.join(",") : fileIds });
+
 // ── 재수급 원본 → PIVO 업로드(2026-08-23) ────────────────────────
 // PIVO 작품 회차의 원본(작업용) 파일 목록. read-only(PIVO GraphQL Directory query만, 부작용 없음).
 // 응답: { data: { pid, episode, 작품명, 원제, 회차폴더, 파일목록:[{fileId,파일명,크기}] } } (실측, PV-212305/1화)

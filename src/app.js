@@ -24,7 +24,7 @@ import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { quotationByPivo, findProject, projectByPivo, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, episodeSourceGroups, reorderFiles, completeSourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl, pivoEpisodeSourceFiles, pivoUploadSourceFile, setupReferenceFiles, downloadReferenceFile } from "./totus.js";
+import { quotationByPivo, findProject, projectByPivo, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, episodeSourceGroups, reorderFiles, completeSourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl, pivoEpisodeSourceFiles, pivoUploadSourceFile, getPreprocessingStatus, setupReferenceFiles, downloadReferenceFile } from "./totus.js";
 import { patchMinRowHeight } from "./xlsxRowHeight.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
@@ -6072,12 +6072,51 @@ async function _handleResupplyAutoTransfer({ message, client }) {
 
     // 7. 업로드
     await updateProgress(`⏳ *${workName}* ${epText0} — ${(buffer.length / (1024 * 1024)).toFixed(1)}MB PIVO ${entry.pivo} 업로드 중...`);
-    await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
+    const uploadRes = await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
+    const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
 
-    // 8. 완료: 진행 메시지 삭제 후 최종 메시지 신규 전송
+    // 8. 전처리 완료 대기 (최대 10분, 30초 간격)
     const epText = [episode && `${episode}화`, page && `${page}페이지`].filter(Boolean).join(" ") || episodePage;
-    const warnNote = m.confident ? "" : `\n⚠️ 파일명 자동 매칭 실패 — Kuaikan 파일명(${found.name}) 그대로 사용`;
-    await finalize(`✅ 원본 이관 완료 — *${workName}* ${epText} → PIVO ${entry.pivo} (\`${targetName}\`)${warnNote}`);
+    let preprocessWarn = "";
+    if (fileId) {
+      await updateProgress(`⏳ *${workName}* ${epText} — 전처리 중...`);
+      const maxWait = 10 * 60 * 1000;
+      const start = Date.now();
+      let done = false;
+      while (Date.now() - start < maxWait) {
+        await new Promise(r => setTimeout(r, 30000));
+        const s = await getPreprocessingStatus([fileId]).catch(() => null);
+        if (s?.meta?.오류있음) { preprocessWarn = "\n⚠️ 전처리 오류 발생 — 수동 확인 필요"; break; }
+        if (s?.meta?.전체완료) { done = true; break; }
+      }
+      if (!done && !preprocessWarn) preprocessWarn = "\n⚠️ 전처리 확인 시간 초과 — 수동 확인 필요";
+    }
+
+    // 9. 소스그룹 확정
+    let sgWarn = "";
+    if (!preprocessWarn) {
+      try {
+        const proj = await projectByPivo(entry.pivo).catch(() => null);
+        const projectUuid = proj?.data?.[0]?.uuid;
+        if (projectUuid) {
+          const sgs = await episodeSourceGroups(projectUuid, episode).catch(() => null);
+          const sgIds = (sgs?.data || []).map(sg => sg.id).filter(Boolean);
+          if (sgIds.length) await completeSourceGroups(sgIds);
+        } else {
+          sgWarn = "\n⚠️ TOTUS 프로젝트 UUID 조회 실패 — 소스그룹 확정 스킵";
+        }
+      } catch (e) {
+        sgWarn = `\n⚠️ 소스그룹 확정 실패: ${e.message}`;
+      }
+    }
+
+    // 10. 완료
+    const warnNote = [
+      m.confident ? "" : `⚠️ 파일명 자동 매칭 실패 — Kuaikan 파일명(${found.name}) 그대로 사용`,
+      preprocessWarn.trim(),
+      sgWarn.trim(),
+    ].filter(Boolean).join("\n");
+    await finalize(`✅ 원본 이관 완료 — *${workName}* ${epText} → PIVO ${entry.pivo} (\`${targetName}\`)${warnNote ? "\n" + warnNote : ""}`);
     if (originalChannelId && originalTs) {
       const mention = apmUserId ? `<@${apmUserId}> ` : ownerUserId ? `<@${ownerUserId}> ` : "";
       await client.chat.postMessage({
