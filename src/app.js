@@ -3618,7 +3618,7 @@ const apmTools = createSdkMcpServer({
         workName: z.string().describe("작품 한국어 이름. pivoId+originalTitleCH를 직접 주면 생략 가능(빈 문자열 '')"),
         episodes: z.string().describe("회차. 단일: '1' / 범위: '1-3' / 복수: '1,2,3'. '화' 포함 가능 예: '1화', '1-3화'"),
         pivoId: z.string().optional().describe("PIVO PID(숫자 문자열). 제공 시 드라이브 시트 조회 없이 바로 업로드"),
-        originalTitleCH: z.string().optional().describe("Kuaikan 검색에 쓸 중국어 원제. pivoId와 함께 쓸 것"),
+        originalTitleCH: z.string().optional().describe("Kuaikan 드라이브 검색에만 쓰는 중국어 원제. PIVO에 등록된 일본어 제목과 달라도 정상 — 같은 작품을 시스템마다 다른 언어로 부르는 것이므로 제목 불일치 경고를 내지 말 것. pivoId와 함께 쓸 것"),
         skipPreprocessing: z.boolean().optional().describe("true면 전처리 완료 대기를 건너뜀(부분 이관·테스트 시). 기본값 false(전처리 대기)"),
         fileNames: z.array(z.string()).optional().describe("특정 파일명 지정 시 사용. 예: ['14-5.psd', '14-8.psd']. 지정하면 pageFrom/pageTo 무시"),
         pageFrom: z.number().optional().describe("이관 시작 페이지 위치(1-indexed, 정렬 후 순서 기준). fileNames 없을 때만 사용"),
