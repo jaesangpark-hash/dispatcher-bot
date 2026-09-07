@@ -6582,8 +6582,9 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
     }
   };
   const finalize = async (text) => {
-    if (progressTs) await client.chat.delete({ channel, ts: progressTs }).catch(() => {});
-    await client.chat.postMessage({ channel, thread_ts: replyTs, text, ...SENDER }).catch(() => {});
+    if (progressTs) await client.chat.delete({ channel, ts: progressTs }).catch(e => console.error("[finalize] 진행 메시지 삭제 실패:", e?.message));
+    const r = await client.chat.postMessage({ channel, thread_ts: replyTs, text, ...SENDER }).catch(e => { console.error("[finalize] 완료 메시지 전송 실패:", e?.message, { channel, replyTs }); return null; });
+    if (!r?.ok) console.error("[finalize] postMessage 응답 실패:", JSON.stringify(r)?.slice(0, 200));
   };
 
   try {
@@ -6668,17 +6669,30 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
           const { buffer, fileInfo } = await _downloadKuaikanBuffer(item.id);
           if (buffer.length < 100 * 1024) allWarns.push(`⚠️ ${episode}화 \`${fileInfo.name}\` 깨짐 의심 (${(buffer.length / 1024).toFixed(0)}KB)`);
 
-          const pageNum = (fileInfo.name.match(/(\d+)/) || [])[1] || "1";
+          const pageNum = _extractPageNum(fileInfo.name) ?? ((fileInfo.name.match(/(\d+)/) || [])[1] || "1");
           const mm = matchByNumber(pivoFiles, pageNum, "파일명");
           const targetName = mm.confident ? mm.item.파일명 : fileInfo.name;
+          if (!mm.confident && pivoFiles.length) console.log(`[transfer] 파일명 매칭 미확정 (pageNum=${pageNum}, file=${fileInfo.name}) — Kuaikan 이름 그대로 사용`);
           await updateProgress(buildProgressText(`\`${targetName}\` 업로드 중...`));
           const uploadRes = await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
           const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
+          console.log(`[transfer] 업로드 완료: ${targetName} — fileId: ${fileId ?? "(없음)"}, 응답키: ${Object.keys(uploadRes?.data || uploadRes || {}).join(",")}`);
           if (fileId) allFileIds.push(fileId);
           completedItems.push({ name: targetName, ok: true });
         } catch (e) {
           completedItems.push({ name: item.name, ok: false });
           allWarns.push(`⚠️ ${episode}화 \`${item.name}\` 이관 실패: ${e.message}`);
+        }
+      }
+
+      // 업로드 후 PIVO 파일 수 재조회 — 중복 생성 여부 감지
+      if (filesToTransfer.length) {
+        const afterRes = await pivoEpisodeSourceFiles(entry.pivo, episode).catch(() => null);
+        const afterFiles = afterRes?.data?.파일목록 || [];
+        const maxExpected = pivoFiles.length + filesToTransfer.length;
+        console.log(`[transfer] ${episode}화 업로드 후 PIVO 파일수: ${afterFiles.length} (이전: ${pivoFiles.length}, 이관: ${filesToTransfer.length}개)`);
+        if (afterFiles.length > maxExpected) {
+          allWarns.push(`⚠️ ${episode}화 중복 파일 생성 의심: PIVO ${afterFiles.length}개 (이전 ${pivoFiles.length}개 + 이관 ${filesToTransfer.length}개 = 예상 최대 ${maxExpected}개)`);
         }
       }
 
@@ -6697,16 +6711,21 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
     // 전처리 대기 (skipPreprocessing이 아니고 업로드된 파일이 있을 때만)
     if (!skipPreprocessing && allFileIds.length) {
       await updateProgress(buildProgressText("⏳ 전처리 대기 중..."));
+      console.log(`[transfer] 전처리 대기 시작: fileIds=${allFileIds.join(",")}`);
       const maxWait = 10 * 60 * 1000;
       const ppStart = Date.now();
       let ppDone = false;
       while (Date.now() - ppStart < maxWait) {
-        const s = await getPreprocessingStatus(allFileIds).catch(() => null);
+        const s = await getPreprocessingStatus(allFileIds).catch(e => { console.error("[transfer] 전처리 상태 조회 실패:", e?.message); return null; });
+        console.log(`[transfer] 전처리 상태:`, JSON.stringify(s?.meta));
         if (s?.meta?.오류있음) { allWarns.push("⚠️ 전처리 오류 발생"); break; }
         if (s?.meta?.전체완료) { ppDone = true; break; }
         await new Promise(r => setTimeout(r, 30000));
       }
       if (!ppDone && !allWarns.some(w => w.includes("전처리"))) allWarns.push("⚠️ 전처리 시간 초과 (10분)");
+      console.log(`[transfer] 전처리 결과: ppDone=${ppDone}`);
+    } else {
+      console.log(`[transfer] 전처리 스킵: skipPreprocessing=${skipPreprocessing}, allFileIds.length=${allFileIds.length}`);
     }
 
     const summary = completedItems.map(i => i.ok ? `✅ \`${i.name}\`` : `❌ \`${i.name}\``).join("\n");
