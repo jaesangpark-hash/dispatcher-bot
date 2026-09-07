@@ -6489,6 +6489,35 @@ function _resolveFileList(items) {
   return { mainFiles: sorted.filter(f => !dupSet.has(f.name)), duplicatePairs };
 }
 
+// 파일명에서 페이지 번호(마지막 숫자) 추출. "57-2.psd" → 2, "42_003（上）.psd" → 3
+function _extractPageNum(name) {
+  const m = (name || "").match(/(\d+)[^0-9]*\.[^.]+$/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// 정렬된 파일 목록에서 번호 갭(누락 의심) 찾기. 중복(上/下)은 같은 번호로 처리해 오탐 방지.
+function _checkSequenceGaps(files, episode) {
+  const nums = [...new Set(
+    files.map(f => _extractPageNum(f.name)).filter(n => n !== null)
+  )].sort((a, b) => a - b);
+  if (nums.length < 2) return [];
+
+  const warns = [];
+  // 1번부터 시작 안 하면 앞쪽 누락 의심
+  if (nums[0] > 1) {
+    const missing = Array.from({ length: nums[0] - 1 }, (_, i) => `${episode}-${i + 1}.psd`);
+    warns.push(`⚠️ ${episode}화 앞쪽 누락 의심: ${missing.join(", ")} 없음 (${episode}-${nums[0]}부터 시작)`);
+  }
+  // 중간 갭
+  for (let i = 1; i < nums.length; i++) {
+    if (nums[i] - nums[i - 1] > 1) {
+      const missing = Array.from({ length: nums[i] - nums[i - 1] - 1 }, (_, k) => `${episode}-${nums[i - 1] + k + 1}.psd`);
+      warns.push(`⚠️ ${episode}화 중간 누락 의심: ${missing.join(", ")} 없음 (${episode}-${nums[i - 1]} 다음 ${episode}-${nums[i]})`);
+    }
+  }
+  return warns;
+}
+
 // "작품명 N화 [M페이지] 이관해줘" 파싱
 function _parseManualTransferCommand(text) {
   const t = String(text || "").replace(/<[^>]+>/g, "").trim();
@@ -6562,6 +6591,9 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
       const allItems = await kuaikanListChildren(epResult.folder.id);
       const psdItems = allItems.filter(it => !isKuaikanDir(it) && /\.psd$/i.test(it.name || ""));
       const { mainFiles, duplicatePairs } = _resolveFileList(psdItems);
+
+      // 시퀀스 갭 체크 — 전체 파일 대상(범위 지정 전)으로 누락 의심 탐지
+      for (const w of _checkSequenceGaps(mainFiles, episode)) allWarns.push(w);
 
       // 파일 범위 적용: fileNames 우선, 없으면 pageFrom/pageTo 위치 기준
       let filesToTransfer = mainFiles;
