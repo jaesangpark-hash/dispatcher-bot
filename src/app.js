@@ -6512,10 +6512,11 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
   const completedItems = [];
   const allWarns = [];
   const allFileIds = [];
+  const displayName = workName || originalTitleCH || `PIVO ${pivoId}`;
   const epSummary = episodeList.map(e => `${e.episode}화`).join(", ");
 
   const buildProgressText = (currentStatus) => {
-    const lines = [`⏳ *${workName}* ${epSummary} 이관 중`];
+    const lines = [`⏳ *${displayName}* ${epSummary} 이관 중`];
     for (const item of completedItems) lines.push(item.ok ? `✅ \`${item.name}\`` : `❌ \`${item.name}\``);
     if (currentStatus) lines.push(currentStatus);
     return lines.join("\n");
@@ -6641,9 +6642,9 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
 
     const summary = completedItems.map(i => i.ok ? `✅ \`${i.name}\`` : `❌ \`${i.name}\``).join("\n");
     const warnNote = allWarns.join("\n");
-    await finalize(`✅ *${workName}* ${epSummary} 이관 완료\n${summary}${warnNote ? "\n\n" + warnNote : ""}`);
+    await finalize(`✅ *${displayName}* ${epSummary} 이관 완료\n${summary}${warnNote ? "\n\n" + warnNote : ""}`);
   } catch (e) {
-    await finalize(`❌ *${workName}* 이관 실패: ${e.message}`);
+    await finalize(`❌ *${displayName}* 이관 실패: ${e.message}`);
   }
 }
 
