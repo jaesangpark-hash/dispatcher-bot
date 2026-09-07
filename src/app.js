@@ -6471,6 +6471,29 @@ function _getGaiBaseName(name) {
   return name.replace(/-gai(\.[^.]+)$/i, "$1").replace(/（改）/g, "").replace(/改/g, "").trim();
 }
 
+// Kuaikan 파일 다운로드 + 재시도. URL 만료 대비해 시도마다 URL 재발급.
+// AbortController로 fetch + arrayBuffer 전체에 타임아웃 적용.
+async function _downloadKuaikanBuffer(itemId, { timeoutMs = 180000, maxRetry = 2 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetry; attempt++) {
+    const fileInfo = await kuaikanGetDownloadUrl(itemId);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new Error(`다운로드 타임아웃 (${timeoutMs / 1000}s)`)), timeoutMs);
+    try {
+      const res = await fetch(fileInfo.url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buffer = Buffer.from(await res.arrayBuffer());
+      clearTimeout(timer);
+      return { buffer, fileInfo };
+    } catch (e) {
+      clearTimeout(timer);
+      lastErr = e;
+      if (attempt < maxRetry) await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+  throw lastErr;
+}
+
 // 파일 목록 정렬 + gai 중복 쌍 탐지. 중복이 아닌 파일만 mainFiles에 담김.
 function _resolveFileList(items) {
   const sorted = [...items].sort(_mtNaturalSort);
@@ -6641,11 +6664,8 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
 
       for (const item of filesToTransfer) {
         try {
-          const fileInfo = await kuaikanGetDownloadUrl(item.id);
-          await updateProgress(buildProgressText(`\`${fileInfo.name}\` 다운로드 중...`));
-          const dlRes = await fetch(fileInfo.url, { signal: AbortSignal.timeout(600000) });
-          if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`);
-          const buffer = Buffer.from(await dlRes.arrayBuffer());
+          await updateProgress(buildProgressText(`\`${item.name}\` 다운로드 중...`));
+          const { buffer, fileInfo } = await _downloadKuaikanBuffer(item.id);
           if (buffer.length < 100 * 1024) allWarns.push(`⚠️ ${episode}화 \`${fileInfo.name}\` 깨짐 의심 (${(buffer.length / 1024).toFixed(0)}KB)`);
 
           const pageNum = (fileInfo.name.match(/(\d+)/) || [])[1] || "1";
@@ -6715,10 +6735,7 @@ async function _handleManualTransferDuplicateReply({ text, channel, threadTs, cl
 
   for (const { episode, chosenFile, pivoFiles } of resolved) {
     try {
-      const fileInfo = await kuaikanGetDownloadUrl(chosenFile.id);
-      const dlRes = await fetch(fileInfo.url, { signal: AbortSignal.timeout(600000) });
-      if (!dlRes.ok) throw new Error(`HTTP ${dlRes.status}`);
-      const buffer = Buffer.from(await dlRes.arrayBuffer());
+      const { buffer, fileInfo } = await _downloadKuaikanBuffer(chosenFile.id);
       const pageNum = (fileInfo.name.match(/(\d+)/) || [])[1] || "1";
       const mm = matchByNumber(pivoFiles, pageNum, "파일명");
       const targetName = mm.confident ? mm.item.파일명 : fileInfo.name;
