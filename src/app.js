@@ -1451,7 +1451,8 @@ function buildCollabDigest(since, until) {
     e.turns++;
     if (u.req) e.subjects.push(String(u.req).slice(0, 70));
     // res가 있는 턴 = 조언·상담으로 판정된 것(단순 조회·실행은 애초에 안 남김)
-    if (u.res) e.consults.push({ q: String(u.req || "(요청 미기록)").slice(0, 70), a: String(u.res).slice(0, 220) });
+    // 상담은 보통 여러 턴이라 채널+th(스레드)로 묶어서 하나의 대화로 본다
+    if (u.res) e.consults.push({ th: `${u.channel || "?"}_${u.th || "?"}`, at: u.at || "", q: String(u.req || "(요청 미기록)").slice(0, 70), a: String(u.res).slice(0, 220) });
     for (const t of u.tools || []) e.tools.set(t, (e.tools.get(t) || 0) + 1);
   }
 
@@ -1482,9 +1483,24 @@ function buildCollabDigest(since, until) {
       }
       // 조언·상담으로 판정된 턴만 답변 요약을 함께 보여준다(단순 조회·실행은 답변을 아예 안 남김)
       if (e.consults.length) {
-        out.push(`* 조언·상담 ${e.consults.length}건:`);
-        for (const c of e.consults.slice(0, 6)) out.push(`  * ${c.q}`, `    → ${c.a}`);
-        if (e.consults.length > 6) out.push(`  * … 외 ${e.consults.length - 6}건`);
+        const threads = new Map();
+        for (const c of e.consults) {
+          if (!threads.has(c.th)) threads.set(c.th, []);
+          threads.get(c.th).push(c);
+        }
+        out.push(`* 조언·상담 ${e.consults.length}턴 / 대화 ${threads.size}건:`);
+        let shown = 0;
+        for (const turns of threads.values()) {
+          if (shown >= 5) { out.push(`  * … 외 ${threads.size - shown}건`); break; }
+          shown++;
+          turns.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+          if (turns.length === 1) {
+            out.push(`  * ${turns[0].q}`, `    → ${turns[0].a}`);
+          } else {
+            out.push(`  * ${turns[0].q} (${turns.length}턴 대화)`);
+            for (const t of turns) out.push(`    · ${t.q}`, `      → ${t.a}`);
+          }
+        }
       }
       out.push("");
     }
@@ -3851,7 +3867,8 @@ function startSession() {
         const toolList = turnTools.size ? [...turnTools] : null;
         // 상담·조언 턴만 답변 본문을 남긴다(단순 조회·실행은 제외, 애매하면 제외 — shouldKeepAnswer 참고)
         const res = shouldKeepAnswer(toolList, text.length) ? text.replace(/\s+/g, " ").trim().slice(0, 500) : null;
-        logUsage({ kind: "main", user: currentTurn?.user || null, channel: ctx?.channel || null, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, chars: text.length, isError: !!m.is_error, req: reqRaw.replace(/\s+/g, " ").trim().slice(0, 200) || null, tools: toolList, res, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null, cacheRead: m.usage?.cache_read_input_tokens ?? null, cacheWrite: m.usage?.cache_creation_input_tokens ?? null });
+        // th: 스레드 식별자 — 한 상담이 여러 턴으로 이어질 때 채널+th로 하나의 대화로 묶는다
+        logUsage({ kind: "main", user: currentTurn?.user || null, channel: ctx?.channel || null, th: ctx?.threadTs || ctx?.ts || null, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, chars: text.length, isError: !!m.is_error, req: reqRaw.replace(/\s+/g, " ").trim().slice(0, 200) || null, tools: toolList, res, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null, cacheRead: m.usage?.cache_read_input_tokens ?? null, cacheWrite: m.usage?.cache_creation_input_tokens ?? null });
         turnTools = new Set();
         if (m.is_error) console.log(`[brain] 에러내용: ${text.slice(0, 200).replace(/\n/g, " ")}`);
         const rlTurn = currentTurn;   // rate-limit 재시도용 캡처
