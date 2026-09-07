@@ -1347,6 +1347,23 @@ async function runFileOrderCheck({ work, episodes, channel, ts, client }) {
 function logUsage(rec) {
   try { appendFileSync("logs/usage.jsonl", JSON.stringify({ at: new Date().toISOString(), ...rec }) + "\n"); } catch { /* 로깅 실패는 무시 */ }
 }
+
+// 답변 본문 보관 여부 판정 (2026-09-07 재상 님 기준)
+//   보관함: 의사결정·판단에 대한 조언·상담
+//   보관 안 함: 단순 데이터 요청(프로젝트 링크·번역가 확인·번역 요청 등)과 실행 요청
+//   ★애매하면 보관하지 않는 쪽이 기본 — 아래 두 조건을 모두 통과해야만 남긴다.
+// 판정 근거로 '그 턴에 발동한 도구'를 쓴다. 단순 조회·실행은 반드시 조회/게이트 도구를 거치므로,
+// 도구를 아예 안 썼거나(순수 대화) 분석형 도구를 쓴 턴만 상담 후보로 본다.
+const ADVICE_TOOLS = new Set([
+  "delegate_analysis", "review_episode", "review_queue", "compute", "translation_guide", "WebSearch",
+]);
+const RES_MIN_CHARS = 400;   // 짧은 응답("확인했어요" 등)은 상담이 아니므로 제외
+function shouldKeepAnswer(tools, answerLen) {
+  if (answerLen < RES_MIN_CHARS) return false;
+  const list = tools || [];
+  if (!list.length) return true;                       // 도구 없이 오간 대화 = 판단·상담
+  return list.some((t) => ADVICE_TOOLS.has(t));        // 조회·실행 도구만 썼으면 보관 안 함
+}
 const kstDateOf = (d = new Date()) => new Date(d.getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);   // KST YYYY-MM-DD
 const kstHourNow = () => new Date(Date.now() + 9 * 3600 * 1000).getUTCHours();
 function readJsonlSafe(path) {
@@ -1429,10 +1446,12 @@ function buildCollabDigest(since, until) {
   const talks = new Map();
   for (const u of main) {
     const k = nameOf(u.user);
-    if (!talks.has(k)) talks.set(k, { turns: 0, subjects: [], tools: new Map() });
+    if (!talks.has(k)) talks.set(k, { turns: 0, subjects: [], consults: [], tools: new Map() });
     const e = talks.get(k);
     e.turns++;
     if (u.req) e.subjects.push(String(u.req).slice(0, 70));
+    // res가 있는 턴 = 조언·상담으로 판정된 것(단순 조회·실행은 애초에 안 남김)
+    if (u.res) e.consults.push({ q: String(u.req || "(요청 미기록)").slice(0, 70), a: String(u.res).slice(0, 220) });
     for (const t of u.tools || []) e.tools.set(t, (e.tools.get(t) || 0) + 1);
   }
 
@@ -1460,6 +1479,12 @@ function buildCollabDigest(since, until) {
         if (e.subjects.length > 12) out.push(`  * … 외 ${e.subjects.length - 12}건`);
       } else {
         out.push(`* 주제: (req 기록 이전 기간 — 2026-09-04부터 쌓임)`);
+      }
+      // 조언·상담으로 판정된 턴만 답변 요약을 함께 보여준다(단순 조회·실행은 답변을 아예 안 남김)
+      if (e.consults.length) {
+        out.push(`* 조언·상담 ${e.consults.length}건:`);
+        for (const c of e.consults.slice(0, 6)) out.push(`  * ${c.q}`, `    → ${c.a}`);
+        if (e.consults.length > 6) out.push(`  * … 외 ${e.consults.length - 6}건`);
       }
       out.push("");
     }
@@ -3823,7 +3848,10 @@ function startSession() {
         const reqRaw = typeof currentTurn?.content === "string"
           ? currentTurn.content
           : (currentTurn?.content || []).find((b) => b?.type === "text")?.text || "";
-        logUsage({ kind: "main", user: currentTurn?.user || null, channel: ctx?.channel || null, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, chars: text.length, isError: !!m.is_error, req: reqRaw.replace(/\s+/g, " ").trim().slice(0, 200) || null, tools: turnTools.size ? [...turnTools] : null, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null, cacheRead: m.usage?.cache_read_input_tokens ?? null, cacheWrite: m.usage?.cache_creation_input_tokens ?? null });
+        const toolList = turnTools.size ? [...turnTools] : null;
+        // 상담·조언 턴만 답변 본문을 남긴다(단순 조회·실행은 제외, 애매하면 제외 — shouldKeepAnswer 참고)
+        const res = shouldKeepAnswer(toolList, text.length) ? text.replace(/\s+/g, " ").trim().slice(0, 500) : null;
+        logUsage({ kind: "main", user: currentTurn?.user || null, channel: ctx?.channel || null, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, chars: text.length, isError: !!m.is_error, req: reqRaw.replace(/\s+/g, " ").trim().slice(0, 200) || null, tools: toolList, res, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null, cacheRead: m.usage?.cache_read_input_tokens ?? null, cacheWrite: m.usage?.cache_creation_input_tokens ?? null });
         turnTools = new Set();
         if (m.is_error) console.log(`[brain] 에러내용: ${text.slice(0, 200).replace(/\n/g, " ")}`);
         const rlTurn = currentTurn;   // rate-limit 재시도용 캡처
