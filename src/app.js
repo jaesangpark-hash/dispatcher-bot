@@ -3615,13 +3615,16 @@ const apmTools = createSdkMcpServer({
     tool("transfer_kuaikan_files",
       "쿠아이칸(Kuaikan) 원본 파일을 PIVO로 이관한다. '작품명 N화 이관해줘', '원본 이관해', '1화 3페이지만 이관해줘' 등 수동 이관 요청 시 호출. ★이 도구를 호출할 때는 별도 응답 텍스트를 생성하지 말 것 — 도구가 직접 스레드에 ⏳ 파일별 진행상황을 실시간 업데이트하고 완료 시 새 메시지를 올린다. 중복 파일(원본+gai 수정본)이 발견되면 중복만 따로 물어보고 나머지는 먼저 이관한다. 누락 의심(PIVO 파일 수 < Kuaikan 파일 수) 및 깨짐 의심(100KB 미만)은 완료 메시지에 경고로 포함된다.",
       {
-        workName: z.string().describe("작품 한국어 이름"),
+        workName: z.string().describe("작품 한국어 이름. pivoId+originalTitleCH를 직접 주면 생략 가능(빈 문자열 '')"),
         episodes: z.string().describe("회차. 단일: '1' / 범위: '1-3' / 복수: '1,2,3'. '화' 포함 가능 예: '1화', '1-3화'"),
+        pivoId: z.string().optional().describe("PIVO PID(숫자 문자열). 제공 시 드라이브 시트 조회 없이 바로 업로드"),
+        originalTitleCH: z.string().optional().describe("Kuaikan 검색에 쓸 중국어 원제. pivoId와 함께 쓸 것"),
+        skipPreprocessing: z.boolean().optional().describe("true면 전처리 완료 대기를 건너뜀(부분 이관·테스트 시). 기본값 false(전처리 대기)"),
         fileNames: z.array(z.string()).optional().describe("특정 파일명 지정 시 사용. 예: ['14-5.psd', '14-8.psd']. 지정하면 pageFrom/pageTo 무시"),
         pageFrom: z.number().optional().describe("이관 시작 페이지 위치(1-indexed, 정렬 후 순서 기준). fileNames 없을 때만 사용"),
         pageTo: z.number().optional().describe("이관 끝 페이지 위치(포함). 생략 시 pageFrom과 동일(단일 페이지)"),
       },
-      async ({ workName, episodes, fileNames, pageFrom, pageTo }) => {
+      async ({ workName, episodes, pivoId, originalTitleCH, skipPreprocessing, fileNames, pageFrom, pageTo }) => {
         try {
           const ctx = currentCtx;
           if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "컨텍스트 없음" }) }] };
@@ -3629,6 +3632,9 @@ const apmTools = createSdkMcpServer({
           if (!episodeList.length) return { content: [{ type: "text", text: JSON.stringify({ error: `회차 파싱 실패: "${episodes}"` }) }] };
           _handleManualTransferCommand({
             workName, episodeList,
+            pivoId: pivoId ?? null,
+            originalTitleCH: originalTitleCH ?? null,
+            skipPreprocessing: skipPreprocessing ?? false,
             fileNames: fileNames ?? null,
             pageFrom: pageFrom ?? null,
             pageTo: pageTo ?? null,
@@ -6501,7 +6507,7 @@ function _parseManualTransferCommand(text) {
   };
 }
 
-async function _handleManualTransferCommand({ workName, episodeList, pageFrom, pageTo, fileNames, channel, ts, threadTs, client }) {
+async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH, skipPreprocessing, episodeList, pageFrom, pageTo, fileNames, channel, ts, threadTs, client }) {
   const replyTs = threadTs || ts;
   let progressTs = null;
   const completedItems = [];
@@ -6529,10 +6535,16 @@ async function _handleManualTransferCommand({ workName, episodeList, pageFrom, p
   };
 
   try {
-    const entry = await lookupDriveEntryForWork(workName).catch(() => null);
-    if (!entry?.pivo) throw new Error(`"${workName}" 드라이브 항목 없음 — 시트 확인 필요`);
-    if (!/^\d+$/.test(entry.pivo)) throw new Error(`"${workName}" PIVO PID가 숫자가 아님 (${entry.pivo})`);
-    if (!/kuaikan/i.test(entry.publisher || "")) throw new Error(`"${workName}" 출판사(${entry.publisher})가 Kuaikan이 아님`);
+    let entry;
+    if (pivoId && originalTitleCH) {
+      if (!/^\d+$/.test(String(pivoId))) throw new Error(`PIVO ID가 숫자가 아님 (${pivoId})`);
+      entry = { pivo: String(pivoId), publisher: "Kuaikan", originalTitleCH };
+    } else {
+      entry = await lookupDriveEntryForWork(workName).catch(() => null);
+      if (!entry?.pivo) throw new Error(`"${workName}" 드라이브 항목 없음 — 시트 확인 필요`);
+      if (!/^\d+$/.test(entry.pivo)) throw new Error(`"${workName}" PIVO PID가 숫자가 아님 (${entry.pivo})`);
+      if (!/kuaikan/i.test(entry.publisher || "")) throw new Error(`"${workName}" 출판사(${entry.publisher})가 Kuaikan이 아님`);
+    }
 
     const searchTerm = entry.originalTitleCH || workName;
     await updateProgress(buildProgressText("Kuaikan 검색 중..."));
@@ -6611,6 +6623,21 @@ async function _handleManualTransferCommand({ workName, episodeList, pageFrom, p
       await updateProgress(`${buildProgressText(null)}\n\n⚠️ 중복 파일이 있어요. 이관할 파일명을 이 스레드에 답장해주세요:\n${dupLines}`);
       _pendingManualTransfers.set(replyTs, { workName, entry, pendingDuplicates, completedItems, allFileIds, allWarns, channel, replyTs, client });
       return;
+    }
+
+    // 전처리 대기 (skipPreprocessing이 아니고 업로드된 파일이 있을 때만)
+    if (!skipPreprocessing && allFileIds.length) {
+      await updateProgress(buildProgressText("⏳ 전처리 대기 중..."));
+      const maxWait = 10 * 60 * 1000;
+      const ppStart = Date.now();
+      let ppDone = false;
+      while (Date.now() - ppStart < maxWait) {
+        const s = await getPreprocessingStatus(allFileIds).catch(() => null);
+        if (s?.meta?.오류있음) { allWarns.push("⚠️ 전처리 오류 발생"); break; }
+        if (s?.meta?.전체완료) { ppDone = true; break; }
+        await new Promise(r => setTimeout(r, 30000));
+      }
+      if (!ppDone && !allWarns.some(w => w.includes("전처리"))) allWarns.push("⚠️ 전처리 시간 초과 (10분)");
     }
 
     const summary = completedItems.map(i => i.ok ? `✅ \`${i.name}\`` : `❌ \`${i.name}\``).join("\n");
