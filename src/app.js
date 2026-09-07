@@ -3645,8 +3645,7 @@ const apmTools = createSdkMcpServer({
           }).catch(e => console.error("[transfer_kuaikan_files] 오류:", e?.message ?? e));
           return { content: [{ type: "text", text: JSON.stringify({ started: true, note: "이 스레드에 진행상황 실시간 업데이트" }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
-      },
-      { annotations: { readOnlyHint: false } }),
+      }),
     tool("collab_digest",
       "툰식이 협업 로그 요약(업무 아카이브용). 기간 내 '누가 툰식이와 어떤 주제의 업무를 했는지'를 업무유형·작품·요청 주제·발동 도구로 집계해 마크다운으로 돌려준다. 대화 전문은 담지 않는다(요청 앞 70자까지만). '이번 주 협업 로그 정리해줘', '지난주 무슨 일 했는지 요약해줘', '아카이브용 로그 뽑아줘' 류 요청에 사용. since/until 생략 시 최근 7일(KST).",
       {
