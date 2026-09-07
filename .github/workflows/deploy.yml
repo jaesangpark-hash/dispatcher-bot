@@ -3,6 +3,8 @@ name: Deploy to EC2
 on:
   push:
     branches: [main]
+  # 수동 재기동용 — 코드 변경 없이 봇만 재시작할 때 Actions 탭에서 Run workflow (2026-09-07)
+  workflow_dispatch:
 
 jobs:
   deploy:
