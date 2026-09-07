@@ -6586,8 +6586,25 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
       const existingRes = await pivoEpisodeSourceFiles(entry.pivo, episode).catch(() => null);
       const pivoFiles = existingRes?.data?.파일목록 || [];
       const totalKuaikan = mainFiles.length + duplicatePairs.length;
-      if (pivoFiles.length && totalKuaikan < pivoFiles.length) {
-        allWarns.push(`⚠️ ${episode}화 누락 의심: PIVO ${pivoFiles.length}개 / Kuaikan ${totalKuaikan}개`);
+      if (pivoFiles.length) {
+        // PIVO에 기존 파일 있음 — 직접 비교
+        if (totalKuaikan < pivoFiles.length) {
+          allWarns.push(`⚠️ ${episode}화 누락 의심: Kuaikan ${totalKuaikan}개 / PIVO 기존 ${pivoFiles.length}개`);
+        } else {
+          allWarns.push(`ℹ️ ${episode}화 Kuaikan ${totalKuaikan}개 (PIVO 기존 ${pivoFiles.length}개)`);
+        }
+      } else {
+        // PIVO 비어있음 — 이전 회차 참조
+        const prevEp = String(parseInt(episode, 10) - 1);
+        const prevRes = parseInt(episode, 10) > 1 ? await pivoEpisodeSourceFiles(entry.pivo, prevEp).catch(() => null) : null;
+        const prevFiles = prevRes?.data?.파일목록 || [];
+        if (prevFiles.length) {
+          const diff = prevFiles.length - totalKuaikan;
+          const tag = diff >= 2 ? `⚠️ ${episode}화 누락 의심` : `ℹ️ ${episode}화`;
+          allWarns.push(`${tag}: Kuaikan ${totalKuaikan}개 (직전 ${prevEp}화 ${prevFiles.length}개 기준)`);
+        } else {
+          allWarns.push(`ℹ️ ${episode}화 Kuaikan ${totalKuaikan}개`);
+        }
       }
 
       for (const item of filesToTransfer) {
