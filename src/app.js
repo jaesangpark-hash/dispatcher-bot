@@ -6083,6 +6083,49 @@ async function checkDeliveryNotes() {
     }
   } catch (e) { console.error("[delivery-note] 실패:", e?.message ?? e); }
 }
+
+// ── 1회성 납품 전 특이사항 안내 ─────────────────────────────────
+// 위 비고(F열) 리마인드는 그 작품의 '매' 납품일마다 반복된다. 로고 교체처럼 특정 회차가 나가는
+// 날 딱 한 번만 알리면 되는 건은 여기에 등록한다(2026-09-08 재상 님 요청 — 版元 로고 변경 건).
+// 날짜가 지나면 자동으로 다시 걸리지 않으므로 별도 정리가 필요 없다.
+// ★data/ 는 .gitignore 대상이라 파일로 두면 EC2에 배포되지 않는다 → 코드 상수로 관리할 것.
+const ONETIME_DELIVERY_NOTES = [
+  { date: "2026-09-11", work: "죽음이 나를 왕이라 부른다", episodes: "33화~", note: "版元(Heiniaoshe) 로고 변경 — 이 회차부터 엔딩 로고를 신규 로고로 교체 적용" },
+  { date: "2026-09-11", work: "셀럽이 되고 싶어", episodes: "65화~", note: "版元(Heiniaoshe) 로고 변경 — 이 회차부터 엔딩 로고를 신규 로고로 교체 적용" },
+  { date: "2026-09-14", work: "언리미티드 네크로멘서", episodes: "37화~", note: "版元(Heiniaoshe) 로고 변경 — 이 회차부터 엔딩 로고를 신규 로고로 교체 적용" },
+];
+let _oneTimeNoteDmDate = null;
+async function checkOneTimeDeliveryNotes() {
+  try {
+    if (!BRAIN_ON) return;
+    const now = new Date();
+    const kh = Number(now.toLocaleString("en-US", { timeZone: "Asia/Seoul", hour: "2-digit", hour12: false }));
+    const kd = now.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+    if (kh < DELIVERY_NOTE_HOUR) return;
+    const due = ONETIME_DELIVERY_NOTES.filter((n) => n.date === kd);
+    if (!due.length) return;
+
+    const lines = due.map((n) => `⚠️ *${n.work}*${n.episodes ? ` ${n.episodes}` : ""} — <@${DELIVERY_OWNER_ID}> ${n.note}`);
+    const text = `🔔 *납품 전 특이사항 (1회 안내)*\n${lines.join("\n")}`;
+
+    const threadTs = await findTodayDeliveryThreadTs();
+    if (!threadTs) {   // 스레드가 아직 없으면 DM으로 먼저 알리고(하루 1회) 계속 재시도
+      if (_oneTimeNoteDmDate !== kd) {
+        await dmOwner(`${text}\n\n⚠️ 오늘 [Toon_Japan 납품스레드]를 아직 못 찾았어요 — 올라오는 대로 자동으로 거기 남길게요(계속 재시도 중).`);
+        _oneTimeNoteDmDate = kd;
+      }
+      return;
+    }
+    // 재기동으로 메모리 플래그가 날아가도 스레드를 재확인해 중복 게시를 막는다(비고 리마인드와 동일 패턴)
+    const replies = await app.client.conversations.replies({ channel: DELIVERY_THREAD_CHANNEL, ts: threadTs, limit: 60 }).catch(() => null);
+    if ((replies?.messages || []).some((m) => /납품 전 특이사항 \(1회 안내\)/.test(m.text || ""))) {
+      console.log("[onetime-note] 이미 오늘자 1회 안내 있음 — 스킵");
+      return;
+    }
+    await app.client.chat.postMessage({ channel: DELIVERY_THREAD_CHANNEL, thread_ts: threadTs, text, ...SENDER, unfurl_links: false });
+    console.log(`[onetime-note] ${kd} 1회 안내 ${due.length}건 게시`);
+  } catch (e) { console.error("[onetime-note] 실패:", e?.message ?? e); }
+}
 // ────────────────────────────────────────────────────────────────────────────
 // Kuaikan 세션 쿠키 만료 감지 + 갱신 실행
 // ────────────────────────────────────────────────────────────────────────────
@@ -6857,7 +6900,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
