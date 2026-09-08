@@ -6094,6 +6094,7 @@ const ONETIME_DELIVERY_NOTES = [
   { date: "2026-09-11", work: "셀럽이 되고 싶어", episodes: "65화~", note: "版元(Heiniaoshe) 로고 변경 — 이 회차부터 엔딩 로고를 신규 로고로 교체 적용" },
   { date: "2026-09-14", work: "언리미티드 네크로멘서", episodes: "37화~", note: "版元(Heiniaoshe) 로고 변경 — 이 회차부터 엔딩 로고를 신규 로고로 교체 적용" },
 ];
+const ONETIME_NOTE_HOUR = Number(process.env.ONETIME_NOTE_HOUR ?? 11);   // 오전 11시(KST) 이후 첫 tick — 재상 님 지정(2026-09-08). 비고 리마인드(9시)와 별개.
 let _oneTimeNoteDmDate = null;
 async function checkOneTimeDeliveryNotes() {
   try {
@@ -6101,7 +6102,7 @@ async function checkOneTimeDeliveryNotes() {
     const now = new Date();
     const kh = Number(now.toLocaleString("en-US", { timeZone: "Asia/Seoul", hour: "2-digit", hour12: false }));
     const kd = now.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
-    if (kh < DELIVERY_NOTE_HOUR) return;
+    if (kh < ONETIME_NOTE_HOUR) return;
     const due = ONETIME_DELIVERY_NOTES.filter((n) => n.date === kd);
     if (!due.length) return;
 
