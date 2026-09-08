@@ -6520,8 +6520,9 @@ function _extractPageNum(name) {
 
 // 정렬된 파일 목록에서 번호 갭(누락 의심) 찾기. 중복(上/下)은 같은 번호로 처리해 오탐 방지.
 function _checkSequenceGaps(files, episode) {
+  const epNum = parseInt(episode, 10);
   const nums = [...new Set(
-    files.map(f => _extractPageNum(f.name)).filter(n => n !== null)
+    files.map(f => _extractPageNum(f.name)).filter(n => n !== null && n !== epNum)
   )].sort((a, b) => a - b);
   if (nums.length < 2) return [];
 
