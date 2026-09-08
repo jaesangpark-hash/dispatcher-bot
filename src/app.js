@@ -6518,6 +6518,58 @@ function _extractPageNum(name) {
   return m ? parseInt(m[1], 10) : null;
 }
 
+// LLM으로 파일명 패턴 분석 — 누락·이상 파일 감지, 표지 등 비페이지 구분
+// 반환: { pattern, pageFiles, nonPageFiles, anomalies:[{file,issue,suggestion,auto}], missingPages }
+async function _analyzeFileNamesWithLLM(fileNames, episode) {
+  if (fileNames.length < 2) return { pattern: null, nonPageFiles: [], anomalies: [], missingPages: [] };
+  const prompt = `다음은 만화 원본 파일 ${episode}화의 파일 목록이야. 아래 작업을 해줘.
+
+1. 파일명 패턴 파악 (예: "${episode}-N.psd, N은 페이지 번호")
+2. 페이지 파일과 비페이지 파일(표지·로고·기타) 구분
+3. 패턴에서 벗어난 파일 감지 (예: 회차 prefix 없이 "04.psd"만 있는 경우)
+4. 페이지 번호 시퀀스에서 빠진 번호 추정
+
+파일 목록 (${fileNames.length}개):
+${fileNames.map((n, i) => `${i + 1}. ${n}`).join("\n")}
+
+JSON만 답해줘 (다른 텍스트 없이):
+{
+  "pattern": "파악한 패턴 한 줄",
+  "page_files": ["페이지 파일 목록 (순서대로)"],
+  "non_page_files": ["표지·로고 등 비페이지 파일"],
+  "anomalies": [
+    {
+      "file": "원본 파일명",
+      "issue": "이슈 설명",
+      "suggestion": "추정 해석 (예: '${episode}-4.psd일 가능성 높음')",
+      "auto": true
+    }
+  ],
+  "missing_pages": ["빠진 페이지 추정 파일명 (예: '${episode}-4.psd')"]
+}
+
+규칙:
+- anomalies 없으면 빈 배열, missing_pages 없으면 빈 배열
+- auto=true: 패턴상 명확 (선조치 후보고)
+- auto=false: 판단 어려움 (확인 필요 경고만)`;
+
+  const raw = await toollessQuery(prompt, { label: "파일명-분석" });
+  try {
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error("JSON 없음");
+    const r = JSON.parse(m[0]);
+    return {
+      pattern: r.pattern || null,
+      nonPageFiles: Array.isArray(r.non_page_files) ? r.non_page_files : [],
+      anomalies: Array.isArray(r.anomalies) ? r.anomalies : [],
+      missingPages: Array.isArray(r.missing_pages) ? r.missing_pages : [],
+    };
+  } catch (e) {
+    console.error("[파일명-분석] LLM 파싱 실패:", e.message, "| 원문:", raw.slice(0, 200));
+    return { pattern: null, nonPageFiles: [], anomalies: [], missingPages: [] };
+  }
+}
+
 // 정렬된 파일 목록에서 번호 갭(누락 의심) 찾기. 중복(上/下)은 같은 번호로 처리해 오탐 방지.
 function _checkSequenceGaps(files, episode) {
   const epNum = parseInt(episode, 10);
@@ -6617,8 +6669,24 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
       const psdItems = allItems.filter(it => !isKuaikanDir(it) && /\.psd$/i.test(it.name || ""));
       const { mainFiles, duplicatePairs } = _resolveFileList(psdItems);
 
-      // 시퀀스 갭 체크 — 전체 파일 대상(범위 지정 전)으로 누락 의심 탐지
-      for (const w of _checkSequenceGaps(mainFiles, episode)) allWarns.push(w);
+      // LLM 파일명 분석 — 패턴 이탈·비페이지 파일·누락 페이지 감지
+      await updateProgress(buildProgressText(`${episode}화 파일명 분석 중...`));
+      const llmAnalysis = await _analyzeFileNamesWithLLM(mainFiles.map(f => f.name), episode).catch(e => {
+        console.error("[transfer] LLM 파일명 분석 실패:", e.message);
+        return { pattern: null, nonPageFiles: [], anomalies: [], missingPages: [] };
+      });
+      if (llmAnalysis.nonPageFiles.length) {
+        allWarns.push(`ℹ️ ${episode}화 비페이지 파일 제외 (시퀀스 검사 대상 아님): ${llmAnalysis.nonPageFiles.join(", ")}`);
+      }
+      for (const a of (llmAnalysis.anomalies || [])) {
+        const tag = a.auto ? "ℹ️" : "⚠️";
+        const suffix = a.auto ? "(자동 처리)" : "(확인 필요)";
+        allWarns.push(`${tag} ${episode}화 \`${a.file}\` — ${a.issue}. 제안: ${a.suggestion} ${suffix}`);
+      }
+      for (const mp of (llmAnalysis.missingPages || [])) {
+        allWarns.push(`⚠️ ${episode}화 누락 의심: \`${mp}\` 없음`);
+      }
+      console.log(`[transfer] ${episode}화 LLM 분석 — 패턴: ${llmAnalysis.pattern ?? "(없음)"}, 비페이지: ${llmAnalysis.nonPageFiles.length}개, 이상: ${llmAnalysis.anomalies.length}개, 누락: ${llmAnalysis.missingPages.length}개`);
 
       // 파일 범위 적용: fileNames 우선, 없으면 pageFrom/pageTo 위치 기준
       let filesToTransfer = mainFiles;
