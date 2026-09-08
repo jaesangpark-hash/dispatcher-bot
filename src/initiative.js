@@ -19,12 +19,13 @@ function log(o) {
   try { fs.mkdirSync(DIR, { recursive: true }); fs.appendFileSync(LOG_FILE, JSON.stringify({ at: new Date().toISOString(), ...o }) + "\n"); } catch {}
 }
 
-// 하루 1회 게이트 — 지정 시각(hour) 이후 그날 첫 tick에서만 true.
+// 하루 1회 게이트 — 지정 시각(hour, KST) 이후 그날 첫 tick에서만 true.
+// ★2026-09-08 수정: 로컬시 기준이라 EC2(UTC)에서 INITIATIVE_HOUR=10이 KST 19시로 밀려 있었다(실측 9/5·9/6 19:01).
 export function dueDailyInitiative(hour) {
   let st = {}; try { st = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); } catch {}
-  const now = new Date();
-  const ymd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  if (now.getHours() < hour) return false;
+  const now = new Date(Date.now() + 9 * 3600 * 1000);   // KST 벽시계
+  const ymd = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+  if (now.getUTCHours() < hour) return false;
   if (st.lastDate === ymd) return false;
   st.lastDate = ymd;
   try { fs.mkdirSync(DIR, { recursive: true }); fs.writeFileSync(STATE_FILE, JSON.stringify(st)); } catch {}

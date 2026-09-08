@@ -18,6 +18,7 @@ import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
 import { setCell, getCell, setCells, getCells, ensureTab, appendSheetRows } from "./sheets-write.js";
 import { readRange as readRangeRO } from "./sheets.js";
+import { buildKpFbProposal } from "./kpfb.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -1804,7 +1805,7 @@ async function workerPost(ctx, text) {
     .catch((e) => console.error("[worker-pool] 게시 실패:", e.message));
 }
 async function toollessQuery(prompt, meta = {}) {
-  const q = query({ prompt, options: { model: DISPATCHER_MODEL, strictMcpConfig: true, allowedTools: [] } });
+  const q = query({ prompt, options: { model: meta.model || DISPATCHER_MODEL, strictMcpConfig: true, allowedTools: [] } });   // meta.model — 단순 분류처럼 값싼 모델로 충분한 작업용(KP FB 주간 분류가 haiku 사용)
   let buf = "";
   for await (const m of q) {
     if (m.type === "assistant") { for (const b of m.message?.content || []) if (b.type === "text" && b.text) buf += b.text; }
@@ -6896,12 +6897,46 @@ async function _handleManualTransferDuplicateReply({ text, channel, threadTs, cl
   return true;
 }
 
+// ── KP 고객사 FB 주간 프롬프트 점검(2026-09-08, 재상 님 지정: 주 1회 월요일 오전) ──────
+// 신규 코멘트(comment_uuid 미처리분)만 LLM으로 번역문↔수정문 대조 → 반복 패턴만 추려 라이브 프롬프트와
+// 대조 → 고칠 값어치가 있는 것만 DM. 제안이 없으면 침묵(몇 주 연속 조용하면 kpfb.js가 생존신고 한 줄).
+// 수집 대상 시트가 매일 동기화되므로 요일만 맞으면 되고, 실패해도 다음 주에 같은 신규분을 다시 본다.
+const KPFB_HOUR = Number(process.env.KPFB_HOUR ?? 10);      // 오전 10시(KST) 이후 첫 tick
+const KPFB_DOW = Number(process.env.KPFB_DOW ?? 1);          // 1=월요일
+async function checkKpFbWeekly() {
+  try {
+    if (!BRAIN_ON) return;
+    if (process.env.KPFB_ENABLED === "false") return;
+    const now = new Date();
+    const kst = new Date(now.getTime() + 9 * 3600 * 1000);
+    if (kst.getUTCDay() !== KPFB_DOW) return;
+    if (kstHourNow() < KPFB_HOUR) return;
+    const today = kstDateOf();
+    let state = {};
+    try { state = JSON.parse(readFileSync("data/kp-fb-run.json", "utf8")); } catch { /* 첫 실행 */ }
+    if (state.lastDate === today) return;                    // 오늘 이미 실행
+    state.lastDate = today;
+    try { writeFileSync("data/kp-fb-run.json", JSON.stringify(state)); } catch { /* 무시 */ }
+
+    // ★본체는 await 하지 않는다: 분류 LLM 콜이 신규 90건이면 5~10분 걸리고, tick은 _tickRunning 락으로
+    //   직렬이라 그동안 예약발송·재촉이 전부 멈춘다. 실행 표시(state)는 위에서 이미 찍었으니 재진입도 없다.
+    buildKpFbProposal({
+      ask: toollessQuery,
+      engineBase: REVIEW_ENGINE_BASE,
+      apiKey: process.env.REVIEW_ENGINE_API_KEY || "",
+    }).then(async (r) => {
+      console.log(`[kpfb] ${today} — ${r.reason}${r.stats ? ` (신규 ${r.stats.new}건/${r.stats.works}작품)` : ""}`);
+      if (r.text) await dmOwner(r.text);
+    }).catch((e) => console.error("[kpfb] 본체 실패:", e?.message ?? e));
+  } catch (e) { console.error("[kpfb] 실패:", e?.message ?? e); }
+}
+
 let _tickRunning = false;   // setInterval은 이전 tick()이 끝나든 말든 다음 틱을 쏨 — LLM 호출 등으로 60초 넘게 걸리면 겹쳐 재진입해 중복 발송(2026-07-22 스크럼 diff 4중발송 사고 원인). 락으로 겹침 자체를 차단.
 async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }

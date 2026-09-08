@@ -55,15 +55,18 @@ export function completeReminder(match) {
 // 개인 재촉 + 문의/재수급 미해결을 한 슬롯에서 같이 보내기 위해 슬롯 게이트만 담당.
 // nagHours: 시각 배열(예 [9,14,18]). 새 슬롯이면 키 반환(+마킹), 아니면 null. lastNagSlot="YYYY-MM-DD:HH".
 // ★영업일(월~금) 10~21시로 제한(2026-08-21, 사용자 확인) — 봇 다운 후 늦은 캐치업으로 심야·주말에 발송되는 것도 여기서 같이 막힘.
+// ★2026-09-08 수정: 시각·요일 판단이 서버 로컬시였다. 봇이 EC2(UTC)로 이관된 뒤 BOT_NAG_HOURS="12,17"이
+//   실제로는 KST 21시·새벽 2시에 발송됐고(실측: 9/7 21:00, 9/8 02:00 재팬_중일pm업무자동화채널), 영업시간
+//   제한(10~21시)도 KST로는 19시~06시 창이 되어 오후 재촉이 아예 나가지 않았다. 전부 KST로 고정한다.
 export function dueNagSlot(nagHours) {
   const d = load();
-  const now = new Date();
-  const day = now.getDay();   // 0=일 6=토
+  const now = new Date(Date.now() + 9 * 3600 * 1000);   // KST 벽시계(이하 getUTC*로 읽는다)
+  const day = now.getUTCDay();   // 0=일 6=토
   if (day === 0 || day === 6) return null;
-  if (now.getHours() < 10 || now.getHours() >= 21) return null;
-  const ymd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  if (now.getUTCHours() < 10 || now.getUTCHours() >= 21) return null;
+  const ymd = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
   const hours = (Array.isArray(nagHours) ? nagHours : [nagHours]).map(Number).filter((h) => !isNaN(h)).sort((a, b) => a - b);
-  const slot = hours.filter((h) => now.getHours() >= h).pop();   // 지금 이하 중 가장 늦은 슬롯
+  const slot = hours.filter((h) => now.getUTCHours() >= h).pop();   // 지금 이하 중 가장 늦은 슬롯
   if (slot == null) return null;                 // 첫 슬롯 시각 전
   const key = `${ymd}:${slot}`;
   if (d.lastNagSlot === key) return null;        // 이 슬롯 이미 처리함
