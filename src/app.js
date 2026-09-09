@@ -1530,8 +1530,10 @@ async function checkDailyReport() {
 // ── 오늘 납품 대상 리포트(2026-09-04) ────────────────────────────
 // 고객사 납품 시트의 納品予定日이 오늘인 작품 = 작품 수 + 공통번호만 간단히.
 // ★納品話数가 빈 칸(휴재·미배정)인 작품은 작품 수에서 빼고 "화수 미기재" 건수로만 알린다(재상 님 기준).
-// 발송 시각: 재상 님 지정 오전 10시(2026-09-04). DELIVERY_REPORT_HOUR로 덮어쓸 수 있음.
-const DELIVERY_REPORT_HOUR = Number(process.env.DELIVERY_REPORT_HOUR ?? 10);
+// 발송 시각: 재상 님 지정 오전 11시(2026-09-09, 10시→11시). DELIVERY_REPORT_HOUR로 덮어쓸 수 있음.
+// ★10시에는 APM 납품 시트의 당일 탭(중일_YYYYMMDD)이 아직 안 만들어져 있는 날이 있어 대조가 "탭 없음"으로
+//   끝나 버렸다(9/9 실사례). 탭 생성 시각을 지나서 보내야 두 시트 대조가 실제로 성립한다.
+const DELIVERY_REPORT_HOUR = Number(process.env.DELIVERY_REPORT_HOUR ?? 11);
 async function checkDeliveryTodayReport() {
   try {
     if (kstHourNow() < DELIVERY_REPORT_HOUR) return;
