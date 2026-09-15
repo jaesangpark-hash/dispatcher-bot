@@ -4393,7 +4393,12 @@ app.message(async ({ message, say, client }) => {
     // 문의봇 '작업 관련 문의'의 원문 링크 메시지면 → 원문(이미지) 자동 해석 답글(내부에서 유형·이미지 게이트)
     if (!edited && fromInquiry) await handleInquiryInterpret({ message, client });
     // 문의봇 '재수급 완료' 후속 메시지(resupply_upload_file 버튼 포함) → Kuaikan 자동 이관
-    if (!edited && fromInquiry) {
+    // ★ 2026-09-15 기본 OFF (재상 님 지시). '늑대왕 리턴즈 16화' 건에서 재수급 요청의
+    //   '파일/페이지 번호 1, 2, 3'을 회차로 잘못 읽어 "16화, 2화, 3화"를 이관 대상으로 잡고
+    //   엉뚱한 psd(13-4.psd 612MB)를 TOTUS에 올리기 시작했다. 회차 판정이 신뢰 가능해질
+    //   때까지 자동 실행하지 않는다. 수동 이관(propose_original_reupload / "N화 이관해줘")은 그대로 사용 가능.
+    //   되살리려면 EC2 환경변수 RESUPPLY_AUTO_TRANSFER=1.
+    if (!edited && fromInquiry && process.env.RESUPPLY_AUTO_TRANSFER === "1") {
       const hasResupplyBtn = message.blocks?.some(b => b.type === "actions" && b.elements?.some(e => e.action_id === "resupply_upload_file"));
       if (hasResupplyBtn) _handleResupplyAutoTransfer({ message, client }).catch(e => console.error("[resupply-auto] 오류:", e?.message ?? e));
     }
