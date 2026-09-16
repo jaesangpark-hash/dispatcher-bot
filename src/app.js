@@ -37,6 +37,7 @@ import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock } from "./learned.js";
 import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode, deliveryReconcile, dailyCheckList, koTitlesByCommonNo } from "./schedule.js";
 import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText, findUndelivered } from "./deliveryNotice.js";
+import { collectTargets as collectSikjaHandover, buildMessage as buildSikjaHandoverMsg, buildLinkReply as buildSikjaHandoverLinks, markSent as markSikjaHandoverSent, syncNewWorks as syncSikjaHandoverWorks, HANDOVER_CHANNEL as SIKJA_HANDOVER_CHANNEL } from "./sikjaHandover.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
 
@@ -6938,12 +6939,48 @@ async function checkKpFbWeekly() {
   } catch (e) { console.error("[kpfb] 실패:", e?.message ?? e); }
 }
 
+// ── 초도 납품 완료 → 식자 작업자 이관 요청(2026-09-16 재상 님 지정) ──────────────────
+// 「초도 완료 트래킹」 탭에서 미체크 + 초도 납품일 경과 행만 골라 담당 APM에게 #재팬_작업요청으로
+// 요청하고 스레드에 프로젝트 링크를 붙인다. 판정 상세와 제외 규칙은 src/sikjaHandover.js 주석 참조.
+// 시트가 상태를 들고 있어(요청 발송일 기록) 하루 1회 제한만 두면 중복 발송이 없다.
+const SIKJA_HANDOVER_HOUR = Number(process.env.SIKJA_HANDOVER_HOUR ?? 11);
+async function checkSikjaHandover() {
+  try {
+    if (process.env.SIKJA_HANDOVER_ENABLED === "false") return;
+    if (kstHourNow() < SIKJA_HANDOVER_HOUR) return;
+    const today = kstDateOf();
+    let state = {};
+    try { state = JSON.parse(readFileSync("data/sikja-handover-run.json", "utf8")); } catch { /* 첫 실행 */ }
+    if (state.lastDate === today) return;
+    state.lastDate = today;
+    try { writeFileSync("data/sikja-handover-run.json", JSON.stringify(state)); } catch { /* 무시 */ }
+
+    try { const n = await syncSikjaHandoverWorks(); if (n) console.log(`[sikja-handover] 신규 작품 ${n}건 트래킹 탭에 추가`); }
+    catch (e) { console.error("[sikja-handover] 신규 동기화 실패:", e?.message ?? e); }
+
+    const { items, skipped } = await collectSikjaHandover();
+    if (skipped.length) console.log(`[sikja-handover] 건너뜀 ${skipped.length}건 — ${skipped.map((s) => `${s.pivo}:${s.why}`).join(" / ")}`);
+    if (!items.length) { console.log(`[sikja-handover] ${today} 대상 없음`); return; }
+
+    const main = await app.client.chat.postMessage({
+      channel: SIKJA_HANDOVER_CHANNEL, text: buildSikjaHandoverMsg(items), unfurl_links: false, ...SENDER,
+    });
+    await app.client.chat.postMessage({
+      channel: SIKJA_HANDOVER_CHANNEL, thread_ts: main.ts, text: buildSikjaHandoverLinks(items), unfurl_links: false, ...SENDER,
+    }).catch((e) => console.error("[sikja-handover] 링크 답글 실패:", e?.message ?? e));
+    await markSikjaHandoverSent(items, today).catch((e) => console.error("[sikja-handover] 발송일 기록 실패:", e?.message ?? e));
+    console.log(`[sikja-handover] ${today} ${items.length}건 발송 — ${items.map((i) => i.pivo).join(",")}`);
+    const dmLines = items.map((i) => `• ${i.ko} (${i.workers.join(", ")})`).join("\n");
+    await dmOwner(`🧵 초도 납품 완료 ${items.length}건, 식자 이관 요청 보냈어요.\n${dmLines}`).catch(() => {});
+  } catch (e) { console.error("[sikja-handover] 실패:", e?.message ?? e); }
+}
+
 let _tickRunning = false;   // setInterval은 이전 tick()이 끝나든 말든 다음 틱을 쏨 — LLM 호출 등으로 60초 넘게 걸리면 겹쳐 재진입해 중복 발송(2026-07-22 스크럼 diff 4중발송 사고 원인). 락으로 겹침 자체를 차단.
 async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
