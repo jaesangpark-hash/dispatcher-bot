@@ -31,6 +31,7 @@ import { search as notionSearch, readPage as notionReadPage } from "./notion.js"
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
 import { detectDrivePlatform, parseDriveUrl, kuaikanSearchRoot, kuaikanListChildren, kuaikanGetDownloadUrl, resolveEpisodePage, findEpisodeFolder, isKuaikanDir, makeArthubAdapter, makeKuaikanAdapter, KuaikanSessionExpiredError, DriveFileUnsupportedError, matchByNumber } from "./drive-download.js";
 import { analyzeOrder, detectMissingPages } from "./file-order.js";
+import { WORKER_CHANNELS as WFO_CHANNELS, detectIntent as wfoIntent, parseEpisodes as wfoEpisodes, worksOfWorker as wfoWorks, workerHasEpisode as wfoHasEpisode, isHelpRequest as wfoIsHelp, MANUAL_TEXT as WFO_MANUAL, inspectEpisodes as wfoInspect, applyOrder as wfoApply, previewBlocks as wfoBlocks, GUIDE_TEXT as WFO_GUIDE } from "./fileOrderWorker.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
@@ -248,6 +249,7 @@ const DISPATCHER_PROMPT = [
   "★담당 APM @멘션 Slack ID(이 3명은 시트 조회 없이 바로 <@ID>로 멘션): **서주원=U07E0QPL8MV · 정태영=U05CE8HFA6B · 박재상=U04463JR4HH**. '담당 APM 멘션해줘'면 작품 담당 APM 이름을 이 맵으로 실제 @멘션한다(worker_db 조회·'ID를 못 찾는다' 금지). 이 3명 외 이름일 때만 query_sheet(worker_db)로 slack_id 조회.",
   "★작업자 개인 채널로 보내는 공지(가이드 업데이트, 배정 안내 등 특정 작업자의 담당 채널로 send_message 하는 경우)는 '멘션해서 보내줘'라는 말이 따로 없어도 **항상 기본으로** 그 채널 담당 작업자를 문구 맨 앞에 <@slack_id>로 멘션해서 보낸다 — 개인 채널 공지에 멘션이 없으면 못 보고 지나칠 수 있다(불특정 다수가 보는 팀 채널 발송이면 이 규칙 대상 아님). 이름만 알면 query_sheet(worker_db)로 slack_id 조회. 여러 작업자에게 같은 공지를 보낼 땐 send_message의 items 배열을 쓰되, 항목마다 그 사람 멘션을 문구 맨 앞에 넣어 채운다(문구가 다 똑같더라도 멘션 없이 items를 채우지 말 것).",
   "★★답변 위치 / '여기'의 뜻(중요·엄수): 네 답변 텍스트는 시스템이 **사용자가 너를 부른 바로 그 자리(그 스레드/DM)에 자동으로** 올린다. 그래서 '여기/이 스레드에 답해·멘션해·써줘·달아줘'는 send_message도, 스레드 링크(‘링크 복사’ 값)도 **전혀 필요 없다** — 그냥 답변 텍스트 안에 내용(필요하면 <@멘션>)을 넣기만 하면 그 자리에 달린다. **절대 '스레드 링크를 붙여달라'고 되묻지 마라(넌 이미 그 스레드에 답하고 있다).** send_message는 오직 *지금 이 자리가 아닌 다른 채널/다른 스레드/DM*으로 보낼 때만 쓴다(그때만 받는 곳/링크가 필요). '담당 APM 멘션해'도 마찬가지 — '△△ 채널로 보내라'는 말이 없으면 그냥 이 스레드 답변에 <@APM>을 넣어라(#재팬_apm-alerts 등 다른 채널로 임의 발송하지 말 것).",
+  "★작업자 채널의 원본 파일순서 기능(2026-09-17 신설): 지정된 작업자 개인 채널에서 작업자가 「原本の順番を直してください 12話」처럼 말하면, 툰식이가 TOTUS 담당 정보로 작품을 자동 판정해 파일 순서를 점검하고, 확인 버튼을 눌러야 반영한다(순서 반영 + 회차 확정까지). 작품명은 말할 필요 없고 話数만 넣으면 된다. 파일명 변경·추가·삭제는 불가(TOTUS에 해당 API가 없다). 자동 판정이 안 되는 회차는 반영하지 않고 담당 PM 안내로 돌린다. 작업자가 「使い方」「説明」류로 물으면 고정 매뉴얼이 자동으로 나간다. ★재상 님이 작업자 채널에서 '이 기능을 작업자에게 설명해줘'라고 하면, 이 문단의 내용만 근거로 **일본어**로 설명하라 — 없는 기능(파일명 변경·되돌리기 등)을 지어내지 말 것. 스레드에서 불렀으면 그 스레드에 답하고, 작업자가 읽을 글이므로 정중한 です・ます체로 쓴다.",
   "사용자 권한: 재상 님 외에 APM 두 분도 너에게 말을 건다(같은 '툰식이'로 똑같이 친절하게 응대). 단 '변경·발송·리마인더'(납품예정일/시트 변경·삭제, 슬랙 메시지 발송, 리마인더 등록·조회·완료)는 재상 님 전용이다. APM 분이 그런 요청을 하면 해당 도구가 거부(denied)를 돌려주는데, 그때는 '그건 재상 님만 할 수 있어요. 대신 조회·검수·링크·원본파일은 도와드릴게요'처럼 부드럽게 안내한다. 조회·검수·링크·원본 파일은 모두에게 열려 있다.",
   "내부 구현은 답변에 드러내지 않는다 — 도구명·뷰명(예: translator_grade, query_sheet)이나 '어느 탭·필드에서 어떤 로직으로 가져왔는지'를 괄호로 달거나 설명하지 말 것. 그건 나와 봇만 아는 내부 사정이다. 결과만 자연스럽게 말하고, 사용자가 직접 '어디서 가져왔어?'라고 물을 때만 출처를 짧게 답한다.",
   "강조 기호(**굵게)를 남용하지 않는다 — 정말 핵심 한두 군데만. 평소엔 일반 텍스트로. 표·불릿·헤더도 꼭 필요할 때만.",
@@ -4367,7 +4369,91 @@ const app = new App({
 });
 
 // DM (message.im) — 본인 DM만, 봇/수정 이벤트 제외
+// ── 작업자 원본 파일 순서 정리(작업자 개인 채널 전용) ─────────────────────────
+// 내부용 check_and_fix_file_order와는 별개 경로. 허용 사용자 게이트보다 앞에서 처리한다
+// (작업자는 ALLOWED_USERS에 없어서 그 뒤로 가면 무시된다).
+const pendingWfo = new Map();
+let wfoSeq = 0;
+
+async function handleWorkerFileOrder({ message, client }) {
+  const worker = WFO_CHANNELS[message.channel];
+  if (!worker) return false;
+  if (message.bot_id || (message.subtype && message.subtype !== "file_share")) return true;   // 채널은 맡되 봇 메시지는 무시
+  const text = message.text || "";
+  if (wfoIsHelp(text)) {
+    await client.chat.postMessage({ channel: message.channel, thread_ts: message.thread_ts || message.ts, text: WFO_MANUAL, ...SENDER }).catch(() => {});
+    return true;
+  }
+  if (!wfoIntent(text)) {
+    await client.chat.postMessage({ channel: message.channel, thread_ts: message.thread_ts || message.ts, text: WFO_GUIDE, ...SENDER }).catch(() => {});
+    return true;
+  }
+  const replyTs = message.thread_ts || message.ts;
+  const eps = wfoEpisodes(text);
+  if (!eps.length) {
+    await client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text: "話数が読み取れませんでした。『12話』のように話数を入れてお送りください。", ...SENDER }).catch(() => {});
+    return true;
+  }
+  try {
+    const works = await wfoWorks(worker);
+    if (!works.length) {
+      await client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text: "担当作品が見つかりませんでした。担当PMにご連絡ください。", ...SENDER }).catch(() => {});
+      return true;
+    }
+    // 회차 배정으로 작품을 좁힌다(작업자는 작품명을 말하지 않는다).
+    const cands = [];
+    for (const w of works) {
+      const proj = await projectByPivo(w.pivo).catch(() => null);
+      const uuid = (proj?.data || proj || [])[0]?.uuid;
+      if (!uuid) continue;
+      const ok = await wfoHasEpisode(uuid, eps[0], worker.email);
+      if (ok) cands.push({ ...w, uuid });
+    }
+    if (!cands.length) {
+      await client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text: `${eps[0]}話の担当分が見つかりませんでした。話数をご確認いただくか、担当PMにご連絡ください。`, ...SENDER }).catch(() => {});
+      return true;
+    }
+    if (cands.length > 1) {
+      await client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text: `対象作品が複数あります。作品名を添えてもう一度お送りください。\n${cands.map((c) => `・${c.title}`).join("\n")}`, ...SENDER }).catch(() => {});
+      return true;
+    }
+    const target = cands[0];
+    await client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text: `確認しています… （${target.title} / ${eps.join(", ")}話）`, ...SENDER }).catch(() => {});
+    const records = await wfoInspect(target.uuid, eps);
+    const batchId = `wfo_${++wfoSeq}_${Date.now()}`;
+    const rec = { worker, title: target.title, pivo: target.pivo, uuid: target.uuid, records, channel: message.channel, ts: replyTs, at: Date.now() };
+    pendingWfo.set(batchId, rec);
+    await client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text: `原本ファイル順の確認結果 — ${target.title}`, blocks: wfoBlocks(batchId, rec), ...SENDER });
+  } catch (e) {
+    console.error("[wfo] 실패:", e?.message ?? e);
+    await client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text: "確認中にエラーが発生しました。担当PMにご連絡ください。", ...SENDER }).catch(() => {});
+  }
+  return true;
+}
+
+app.action("wfo_confirm", async ({ ack, body, client }) => {
+  await ack();
+  const rec = pendingWfo.get(body.actions[0].value);
+  if (!rec) { await client.chat.postMessage({ channel: body.channel.id, thread_ts: body.message?.thread_ts, text: "この確認は期限切れです。もう一度お送りください。", ...SENDER }).catch(() => {}); return; }
+  pendingWfo.delete(body.actions[0].value);
+  const r = await wfoApply(rec.records);
+  const ok = r.done.length ? `${r.done.map((e) => `${e}話`).join(", ")} を反映しました。` : "反映対象がありませんでした。";
+  const ng = r.failed.length ? `\n失敗: ${r.failed.map(([e, m]) => `${e}話(${m})`).join(", ")}` : "";
+  await client.chat.update({ channel: body.channel.id, ts: body.message.ts, text: `${ok}${ng}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: `*${rec.title}*
+${ok}${ng}` } }], ...SENDER }).catch(() => {});
+  await dmOwner(`🗂 *작업자 파일순서 반영* — ${rec.worker.name}\n• 작품: ${rec.title} (PIVO ${rec.pivo})\n• 반영: ${r.done.length ? r.done.map((e) => `${e}화`).join(", ") : "없음"}${r.failed.length ? `\n• 실패: ${r.failed.map(([e, m]) => `${e}화(${m})`).join(", ")}` : ""}`).catch(() => {});
+});
+
+app.action("wfo_cancel", async ({ ack, body, client }) => {
+  await ack();
+  pendingWfo.delete(body.actions[0].value);
+  await client.chat.update({ channel: body.channel.id, ts: body.message.ts, text: "キャンセルしました。", blocks: [{ type: "section", text: { type: "mrkdwn", text: "キャンセルしました。" } }], ...SENDER }).catch(() => {});
+});
+
 app.message(async ({ message, say, client }) => {
+  // 작업자 채널: 작업자 본인 요청만 전용 경로로. 재상 님·APM이 쓴 글은 평소대로 브레인이 받는다
+  //(그 채널에서 기능 소개·설명을 시키실 수 있어야 하므로).
+  if (WFO_CHANNELS[message.channel] && !ALLOWED_USERS.has(message.user)) { await handleWorkerFileOrder({ message, client }); return; }
   // 수급 안내 채널 — 설정집/타이틀 로고 도착 안내면 배정 작업자+채널 링크 답글
   if (message.channel === SUPPLY_NOTICE_CHANNEL && (SUPPLY_BOTS[message.bot_id] || /도착\s*안내/.test(message.text || ""))) {
     await handleSupplyNotice({ message, client });
