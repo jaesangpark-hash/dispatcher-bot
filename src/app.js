@@ -2725,7 +2725,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: false } }),
     tool("fetch_original_from_drive",
-      "재수급 원본 파일(psd/jpg)을 baidu 제외 드라이브(Kuaikan/arthub)에서 직접 찾아 다운로드 링크를 가져온다('N화 M페이지 원본 psd/jpg 가져와'). work(작품명 또는 PIVO) 또는 url(드라이브 링크 직접 제공) 중 하나 필요 — url을 주면 그걸 우선 쓰고 시트 조회를 건너뜀. 회차/페이지 자동 매칭이 애매하면(후보가 여러 개거나 하나도 안 잡히면) 절대 추측하지 않고 후보 목록을 그대로 반환하니, 그때는 사용자에게 후보를 보여주고 어떤 게 맞는지 확인받은 다음 정확한 이름으로 다시 시도해야 한다 — 후보 중 아무거나 임의로 골라서 전달하면 안 됨. baidu이거나 자동화 대상이 아니면 수동 처리가 필요하다고 안내만 한다. 게이트 없이 즉시 실행(읽기성 조회).",
+      "재수급 원본 파일(psd/jpg)을 baidu 제외 드라이브(Kuaikan/arthub)에서 직접 찾아 다운로드 링크를 가져온다. 키워드: '원본 받기 [작품명] [N화]', '원본 받기 [작품명] [N화] [M페이지]'. TOTUS 업로드 없이 다운로드 링크만 전달하는 용도. work(작품명 또는 PIVO) 또는 url(드라이브 링크 직접 제공) 중 하나 필요 — url을 주면 그걸 우선 쓰고 시트 조회를 건너뜀. 회차/페이지 자동 매칭이 애매하면(후보가 여러 개거나 하나도 안 잡히면) 절대 추측하지 않고 후보 목록을 그대로 반환하니, 그때는 사용자에게 후보를 보여주고 어떤 게 맞는지 확인받은 다음 정확한 이름으로 다시 시도해야 한다 — 후보 중 아무거나 임의로 골라서 전달하면 안 됨. baidu이거나 자동화 대상이 아니면 수동 처리가 필요하다고 안내만 한다. 게이트 없이 즉시 실행(읽기성 조회).",
       {
         work: z.string().optional().describe("작품명 또는 PIVO — url이 없을 때 출판사 드라이브 링크 시트에서 찾을 키"),
         url: z.string().optional().describe("드라이브 링크 직접 제공(Kuaikan/arthub). 있으면 work 없어도 됨, work의 시트 조회보다 우선함"),
@@ -2782,7 +2782,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("check_original_source_files",
-      "TOTUS PIVO 작품의 특정 회차에 현재 등록된 원본(작업용) 파일 목록을 조회한다('N화 원본 파일 뭐 있어', '재수급 업로드 전에 기존 파일명 확인'). 재수급으로 원본을 교체 업로드(propose_original_reupload)하려면 기존과 동일한 파일명으로 올려야 덮어쓰기되므로, 그 전에 이걸로 파일명을 확인하는 용도. 게이트 없이 즉시 실행(읽기성 조회, 부작용 없음).",
+      "TOTUS PIVO 작품의 특정 회차에 현재 등록된 원본(작업용) 파일 목록을 조회한다. 키워드: '원본 목록 [작품명] [N화]'. 게이트 없이 즉시 실행(읽기성 조회, 부작용 없음).",
       {
         pivo: z.string().describe("PIVO 번호(PV- 접두 붙여도 됨, 숫자만 추출해서 씀)"),
         episode: z.union([z.string(), z.number()]).describe("회차 번호"),
@@ -3617,7 +3617,7 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       }),
     tool("transfer_kuaikan_files",
-      "쿠아이칸(Kuaikan) 원본 파일을 PIVO로 이관한다. '작품명 N화 이관해줘', '원본 이관해', '1화 3페이지만 이관해줘' 등 수동 이관 요청 시 호출. ★이 도구를 호출할 때는 별도 응답 텍스트를 생성하지 말 것 — 도구가 직접 스레드에 ⏳ 파일별 진행상황을 실시간 업데이트하고 완료 시 새 메시지를 올린다. 중복 파일(원본+gai 수정본)이 발견되면 중복만 따로 물어보고 나머지는 먼저 이관한다. 누락 의심(PIVO 파일 수 < Kuaikan 파일 수) 및 깨짐 의심(100KB 미만)은 완료 메시지에 경고로 포함된다.",
+      "쿠아이칸(Kuaikan) 원본 파일을 PIVO로 이관한다. 수동 이관 키워드: '이관 [작품명] [N화]'(전체), '이관 [작품명] [N화] [M페이지]'(특정 페이지). ★작품명 또는 회차가 없으면 이관하지 말고 빠진 것만 되물어라('몇 화인가요?' 또는 '어떤 작품인가요?' 한 줄). ★이 도구를 호출할 때는 별도 응답 텍스트를 생성하지 말 것 — 도구가 직접 스레드에 ⏳ 파일별 진행상황을 실시간 업데이트하고 완료 시 새 메시지를 올린다. 중복 파일(원본+gai 수정본)이 발견되면 중복만 따로 물어보고 나머지는 먼저 이관한다. 누락 의심(PIVO 파일 수 < Kuaikan 파일 수) 및 깨짐 의심(100KB 미만)은 완료 메시지에 경고로 포함된다.",
       {
         workName: z.string().describe("작품 한국어 이름. pivoId+originalTitleCH를 직접 주면 생략 가능(빈 문자열 '')"),
         episodes: z.string().describe("회차. 단일: '1' / 범위: '1-3' / 복수: '1,2,3'. '화' 포함 가능 예: '1화', '1-3화'"),
@@ -6298,7 +6298,8 @@ async function _triggerKuaikanReupload({ work, entry, episodePage, apm }) {
     ? list.map(e => [e.episode && `${e.episode}화`, e.page && `${e.page}페이지`].filter(Boolean).join(" ")).join(", ")
     : episodePage;
   const apmNote = apm ? `\n• 담당 APM: ${apm}` : "";
-  await dmOwner(`📥 *재수급 완료 감지 — 콰이칸 이관 필요*\n• 작품: *${work}* (PIVO ${entry.pivo})\n• 회차: ${epText}${apmNote}\n이관이 필요하면 \`propose_original_reupload\`를 실행해주세요.`);
+  const cmd = `이관 ${work} ${epText}`;
+  await dmOwner(`📥 *재수급 완료 감지 — 콰이칸 이관 필요*\n• 작품: *${work}* (PIVO ${entry.pivo})\n• 회차: ${epText}${apmNote}\n이관하려면: \`${cmd}\``);
 }
 
 // 문의봇 '재수급 완료' 감지 시 Kuaikan→PIVO 자동 이관. toon-원본재수급 채널에서 resupply_upload_file 버튼 메시지 수신 시 호출.
