@@ -4454,10 +4454,15 @@ async function handleWorkerFileOrder({ message, client }) {
 
 app.action("wfo_confirm", async ({ ack, body, client }) => {
   await ack();
-  const rec = pendingWfo.get(body.actions[0].value);
+  const batchId = body.actions[0].value;
+  let rec = pendingWfo.get(batchId);
+  if (!rec && batchId.startsWith("wfodemo")) rec = wfoDemo(body.channel?.id, body.message?.thread_ts);
   if (!rec) { await client.chat.postMessage({ channel: body.channel.id, thread_ts: body.message?.thread_ts, text: "この確認は期限切れです。もう一度お送りください。", ...SENDER }).catch(() => {}); return; }
-  pendingWfo.delete(body.actions[0].value);
-  const r = await wfoApply(rec.records);
+  pendingWfo.delete(batchId);
+  // 데모는 TOTUS에 손대지 않는다.
+  const r = rec.demo
+    ? { done: rec.records.filter((x) => x.status === "fix").map((x) => x.episode), failed: [] }
+    : await wfoApply(rec.records);
   const ok = r.done.length ? `${r.done.map((e) => `${e}話`).join(", ")} を反映しました。` : "反映対象がありませんでした。";
   const ng = r.failed.length ? `\n失敗: ${r.failed.map(([e, m]) => `${e}話(${m})`).join(", ")}` : "";
   await client.chat.update({ channel: body.channel.id, ts: body.message.ts, text: `${ok}${ng}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: `*${rec.title}*
