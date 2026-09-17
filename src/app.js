@@ -31,7 +31,7 @@ import { search as notionSearch, readPage as notionReadPage } from "./notion.js"
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
 import { detectDrivePlatform, parseDriveUrl, kuaikanSearchRoot, kuaikanListChildren, kuaikanGetDownloadUrl, resolveEpisodePage, findEpisodeFolder, isKuaikanDir, makeArthubAdapter, makeKuaikanAdapter, KuaikanSessionExpiredError, DriveFileUnsupportedError, matchByNumber } from "./drive-download.js";
 import { analyzeOrder, detectMissingPages } from "./file-order.js";
-import { WORKER_CHANNELS as WFO_CHANNELS, detectIntent as wfoIntent, parseEpisodes as wfoEpisodes, worksOfWorker as wfoWorks, workerHasEpisode as wfoHasEpisode, isHelpRequest as wfoIsHelp, MANUAL_TEXT as WFO_MANUAL, inspectEpisodes as wfoInspect, applyOrder as wfoApply, previewBlocks as wfoBlocks, GUIDE_TEXT as WFO_GUIDE } from "./fileOrderWorker.js";
+import { orderModalView as wfoOrderModal, moveItem as wfoMove, editableRecords as wfoEditable, applyManualOrder as wfoManual, demoRecord as wfoDemo, WORKER_CHANNELS as WFO_CHANNELS, detectIntent as wfoIntent, parseEpisodes as wfoEpisodes, worksOfWorker as wfoWorks, workerHasEpisode as wfoHasEpisode, isHelpRequest as wfoIsHelp, MANUAL_TEXT as WFO_MANUAL, titleIndex as wfoTitles, pickByTitle as wfoPick, inspectEpisodes as wfoInspect, applyOrder as wfoApply, previewBlocks as wfoBlocks, GUIDE_TEXT as WFO_GUIDE } from "./fileOrderWorker.js";
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
@@ -249,7 +249,7 @@ const DISPATCHER_PROMPT = [
   "★담당 APM @멘션 Slack ID(이 3명은 시트 조회 없이 바로 <@ID>로 멘션): **서주원=U07E0QPL8MV · 정태영=U05CE8HFA6B · 박재상=U04463JR4HH**. '담당 APM 멘션해줘'면 작품 담당 APM 이름을 이 맵으로 실제 @멘션한다(worker_db 조회·'ID를 못 찾는다' 금지). 이 3명 외 이름일 때만 query_sheet(worker_db)로 slack_id 조회.",
   "★작업자 개인 채널로 보내는 공지(가이드 업데이트, 배정 안내 등 특정 작업자의 담당 채널로 send_message 하는 경우)는 '멘션해서 보내줘'라는 말이 따로 없어도 **항상 기본으로** 그 채널 담당 작업자를 문구 맨 앞에 <@slack_id>로 멘션해서 보낸다 — 개인 채널 공지에 멘션이 없으면 못 보고 지나칠 수 있다(불특정 다수가 보는 팀 채널 발송이면 이 규칙 대상 아님). 이름만 알면 query_sheet(worker_db)로 slack_id 조회. 여러 작업자에게 같은 공지를 보낼 땐 send_message의 items 배열을 쓰되, 항목마다 그 사람 멘션을 문구 맨 앞에 넣어 채운다(문구가 다 똑같더라도 멘션 없이 items를 채우지 말 것).",
   "★★답변 위치 / '여기'의 뜻(중요·엄수): 네 답변 텍스트는 시스템이 **사용자가 너를 부른 바로 그 자리(그 스레드/DM)에 자동으로** 올린다. 그래서 '여기/이 스레드에 답해·멘션해·써줘·달아줘'는 send_message도, 스레드 링크(‘링크 복사’ 값)도 **전혀 필요 없다** — 그냥 답변 텍스트 안에 내용(필요하면 <@멘션>)을 넣기만 하면 그 자리에 달린다. **절대 '스레드 링크를 붙여달라'고 되묻지 마라(넌 이미 그 스레드에 답하고 있다).** send_message는 오직 *지금 이 자리가 아닌 다른 채널/다른 스레드/DM*으로 보낼 때만 쓴다(그때만 받는 곳/링크가 필요). '담당 APM 멘션해'도 마찬가지 — '△△ 채널로 보내라'는 말이 없으면 그냥 이 스레드 답변에 <@APM>을 넣어라(#재팬_apm-alerts 등 다른 채널로 임의 발송하지 말 것).",
-  "★작업자 채널의 원본 파일순서 기능(2026-09-17 신설): 지정된 작업자 개인 채널에서 작업자가 「原本の順番を直してください 12話」처럼 말하면, 툰식이가 TOTUS 담당 정보로 작품을 자동 판정해 파일 순서를 점검하고, 확인 버튼을 눌러야 반영한다(순서 반영 + 회차 확정까지). 작품명은 말할 필요 없고 話数만 넣으면 된다. 파일명 변경·추가·삭제는 불가(TOTUS에 해당 API가 없다). 자동 판정이 안 되는 회차는 반영하지 않고 담당 PM 안내로 돌린다. 작업자가 「使い方」「説明」류로 물으면 고정 매뉴얼이 자동으로 나간다. ★재상 님이 작업자 채널에서 '이 기능을 작업자에게 설명해줘'라고 하면, 이 문단의 내용만 근거로 **일본어**로 설명하라 — 없는 기능(파일명 변경·되돌리기 등)을 지어내지 말 것. 스레드에서 불렀으면 그 스레드에 답하고, 작업자가 읽을 글이므로 정중한 です・ます체로 쓴다.",
+  "★작업자 채널의 원본 파일순서 기능(2026-09-17 신설): 지정된 작업자 개인 채널에서 작업자가 「「アンデッド・スカージ」「12話」ファイル順がおかしい」처럼 작품명과 회차를 말하면, 툰식이가 그 작품의 파일 순서를 점검하고 확인 버튼을 눌러야 반영한다(순서 반영 + 회차 확정까지). 작품명은 반드시 필요하다 — 본문에 없으면 스레드 부모 메시지에서 찾고, 그래도 없으면 작업자에게 작품명을 되묻는다(추측해서 진행하지 않는다). 회차 표기는 「12話」「12〜14話」「1,2,3話」 어느 쪽이든 되고, 서식이 정해져 있지는 않다. 본인이 담당하지 않는 회차는 대상 외다. 파일명 변경·추가·삭제는 불가(TOTUS에 해당 API가 없다). 자동 판정이 안 되는 회차는 반영하지 않고 담당 PM 안내로 돌린다. 작업자가 「使い方」「説明」류로 물으면 고정 매뉴얼이 자동으로 나간다. ★재상 님이 작업자 채널에서 '이 기능을 작업자에게 설명해줘'라고 하면, 이 문단의 내용만 근거로 **일본어**로 설명하라 — 없는 기능(파일명 변경·되돌리기 등)을 지어내지 말 것. 스레드에서 불렀으면 그 스레드에 답하고, 작업자가 읽을 글이므로 정중한 です・ます체로 쓴다.",
   "사용자 권한: 재상 님 외에 APM 두 분도 너에게 말을 건다(같은 '툰식이'로 똑같이 친절하게 응대). 단 '변경·발송·리마인더'(납품예정일/시트 변경·삭제, 슬랙 메시지 발송, 리마인더 등록·조회·완료)는 재상 님 전용이다. APM 분이 그런 요청을 하면 해당 도구가 거부(denied)를 돌려주는데, 그때는 '그건 재상 님만 할 수 있어요. 대신 조회·검수·링크·원본파일은 도와드릴게요'처럼 부드럽게 안내한다. 조회·검수·링크·원본 파일은 모두에게 열려 있다.",
   "내부 구현은 답변에 드러내지 않는다 — 도구명·뷰명(예: translator_grade, query_sheet)이나 '어느 탭·필드에서 어떤 로직으로 가져왔는지'를 괄호로 달거나 설명하지 말 것. 그건 나와 봇만 아는 내부 사정이다. 결과만 자연스럽게 말하고, 사용자가 직접 '어디서 가져왔어?'라고 물을 때만 출처를 짧게 답한다.",
   "강조 기호(**굵게)를 남용하지 않는다 — 정말 핵심 한두 군데만. 평소엔 일반 텍스트로. 표·불릿·헤더도 꼭 필요할 때만.",
@@ -4400,9 +4400,30 @@ async function handleWorkerFileOrder({ message, client }) {
       await client.chat.postMessage({ channel: message.channel, thread_ts: replyTs, text: "担当作品が見つかりませんでした。担当PMにご連絡ください。", ...SENDER }).catch(() => {});
       return true;
     }
-    // 회차 배정으로 작품을 좁힌다(작업자는 작품명을 말하지 않는다).
+    // ① 작업자가 적어준 작품명으로 먼저 좁힌다(가장 빠르고 확실하다).
+    //    본문에 없으면 스레드 본문(부모 메시지)에서 찾는다 — 스레드로 의뢰하는 경우가 많다.
+    let narrowed = works;
+    try {
+      const idx = await wfoTitles();
+      let hit = wfoPick(text, works, idx);
+      if (!hit.length && message.thread_ts) {
+        const parent = await client.conversations.replies({ channel: message.channel, ts: message.thread_ts, limit: 1 }).catch(() => null);
+        const ptext = parent?.messages?.[0]?.text || "";
+        hit = wfoPick(ptext, works, idx);
+      }
+      narrowed = hit;
+    } catch (e) { console.error("[wfo] 제목 매칭 실패:", e?.message ?? e); narrowed = []; }
+
+    // 작품을 못 정하면 추측하지 않고 물어본다(재상 님 지정, 2026-09-17).
+    if (!narrowed.length) {
+      await client.chat.postMessage({ channel: message.channel, thread_ts: replyTs,
+        text: "作品名が確認できませんでした。作品名を添えてもう一度お送りください。\n例）『「アンデッド・スカージ」「12話」ファイル順がおかしい』", ...SENDER }).catch(() => {});
+      return true;
+    }
+
+    // ② 남은 후보를 회차 배정으로 확인한다.
     const cands = [];
-    for (const w of works) {
+    for (const w of narrowed) {
       const proj = await projectByPivo(w.pivo).catch(() => null);
       const uuid = (proj?.data || proj || [])[0]?.uuid;
       if (!uuid) continue;
@@ -7072,6 +7093,86 @@ async function tick() {
     _tickRunning = false;
   }
 }
+
+// ── 작업자 파일순서 — 순서 직접 수정 모달(⋯ 메뉴로 이동, 2026-09-17) ──────────
+// 자동 판정이 틀렸거나 애매해서 건너뛴 회차를 작업자가 직접 고친다.
+// Slack에 드래그가 없으므로 ⋯ 메뉴를 누를 때마다 views.update로 모달을 다시 그린다.
+const wfoOrder = new Map();   // `${batchId}|${episode}` → 작업 중인 파일명 배열
+
+function wfoInitialOrder(rec, episode) {
+  const r = (rec?.records || []).find((x) => Number(x.episode) === Number(episode));
+  return (r?.status === "fix" ? r.sorted : r?.files) || [];
+}
+
+async function wfoShowModal({ client, body, rec, batchId, episode, viewId }) {
+  const key = `${batchId}|${episode}`;
+  if (!wfoOrder.has(key)) wfoOrder.set(key, wfoInitialOrder(rec, episode));
+  const view = wfoOrderModal(batchId, rec, episode, wfoOrder.get(key));
+  if (viewId) await client.views.update({ view_id: viewId, view });
+  else await client.views.open({ trigger_id: body.trigger_id, view });
+}
+
+app.action("wfo_fix_open", async ({ ack, body, client }) => {
+  await ack();
+  const batchId = body.actions[0].value;
+  let rec = pendingWfo.get(batchId);
+  // 데모(재상 님 확인용) — 실제 배치가 없으면 가짜 데이터로 띄운다. TOTUS에는 쓰지 않는다.
+  if (!rec && batchId.startsWith("wfodemo")) { rec = wfoDemo(body.channel?.id, body.message?.thread_ts); pendingWfo.set(batchId, rec); }
+  if (!rec) {
+    await client.chat.postMessage({ channel: body.channel.id, thread_ts: body.message?.thread_ts, text: "この確認は期限切れです。もう一度お送りください。", ...SENDER }).catch(() => {});
+    return;
+  }
+  const eps = wfoEditable(rec);
+  if (!eps.length) {
+    await client.chat.postMessage({ channel: body.channel.id, thread_ts: body.message?.thread_ts, text: "並べ替えできる話数がありません。担当PMにご連絡ください。", ...SENDER }).catch(() => {});
+    return;
+  }
+  rec.previewChannel = body.channel?.id; rec.previewTs = body.message?.ts;
+  await wfoShowModal({ client, body, rec, batchId, episode: eps[0].episode });
+});
+
+app.action(/^wfo_mv_\d+$/, async ({ ack, body, client, action }) => {
+  await ack();
+  const [batchId, ep, idx, op] = String(action?.selected_option?.value || "").split("|");
+  const rec = pendingWfo.get(batchId);
+  if (!rec) return;
+  const key = `${batchId}|${ep}`;
+  wfoOrder.set(key, wfoMove(wfoOrder.get(key) || wfoInitialOrder(rec, ep), Number(idx), op));
+  await wfoShowModal({ client, body, rec, batchId, episode: Number(ep), viewId: body.view.id });
+});
+
+app.action("wfo_ep_pick", async ({ ack, body, client, action }) => {
+  await ack();
+  const [batchId] = String(body.view?.private_metadata || "").split("|");
+  const rec = pendingWfo.get(batchId);
+  if (!rec) return;
+  await wfoShowModal({ client, body, rec, batchId, episode: Number(action.selected_option.value), viewId: body.view.id });
+});
+
+app.view("wfo_order_submit", async ({ ack, view, client }) => {
+  await ack();
+  const [batchId, ep] = String(view.private_metadata || "").split("|");
+  const rec = pendingWfo.get(batchId);
+  const order = wfoOrder.get(`${batchId}|${ep}`);
+  const ch = rec?.previewChannel || rec?.channel;
+  if (!rec || !order?.length) {
+    if (ch) await client.chat.postMessage({ channel: ch, thread_ts: rec?.ts, text: "この確認は期限切れです。もう一度お送りください。", ...SENDER }).catch(() => {});
+    return;
+  }
+  wfoOrder.delete(`${batchId}|${ep}`);
+  const list = order.map((n, i) => `${String(i + 1).padStart(2, "0")}　${n}`).join("\n");
+  if (rec.demo) {
+    await client.chat.postMessage({ channel: ch, thread_ts: rec.ts, text: `デモのため実際には反映していません。\n\n*${ep}話 — 確定した順番*\n${list}`, ...SENDER }).catch(() => {});
+    return;
+  }
+  try {
+    const n = await wfoManual(rec, Number(ep), order);
+    await client.chat.postMessage({ channel: ch, thread_ts: rec.ts, text: `${ep}話 のファイル順を指定どおり更新しました（${n}ファイル）。話数の確定処理まで完了しています。\n${list}`, ...SENDER }).catch(() => {});
+    await dmOwner(`🗂 *작업자 파일순서 수동 지정* — ${rec.worker?.name}\n• 작품: ${rec.title} (PIVO ${rec.pivo})\n• ${ep}화 ${n}개 파일을 작업자가 직접 지정한 순서로 반영·확정\n${list}`).catch(() => {});
+  } catch (e) {
+    await client.chat.postMessage({ channel: ch, thread_ts: rec.ts, text: `反映に失敗しました（${String(e?.message ?? e).slice(0, 80)}）。担当PMにご連絡ください。`, ...SENDER }).catch(() => {});
+  }
+});
 
 (async () => {
   await app.start();

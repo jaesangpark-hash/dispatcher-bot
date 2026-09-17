@@ -79,6 +79,44 @@ export async function worksOfWorker(worker) {
   return hits;
 }
 
+// 작품명 매칭용 제목 인덱스: PIVO → [한국어·일본어·중국어·FIX 타이틀]
+// 작업자는 일본어 제목으로 부르므로 한국어타이틀만 보면 못 맞춘다.
+const DRIVE = "출판사 드라이브 링크";
+export async function titleIndex() {
+  const rows = await readRange(OPS, `'${DRIVE}'!A2:I`);
+  const idx = {};
+  for (const r of rows) {
+    const pivo = String(r[8] ?? "").trim();
+    if (!pivo) continue;
+    idx[pivo] = [r[1], r[2], r[3], r[4]].map((x) => String(x ?? "").trim()).filter(Boolean);
+  }
+  return idx;
+}
+
+// 제목 비교용 정규화 — 공백·물결·괄호주석(（仮） 등)·기호를 떼고 본다.
+export const normTitle = (s) => String(s ?? "")
+  .replace(/[（(][^）)]*[）)]/g, "")
+  .replace(/[\s~～〜〰・･:：!！?？'"“”‘’,，.。\-—–_[\]「」『』【】]/g, "")
+  .toLowerCase();
+
+// 본문에서 후보 작품을 고른다. 「」 안이 있으면 그것부터, 없으면 본문 전체에서 제목 포함 여부로.
+export function pickByTitle(text, candidates, idx) {
+  const t = String(text ?? "");
+  if (!t.trim() || !candidates.length) return [];
+  const quoted = [...t.matchAll(/[「『"]([^」』"]{2,60})[」』"]/g)].map((m) => m[1]);
+  const probes = quoted.length ? quoted.concat([t]) : [t];
+  for (const probe of probes) {
+    const np = normTitle(probe);
+    if (!np) continue;
+    const hit = candidates.filter((c) => {
+      const titles = [c.title, ...(idx[c.pivo] || [])].map(normTitle).filter((x) => x.length >= 2);
+      return titles.some((x) => np.includes(x) || x.includes(np));
+    });
+    if (hit.length) return hit;
+  }
+  return [];
+}
+
 // 그 회차에 이 작업자의 태스크가 실제로 있는지 TOTUS로 확인(시트는 하루 1회 동기화라 최신이 아닐 수 있다).
 export async function workerHasEpisode(projectUuid, episode, email) {
   const jl = (await projectJobs(projectUuid))?.data || [];
@@ -158,7 +196,7 @@ export function previewBlocks(batchId, rec) {
   }
   if (clean.length) lines.push("", `▼ 問題なし（${clean.length}話）: ${clean.map((r) => epLabel(r.episode)).join(", ")}`);
   if (skip.length) {
-    lines.push("", `▼ 自動判定できません（${skip.length}話） — 担当PMにご連絡ください`);
+    lines.push("", `▼ 自動判定できません（${skip.length}話） — 『順番が違う』から手動で並べ替えできます`);
     for (const r of skip.slice(0, 6)) {
       const why = r.status === "ambiguous" ? "順番が一意に決まらない"
         : r.status === "complex_skip" ? "ファイル名の規則が複雑"
@@ -172,14 +210,14 @@ export function previewBlocks(batchId, rec) {
     for (const r of missing.slice(0, 6)) lines.push(`・${epLabel(r.episode)}: ${r.missing.join(", ")}`);
   }
   const blocks = [{ type: "section", text: { type: "mrkdwn", text: lines.join("\n").slice(0, 2900) } }];
-  if (fix.length) {
-    blocks.push({
-      type: "actions",
-      elements: [
-        { type: "button", style: "primary", text: { type: "plain_text", text: `並べ替えを反映（${fix.length}話）` }, action_id: "wfo_confirm", value: batchId },
-        { type: "button", text: { type: "plain_text", text: "キャンセル" }, action_id: "wfo_cancel", value: batchId },
-      ],
-    });
+  const editable = editableRecords(rec);
+  const els = [];
+  if (fix.length) els.push({ type: "button", style: "primary", text: { type: "plain_text", text: `並べ替えを反映（${fix.length}話）` }, action_id: "wfo_confirm", value: batchId });
+  // 자동 판정이 틀렸을 때 / 애매해서 건너뛴 회차를 작업자가 직접 고치는 입구.
+  if (editable.length) els.push({ type: "button", text: { type: "plain_text", text: "順番が違う" }, action_id: "wfo_fix_open", value: batchId });
+  if (els.length) {
+    els.push({ type: "button", text: { type: "plain_text", text: "キャンセル" }, action_id: "wfo_cancel", value: batchId });
+    blocks.push({ type: "actions", elements: els });
   } else {
     blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: "反映が必要な話数はありません。" }] });
   }
@@ -189,10 +227,10 @@ export function previewBlocks(batchId, rec) {
 export const GUIDE_TEXT = [
   "このチャンネルでは、担当作品の *原本ファイルの順番* の確認・並べ替えをお手伝いできます。",
   "",
-  "例）『原本の順番がおかしいので直してください 12話』",
-  "　　『12〜14話 ファイル順 確認お願いします』",
+  "『「作品名」「話数」ファイル順がおかしい』のようにお送りください。",
+  "例）『「アンデッド・スカージ」「12話」ファイル順がおかしい』",
   "",
-  "話数を必ず入れてください。詳しい使い方は『使い方』とお送りください。",
+  "作品名と話数の両方が必要です。詳しい使い方は『使い方』とお送りください。",
   "それ以外のご依頼は担当PMへお願いします。",
 ].join("\n");
 
@@ -207,16 +245,16 @@ export const MANUAL_TEXT = [
   "TOTUSのファイル管理画面を開かなくても、このチャンネルから依頼できます。",
   "",
   "*1. 依頼のしかた*",
-  "話数を入れて、順番を直したい旨をお送りください。決まった書式はありません。",
-  "・『原本の順番がおかしいので直してください 12話』",
-  "・『12〜14話 ファイル順 確認お願いします』",
-  "・『1,2,3話 原本の並び 確認』",
-  "※ 話数が入っていないと作品・話数を特定できません。必ず入れてください。",
+  "「作品名」と「話数」を入れて、順番を直したい旨をお送りください。書式は厳密でなくて構いません。",
+  "・『「アンデッド・スカージ」「12話」ファイル順がおかしい』",
+  "・『「終末学院」「12〜14話」原本の順番を直してください』",
+  "・『「終末学院」「1,2,3話」ファイルの並び 確認』",
+  "※ 作品名・話数のどちらかが欠けていると特定できません。両方入れてください。",
+  "※ 話数は「12話」「12〜14話」「1,2,3話」のいずれの書き方でも大丈夫です。",
   "",
-  "*2. 作品の指定は不要です*",
-  "TOTUSの担当情報から自動で判定します。",
-  "同じ話数で担当作品が複数ある場合のみ、作品名をお尋ねします。",
-  "ご自身が担当していない話数は対象外です。",
+  "*2. スレッドで依頼する場合*",
+  "親メッセージに作品名が入っていれば、返信では話数だけで構いません。",
+  "作品名が見つからないときはお尋ねします。ご自身が担当していない話数は対象外です。",
   "",
   "*3. 確認画面が出ます（この時点では何も変わりません）*",
   "・並べ替えが必要な話数 — 現在の順番と修正後の順番を並べて表示します",
@@ -238,3 +276,89 @@ export const MANUAL_TEXT = [
   "反映後の取り消しは自動ではできません。確認画面の内容をご確認のうえ実行をお願いします。",
   "うまく動かない・結果がおかしいときは担当PMにご連絡ください。",
 ].join("\n");
+
+// ── 순서 직접 수정 모달(2026-09-17 재상 님 요청) ─────────────────────────────
+// Slack Block Kit에는 드래그 요소가 없다. 파일마다 ⋯ 메뉴를 달고, 누를 때마다
+// views.update로 모달을 다시 그려서 "한 칸씩 미는" 체감으로 대신한다.
+// 회차당 파일은 많아야 15개 남짓(재상 님 확인)이라 블록 한도는 문제되지 않는다.
+export const MV_OPS = [["up", "↑ 上へ"], ["down", "↓ 下へ"], ["top", "⇧ 先頭へ"], ["bottom", "⇩ 末尾へ"]];
+
+export function moveItem(arr, i, op) {
+  const a = (arr || []).slice();
+  if (!(i >= 0 && i < a.length)) return a;
+  const [x] = a.splice(i, 1);
+  const j = op === "up" ? Math.max(0, i - 1)
+    : op === "down" ? Math.min(a.length, i + 1)
+      : op === "top" ? 0 : a.length;
+  a.splice(j, 0, x);
+  return a;
+}
+
+// 손댈 수 있는 회차 — 파일 목록을 받아온 회차만(not_found·error는 제외).
+export const editableRecords = (rec) => (rec?.records || []).filter((r) => Array.isArray(r.files) && r.files.length);
+
+export function orderModalView(batchId, rec, episode, order) {
+  const eps = editableRecords(rec).map((r) => r.episode);
+  const opt = (n) => ({ text: { type: "plain_text", text: `${n}話` }, value: String(n) });
+  const blocks = [];
+  if (eps.length > 1) {
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: "*話数*" },
+      accessory: { type: "static_select", action_id: "wfo_ep_pick", initial_option: opt(episode), options: eps.slice(0, 100).map(opt) },
+    });
+  }
+  blocks.push({ type: "section", text: { type: "mrkdwn", text: `*${episode}話* — 上から順に並びます。右の ⋯ から移動してください。` } });
+  blocks.push({ type: "divider" });
+  (order || []).slice(0, 80).forEach((name, i) => {
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `\`${String(i + 1).padStart(2, "0")}\`　${name}` },
+      accessory: {
+        type: "overflow",
+        action_id: `wfo_mv_${i}`,
+        options: MV_OPS.map(([op, label]) => ({ text: { type: "plain_text", text: label }, value: `${batchId}|${episode}|${i}|${op}` })),
+      },
+    });
+  });
+  return {
+    type: "modal",
+    callback_id: "wfo_order_submit",
+    private_metadata: `${batchId}|${episode}`,
+    title: { type: "plain_text", text: "ファイル順の修正" },
+    submit: { type: "plain_text", text: "この順番で反映" },
+    close: { type: "plain_text", text: "閉じる" },
+    blocks,
+  };
+}
+
+// 모달에서 확정한 순서를 그대로 반영 + 회차 확정.
+export async function applyManualOrder(rec, episode, order) {
+  const r = (rec?.records || []).find((x) => Number(x.episode) === Number(episode));
+  if (!r) throw new Error("該当話数が見つかりません");
+  const sources = (order || []).map((name, i) => ({ id: r.fileMap?.[name], order: i + 1 })).filter((s) => s.id != null);
+  if (!sources.length || sources.length !== order.length) throw new Error("ファイルIDを取得できませんでした");
+  await reorderFiles(sources);
+  await completeSourceGroups([r.groupId]);
+  return sources.length;
+}
+
+// 데모용 가짜 배치 — 동작을 보여드릴 때만. TOTUS에는 아무것도 쓰지 않는다(demo 플래그로 차단).
+export function demoRecord(channel, ts) {
+  const mk = (files) => { const m = {}; files.forEach((f, i) => { m[f] = i + 1; }); return m; };
+  const cur12 = ["12话-1.psd", "12话-2.psd", "12话-10.psd", "12话-11.psd", "12话-3.psd", "12话-4.psd", "12话-5.psd", "12话-6.psd", "12话-7.psd", "12话-8.psd", "12话-9.psd", "12话-12.psd"];
+  const fix12 = ["12话-1.psd", "12话-2.psd", "12话-3.psd", "12话-4.psd", "12话-5.psd", "12话-6.psd", "12话-7.psd", "12话-8.psd", "12话-9.psd", "12话-10.psd", "12话-11.psd", "12话-12.psd"];
+  const cur13 = ["13话-1.psd", "13话-2.psd", "13话-3.psd", "13话-4.psd", "13话-5.psd", "13话-6.psd", "13话-6_2.psd", "13话-7.psd", "13话-8.psd", "13话-9.psd"];
+  return {
+    demo: true,
+    worker: { name: "デモ", email: "" },
+    title: "デモ作品（動作確認用）",
+    pivo: "000000",
+    uuid: "demo",
+    records: [
+      { episode: 12, status: "fix", groupId: 0, files: cur12, sorted: fix12, fileMap: mk(cur12), missing: [] },
+      { episode: 13, status: "ambiguous", groupId: 0, files: cur13, sorted: cur13, fileMap: mk(cur13), missing: [] },
+    ],
+    channel, ts, at: Date.now(),
+  };
+}
