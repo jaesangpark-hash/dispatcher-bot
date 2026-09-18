@@ -38,11 +38,9 @@ const WORD_FIX = /直|なお|並べ|替え|整|修正|おかしい|違う|ちが
 export function detectIntent(text) {
   const t = String(text ?? "");
   if (!t.trim()) return false;
-  const hasOrder = WORD_ORDER.test(t);
-  const hasSource = WORD_SOURCE.test(t);
-  const hasFix = WORD_FIX.test(t);
-  // 「順」 단독은 너무 넓다 — 원본/파일 계열과 같이 나오거나, 고쳐달라는 말이 함께 있어야 한다.
-  return hasOrder && (hasSource || hasFix);
+  // 「順」+「ください」 정도로는 안 된다(手順を確認してください 같은 평범한 말이 다 걸린다).
+  // 원본·파일·페이지 계열이 반드시 같이 나와야 발동한다. 2026-09-18 오탐 제보 후 강화.
+  return WORD_ORDER.test(t) && WORD_SOURCE.test(t);
 }
 
 // 회차 추출: 「12話」「12화」「12」「1-3話」「1,2,3」

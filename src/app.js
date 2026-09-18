@@ -4379,12 +4379,18 @@ async function handleWorkerFileOrder({ message, client }) {
   const worker = WFO_CHANNELS[message.channel];
   if (!worker) return false;
   if (message.bot_id || (message.subtype && message.subtype !== "file_share")) return true;   // 채널은 맡되 봇 메시지는 무시
-  const text = message.text || "";
+  const raw = message.text || "";
+  // 멘션했는지 — 멘션이 있으면 무슨 말이든 답하고, 없으면 확실할 때만 나선다.
+  // (2026-09-18 森下 님 제보: 무관한 잡담에도 안내문이 나갔다. 원인은 의도 판정이 아니라
+  //  "의도가 아니면 안내문"이라는 폴백 자체였다. 이제 멘션 없으면 침묵한다.)
+  const mentioned = Boolean(SELF_BOT_USER && raw.includes(`<@${SELF_BOT_USER}>`));
+  const text = SELF_BOT_USER ? raw.split(`<@${SELF_BOT_USER}>`).join(" ").trim() : raw;
   if (wfoIsHelp(text)) {
     await client.chat.postMessage({ channel: message.channel, thread_ts: message.thread_ts || message.ts, text: WFO_MANUAL, ...SENDER }).catch(() => {});
     return true;
   }
   if (!wfoIntent(text)) {
+    if (!mentioned) return true;   // 그냥 대화 중이다 — 끼어들지 않는다
     await client.chat.postMessage({ channel: message.channel, thread_ts: message.thread_ts || message.ts, text: WFO_GUIDE, ...SENDER }).catch(() => {});
     return true;
   }
