@@ -6631,6 +6631,31 @@ async function _handleResupplyAutoTransfer({ message, client }) {
 }
 
 // ── 수동 이관 명령어 ──────────────────────────────────────────────────────────
+// 업로드 뒤 마무리(소스그룹 확정) — 수동 이관 본 흐름과 중복 선택 후 이어지는 흐름이 함께 쓴다.
+// 재수급 자동 이관(_handleResupplyAutoTransfer)과 동작을 맞췄다: 전처리에 문제가 있었으면 확정하지 않는다.
+// 페이지를 일부만 올린 경우도 건너뛴다 — 회차 전체가 아닌데 순서를 확정하면 나머지를 올릴 때 꼬인다.
+async function _finalizeTransferEpisodes({ pivo, episodes, allFileIds, allWarns, partialUpload }) {
+  if (!allFileIds.length) return;
+  if (partialUpload) {
+    allWarns.push("ℹ️ 페이지를 일부만 올려서 소스그룹 확정은 건너뛰었어요 — 회차를 다 올린 뒤 확정하세요");
+    return;
+  }
+  if (allWarns.some((w) => w.includes("전처리"))) return;
+  try {
+    const proj = await projectByPivo(pivo).catch(() => null);
+    const projectUuid = proj?.data?.[0]?.uuid;
+    if (!projectUuid) { allWarns.push("⚠️ TOTUS 프로젝트 UUID 조회 실패 — 소스그룹 확정 스킵"); return; }
+    const sgIds = [];
+    for (const ep of [...new Set(episodes)]) {
+      const sgs = await episodeSourceGroups(projectUuid, ep).catch(() => null);
+      (sgs?.data || []).forEach((sg) => { if (sg.id) sgIds.push(sg.id); });
+    }
+    if (sgIds.length) await completeSourceGroups(sgIds);
+  } catch (e) {
+    allWarns.push(`⚠️ 소스그룹 확정 실패: ${e.message}`);
+  }
+}
+
 // Kuaikan 루트 폴더 결정. 원제 검색이 1건으로 안 떨어질 때의 폴백까지 여기서 처리한다.
 //   0건  → 시트(출판사 드라이브 링크)에 적힌 드라이브 URL의 fileId를 루트로 쓴다.
 //   2건+ → 정규화 완전일치가 하나면 그걸 고른다(부분일치로 딸려온 후보 제거).
@@ -6975,7 +7000,7 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
         `• *${episode}화* \`${pair.original.name}\` (원본) / \`${pair.gai.name}\` (수정본)`
       ).join("\n");
       await updateProgress(`${buildProgressText(null)}\n\n⚠️ 중복 파일이 있어요. 이관할 파일명을 이 스레드에 답장해주세요:\n${dupLines}`);
-      _pendingManualTransfers.set(replyTs, { workName, entry, pendingDuplicates, completedItems, allFileIds, allWarns, channel, replyTs, client });
+      _pendingManualTransfers.set(replyTs, { workName, entry, pendingDuplicates, completedItems, allFileIds, allWarns, channel, replyTs, client, episodes: episodeList.map((e) => e.episode), partialUpload: Boolean(fileNames?.length || pageFrom !== null) });
       return;
     }
 
@@ -6999,6 +7024,12 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
       console.log(`[transfer] 전처리 스킵: skipPreprocessing=${skipPreprocessing}, allFileIds.length=${allFileIds.length}`);
     }
 
+    await _finalizeTransferEpisodes({
+      pivo: entry.pivo,
+      episodes: episodeList.map((e) => e.episode),
+      allFileIds, allWarns,
+      partialUpload: Boolean(fileNames?.length || pageFrom !== null),
+    });
     const summary = completedItems.map(i => i.ok ? `✅ \`${i.name}\`` : `❌ \`${i.name}\``).join("\n");
     const warnNote = allWarns.join("\n");
     await finalize(`✅ *${displayName}* ${epSummary} 이관 완료\n${summary}${warnNote ? "\n\n" + warnNote : ""}`);
@@ -7042,6 +7073,12 @@ async function _handleManualTransferDuplicateReply({ text, channel, threadTs, cl
   state.pendingDuplicates = remaining;
   if (!remaining.length) {
     _pendingManualTransfers.delete(threadTs);
+    await _finalizeTransferEpisodes({
+      pivo: state.entry.pivo,
+      episodes: state.episodes || resolved.map((r) => r.episode),
+      allFileIds: state.allFileIds, allWarns: state.allWarns,
+      partialUpload: Boolean(state.partialUpload),
+    });
     const summary = state.completedItems.map(i => i.ok ? `✅ \`${i.name}\`` : `❌ \`${i.name}\``).join("\n");
     const warnNote = state.allWarns.join("\n");
     await client.chat.postMessage({ channel, thread_ts: threadTs, text: `✅ *${state.workName}* 이관 완료\n${summary}${warnNote ? "\n\n" + warnNote : ""}`, ...SENDER }).catch(() => {});
