@@ -6631,6 +6631,37 @@ async function _handleResupplyAutoTransfer({ message, client }) {
 }
 
 // ── 수동 이관 명령어 ──────────────────────────────────────────────────────────
+// Kuaikan 루트 폴더 결정. 원제 검색이 1건으로 안 떨어질 때의 폴백까지 여기서 처리한다.
+//   0건  → 시트(출판사 드라이브 링크)에 적힌 드라이브 URL의 fileId를 루트로 쓴다.
+//   2건+ → 정규화 완전일치가 하나면 그걸 고른다(부분일치로 딸려온 후보 제거).
+//          그래도 못 좁히면 후보를 그대로 보여주고 멈춘다 — 임의로 고르지 않는다.
+async function _resolveKuaikanRoot(searchTerm, entry, workName) {
+  const norm = (s) => String(s ?? "").replace(/[\s~～〜〰（）()【】「」『』・,.\-—–:：_]/g, "").toLowerCase();
+  const hits = await kuaikanSearchRoot(searchTerm);
+
+  if (hits.length === 1) return { rootId: hits[0].id, note: null };
+
+  if (hits.length > 1) {
+    const exact = hits.filter((h) => norm(h.name) === norm(searchTerm));
+    if (exact.length === 1) {
+      return { rootId: exact[0].id, note: `ℹ️ Kuaikan 검색 ${hits.length}건 중 이름이 정확히 같은 «${exact[0].name}» 선택` };
+    }
+    throw new Error(`Kuaikan 검색 결과 ${hits.length}건 — 특정 불가 (${hits.map((h) => h.name).join(", ")}). 더 긴 원제로 다시 불러주세요`);
+  }
+
+  // 0건 — 시트에 드라이브 링크가 있으면 그걸로 간다(원제 표기가 시트와 드라이브에서 다른 경우).
+  let link = entry?.driveLink || "";
+  if (!link) {
+    const fromSheet = await lookupDriveEntryForWork(entry?.pivo || workName).catch(() => null);
+    link = fromSheet?.driveLink || "";
+  }
+  if (link && detectDrivePlatform(link) === "kuaikan") {
+    const { rootId } = parseDriveUrl(link);
+    if (rootId) return { rootId, note: `ℹ️ 원제 «${searchTerm}» 검색 0건 — 시트의 드라이브 링크로 진행` };
+  }
+  throw new Error(`Kuaikan "${searchTerm}" 검색 결과 없음 — 시트에 드라이브 링크도 없어요. 원제 표기를 확인해주세요`);
+}
+
 const _pendingManualTransfers = new Map(); // replyTs → pending state
 
 function _mtNaturalSort(a, b) {
@@ -6826,10 +6857,9 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
 
     const searchTerm = entry.originalTitleCH || workName;
     await updateProgress(buildProgressText("Kuaikan 검색 중..."));
-    const hits = await kuaikanSearchRoot(searchTerm);
-    if (!hits.length) throw new Error(`Kuaikan "${searchTerm}" 검색 결과 없음`);
-    if (hits.length > 1) throw new Error(`Kuaikan 검색 결과 ${hits.length}건 — 특정 불가 (${hits.map(h => h.name).join(", ")})`);
-    const rootId = hits[0].id;
+    const rootRes = await _resolveKuaikanRoot(searchTerm, entry, workName);
+    const rootId = rootRes.rootId;
+    if (rootRes.note) allWarns.push(rootRes.note);
     const pendingDuplicates = [];
 
     for (const { episode } of episodeList) {
