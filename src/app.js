@@ -203,7 +203,10 @@ function parseSlackLink(s) {
   const m = String(s || "").match(/\/archives\/([A-Z0-9]+)\/p(\d{10})(\d{6})/);
   if (!m) { const raw = String(s || "").trim(); return /^\d{10}\.\d{6}$/.test(raw) ? { channel: null, ts: raw } : null; }
   const tt = String(s).match(/[?&]thread_ts=(\d{10}\.\d{6})/);
-  return { channel: m[1], ts: tt ? tt[1] : `${m[2]}.${m[3]}` };
+  // msgTs = 링크가 실제로 가리킨 그 메시지. ts는 답글을 달 스레드 부모라 답글 링크면 둘이 다르다.
+  // 읽기(read_thread)에서는 msgTs가 "사용자가 지목한 메시지"이므로 버리면 안 된다.
+  const msgTs = `${m[2]}.${m[3]}`;
+  return { channel: m[1], ts: tt ? tt[1] : msgTs, msgTs };
 }
 
 // 발송 시 표시명/아이콘 강제용 — BOT_DISPLAY_NAME 없으면 빈 객체(무변경). chat:write.customize 승인 후 env만 켜면 활성.
@@ -248,6 +251,7 @@ const DISPATCHER_PROMPT = [
   "말투: 따뜻하고 친근하게, 군더더기 없이. 표나 정형 양식은 꼭 필요할 때만 쓰고, 평소엔 사람처럼 자연스럽게 대화한다.",
   "★담당 APM @멘션 Slack ID(이 3명은 시트 조회 없이 바로 <@ID>로 멘션): **서주원=U07E0QPL8MV · 정태영=U05CE8HFA6B · 박재상=U04463JR4HH**. '담당 APM 멘션해줘'면 작품 담당 APM 이름을 이 맵으로 실제 @멘션한다(worker_db 조회·'ID를 못 찾는다' 금지). 이 3명 외 이름일 때만 query_sheet(worker_db)로 slack_id 조회.",
   "★작업자 개인 채널로 보내는 공지(가이드 업데이트, 배정 안내 등 특정 작업자의 담당 채널로 send_message 하는 경우)는 '멘션해서 보내줘'라는 말이 따로 없어도 **항상 기본으로** 그 채널 담당 작업자를 문구 맨 앞에 <@slack_id>로 멘션해서 보낸다 — 개인 채널 공지에 멘션이 없으면 못 보고 지나칠 수 있다(불특정 다수가 보는 팀 채널 발송이면 이 규칙 대상 아님). 이름만 알면 query_sheet(worker_db)로 slack_id 조회. 여러 작업자에게 같은 공지를 보낼 땐 send_message의 items 배열을 쓰되, 항목마다 그 사람 멘션을 문구 맨 앞에 넣어 채운다(문구가 다 똑같더라도 멘션 없이 items를 채우지 말 것).",
+  "★명단·목록을 다룰 때(2026-09-21 사고 후 추가): ①read_thread 결과에 truncated나 「…자가 더 있는데 잘렸음」 표시가 있으면 **네가 본 것이 전부가 아니다** — 「N명 전원 확인했다」고 절대 단정하지 말고, 잘렸다는 사실을 먼저 알리고 필요한 메시지를 다시 달라고 하거나 범위를 좁혀 다시 읽어라. 실제로 28명 명단이 15명에서 잘린 줄 모르고 '전원 확인, 한 명도 없음'이라 답했는데 잘린 뒷부분에 해당자가 5명 있었다. ②「여기 있는 리스트」처럼 링크를 주면 ★지목된 메시지★ 표시가 붙은 메시지가 대상이다 — 스레드 안의 다른 비슷한 목록을 임의로 고르지 마라. ③명단이 이름이 아니라 **채널 ID(<#C…>)나 이메일**로 적혀 있으면, 시트(배정 현황 등)와 대조하기 전에 **작업자 DB(worker_db, 이름·이메일·유저ID·채널ID)로 이름을 먼저 해석**하라. 변환이 귀찮다고 이름이 적힌 다른 목록으로 갈아타면 안 된다.",
   "★★답변 위치 / '여기'의 뜻(중요·엄수): 네 답변 텍스트는 시스템이 **사용자가 너를 부른 바로 그 자리(그 스레드/DM)에 자동으로** 올린다. 그래서 '여기/이 스레드에 답해·멘션해·써줘·달아줘'는 send_message도, 스레드 링크(‘링크 복사’ 값)도 **전혀 필요 없다** — 그냥 답변 텍스트 안에 내용(필요하면 <@멘션>)을 넣기만 하면 그 자리에 달린다. **절대 '스레드 링크를 붙여달라'고 되묻지 마라(넌 이미 그 스레드에 답하고 있다).** send_message는 오직 *지금 이 자리가 아닌 다른 채널/다른 스레드/DM*으로 보낼 때만 쓴다(그때만 받는 곳/링크가 필요). '담당 APM 멘션해'도 마찬가지 — '△△ 채널로 보내라'는 말이 없으면 그냥 이 스레드 답변에 <@APM>을 넣어라(#재팬_apm-alerts 등 다른 채널로 임의 발송하지 말 것).",
   "★작업자 채널의 원본 파일순서 기능(2026-09-17 신설): 지정된 작업자 개인 채널에서 ★작업자가 툰식이를 멘션하고(멘션 없는 메시지엔 일절 반응하지 않는다 — 2026-09-18 오탐 제보 후 변경) 「「アンデッド・スカージ」「12話」ファイル順がおかしい」처럼 작품명과 회차를 말하면, 툰식이가 그 작품의 파일 순서를 점검하고 확인 버튼을 눌러야 반영한다(순서 반영 + 회차 확정까지). 작품명은 반드시 필요하다 — 본문에 없으면 스레드 부모 메시지에서 찾고, 그래도 없으면 작업자에게 작품명을 되묻는다(추측해서 진행하지 않는다). 회차 표기는 「12話」「12〜14話」「1,2,3話」 어느 쪽이든 되고, 서식이 정해져 있지는 않다. 본인이 담당하지 않는 회차는 대상 외다. 파일명 변경·추가·삭제는 불가(TOTUS에 해당 API가 없다). 자동 판정이 틀렸거나 애매해서 못 고른 회차는 「順番が違う」 버튼 → 순서 수정 모달에서 작업자가 직접 순서를 정한다(파일마다 ⋯ 메뉴로 上へ/下へ/先頭へ/末尾へ. Slack에 드래그 요소가 없어서 이 방식이다). 거기서도 안 되면 담당 PM 안내. 작업자가 「使い方」「説明」류로 물으면 고정 매뉴얼이 자동으로 나간다. ★재상 님이 작업자 채널에서 '이 기능을 작업자에게 설명해줘'라고 하면, 이 문단의 내용만 근거로 **일본어**로 설명하라 — 없는 기능(파일명 변경·되돌리기 등)을 지어내지 말 것. 스레드에서 불렀으면 그 스레드에 답하고, 작업자가 읽을 글이므로 정중한 です・ます체로 쓴다.",
   "사용자 권한: 재상 님 외에 APM 두 분도 너에게 말을 건다(같은 '툰식이'로 똑같이 친절하게 응대). 단 '변경·발송·리마인더'(납품예정일/시트 변경·삭제, 슬랙 메시지 발송, 리마인더 등록·조회·완료)는 재상 님 전용이다. APM 분이 그런 요청을 하면 해당 도구가 거부(denied)를 돌려주는데, 그때는 '그건 재상 님만 할 수 있어요. 대신 조회·검수·링크·원본파일은 도와드릴게요'처럼 부드럽게 안내한다. 조회·검수·링크·원본 파일은 모두에게 열려 있다.",
@@ -2588,9 +2592,17 @@ const apmTools = createSdkMcpServer({
           const chan = pl?.channel || channel;
           const ts = pl?.ts || thread;
           if (!chan || !ts) return { content: [{ type: "text", text: JSON.stringify({ error: "스레드 링크에서 채널/ts를 못 읽음. permalink를 주거나 channel을 함께 줘." }) }] };
-          const tc = await fetchThreadContext(ctx.client, chan, ts);
+          const pointed = pl?.msgTs && pl.msgTs !== ts ? pl.msgTs : null;
+          const tc = await fetchThreadContext(ctx.client, chan, ts, { perMsg: 4000, highlightTs: pointed });
           if (!tc.text) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: "그 스레드를 못 읽음(봇이 채널 멤버인지 확인)." }) }] };
-          return { content: [{ type: "text", text: JSON.stringify({ found: true, content: tc.text.slice(0, 6000) }) }] };
+          const LIMIT = 14000;
+          const cut = tc.text.length > LIMIT;
+          return { content: [{ type: "text", text: JSON.stringify({
+            found: true,
+            pointedMessage: pointed ? "링크가 가리킨 메시지에 ★지목된 메시지★ 표시가 붙어있다. 사용자가 '여기 있는 ~'이라고 하면 그 메시지를 뜻한다" : null,
+            truncated: cut ? `전체 ${tc.text.length}자 중 ${LIMIT}자만 실렸다 — 목록이면 뒷부분을 못 본 상태다` : false,
+            content: cut ? tc.text.slice(0, LIMIT) : tc.text,
+          }) }] }; 
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
@@ -3737,13 +3749,22 @@ async function notifyHere(text) {
 }
 
 // 스레드 대화 맥락 + 이미지 파일 수집 (봇이 멤버인 채널의 스레드).
-async function fetchThreadContext(client, channel, threadTs) {
+// 스레드 맥락 읽기. perMsg = 메시지당 글자 한도.
+// ★잘린 곳에는 반드시 표시를 남긴다(2026-09-21). 예전엔 조용히 500자에서 끊겨서, 28명짜리 명단이
+//   15명에서 잘린 줄 모르고 "전원 확인했다"고 단정한 사고가 있었다. 잘렸다는 사실 자체가 정보다.
+// highlightTs를 주면 그 메시지 줄에 표식을 붙인다(링크가 특정 답글을 가리킨 경우).
+async function fetchThreadContext(client, channel, threadTs, { perMsg = 500, highlightTs = null } = {}) {
   try {
     const res = await client.conversations.replies({ channel, ts: threadTs, limit: 50 });
     const msgs = res.messages || [];
     const lines = msgs
       .filter((m) => (m.text || "").trim())
-      .map((m) => `${m.bot_id ? "봇" : `<@${m.user}>`}: ${m.text.replace(/\s+/g, " ").slice(0, 500)}`);
+      .map((m) => {
+        const full = m.text.replace(/\s+/g, " ");
+        const cut = full.length > perMsg ? `${full.slice(0, perMsg)} …(이 메시지는 ${full.length - perMsg}자가 더 있는데 잘렸음 — 목록·명단이면 뒷부분을 못 본 상태다)` : full;
+        const mark = highlightTs && m.ts === highlightTs ? "★지목된 메시지★ " : "";
+        return `${mark}${m.bot_id ? "봇" : `<@${m.user}>`}: ${cut}`;
+      });
     const attFiles = [];
     for (const m of msgs) for (const f of (m.files || []))
       attFiles.push({ url: f.url_private_download || f.url_private, mimetype: f.mimetype, filetype: f.filetype, name: f.name });
