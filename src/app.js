@@ -6631,16 +6631,73 @@ async function _handleResupplyAutoTransfer({ message, client }) {
 }
 
 // ── 수동 이관 명령어 ──────────────────────────────────────────────────────────
+// ── 확정 보류 → 백그라운드 재시도(2026-09-21 재상 님 지정) ───────────────────
+// 전처리가 안 끝나 소스그룹 확정을 못 한 회차를 큐에 넣고 5분 간격으로 다시 본다.
+// 3번 시도해도 안 되면 그 스레드와 재상 님 DM에 알린다(조용히 묻히지 않게).
+const pendingFinalize = new PersistMap("finalize");   // key → {pivo,work,episodes,fileIds,channel,threadTs,tries,nextAt}
+const FINALIZE_RETRY_MS = 5 * 60 * 1000;
+const FINALIZE_MAX_TRIES = 3;
+const _epText = (eps) => eps.map((e) => `${e}화`).join(", ");
+
+function queueFinalizeRetry(job) {
+  if (!job?.channel || !job?.threadTs || !job?.fileIds?.length) return false;
+  pendingFinalize.set(`${job.pivo}_${job.episodes.join("-")}_${Date.now()}`,
+    { ...job, tries: 0, nextAt: Date.now() + FINALIZE_RETRY_MS });
+  return true;
+}
+
+async function checkPendingFinalize() {
+  const now = Date.now();
+  for (const [key, j] of [...pendingFinalize.entries()]) {
+    if (now < (j.nextAt || 0)) continue;
+    const tries = (j.tries || 0) + 1;
+    let done = false, reason = "";
+    try {
+      const s = await getPreprocessingStatus(j.fileIds).catch(() => null);
+      if (s?.meta?.오류있음) reason = "전처리 오류";
+      else if (!s?.meta?.전체완료) reason = "전처리 진행 중";
+      else {
+        const warns = [];
+        await _finalizeTransferEpisodes({ pivo: j.pivo, episodes: j.episodes, allFileIds: j.fileIds, allWarns: warns, partialUpload: false });
+        if (warns.length) reason = warns.join(" / ");
+        else done = true;
+      }
+    } catch (e) { reason = String(e?.message ?? e).slice(0, 80); }
+
+    if (done) {
+      pendingFinalize.delete(key);
+      await app.client.chat.postMessage({ channel: j.channel, thread_ts: j.threadTs, ...SENDER,
+        text: `✅ *${j.work}* ${_epText(j.episodes)} 전처리가 끝나 소스그룹 확정까지 마쳤어요.` }).catch(() => {});
+      continue;
+    }
+    if (tries >= FINALIZE_MAX_TRIES) {
+      pendingFinalize.delete(key);
+      const msg = `🚨 *${j.work}* ${_epText(j.episodes)} 소스그룹 확정 실패 — ${FINALIZE_MAX_TRIES}번 다시 시도했지만 안 됐어요(마지막 사유: ${reason}). TOTUS에서 직접 확정해주세요.`;
+      await app.client.chat.postMessage({ channel: j.channel, thread_ts: j.threadTs, text: msg, ...SENDER }).catch(() => {});
+      await dmOwner(msg).catch(() => {});
+      continue;
+    }
+    pendingFinalize.set(key, { ...j, tries, nextAt: now + FINALIZE_RETRY_MS });
+  }
+}
+
 // 업로드 뒤 마무리(소스그룹 확정) — 수동 이관 본 흐름과 중복 선택 후 이어지는 흐름이 함께 쓴다.
 // 재수급 자동 이관(_handleResupplyAutoTransfer)과 동작을 맞췄다: 전처리에 문제가 있었으면 확정하지 않는다.
 // 페이지를 일부만 올린 경우도 건너뛴다 — 회차 전체가 아닌데 순서를 확정하면 나머지를 올릴 때 꼬인다.
-async function _finalizeTransferEpisodes({ pivo, episodes, allFileIds, allWarns, partialUpload }) {
+async function _finalizeTransferEpisodes({ pivo, work, episodes, allFileIds, allWarns, partialUpload, channel, threadTs }) {
   if (!allFileIds.length) return;
   if (partialUpload) {
     allWarns.push("ℹ️ 페이지를 일부만 올려서 소스그룹 확정은 건너뛰었어요 — 회차를 다 올린 뒤 확정하세요");
     return;
   }
-  if (allWarns.some((w) => w.includes("전처리"))) return;
+  if (allWarns.some((w) => w.includes("전처리"))) {
+    if (queueFinalizeRetry({ pivo, work, episodes: [...new Set(episodes)], fileIds: allFileIds, channel, threadTs })) {
+      allWarns.push("ℹ️ 전처리가 안 끝나 소스그룹 확정은 보류했어요 — 5분 간격으로 최대 3번 다시 시도하고 결과를 이 스레드에 알려드릴게요");
+    } else {
+      allWarns.push("⚠️ 전처리 미완으로 소스그룹 확정을 건너뛰었어요 — TOTUS에서 직접 확정해주세요");
+    }
+    return;
+  }
   try {
     const proj = await projectByPivo(pivo).catch(() => null);
     const projectUuid = proj?.data?.[0]?.uuid;
@@ -6653,6 +6710,9 @@ async function _finalizeTransferEpisodes({ pivo, episodes, allFileIds, allWarns,
     if (sgIds.length) await completeSourceGroups(sgIds);
   } catch (e) {
     allWarns.push(`⚠️ 소스그룹 확정 실패: ${e.message}`);
+    if (queueFinalizeRetry({ pivo, work, episodes: [...new Set(episodes)], fileIds: allFileIds, channel, threadTs })) {
+      allWarns.push("ℹ️ 5분 간격으로 최대 3번 다시 시도할게요");
+    }
   }
 }
 
@@ -7025,10 +7085,11 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
     }
 
     await _finalizeTransferEpisodes({
-      pivo: entry.pivo,
+      pivo: entry.pivo, work: displayName,
       episodes: episodeList.map((e) => e.episode),
       allFileIds, allWarns,
       partialUpload: Boolean(fileNames?.length || pageFrom !== null),
+      channel, threadTs: replyTs,
     });
     const summary = completedItems.map(i => i.ok ? `✅ \`${i.name}\`` : `❌ \`${i.name}\``).join("\n");
     const warnNote = allWarns.join("\n");
@@ -7074,10 +7135,11 @@ async function _handleManualTransferDuplicateReply({ text, channel, threadTs, cl
   if (!remaining.length) {
     _pendingManualTransfers.delete(threadTs);
     await _finalizeTransferEpisodes({
-      pivo: state.entry.pivo,
+      pivo: state.entry.pivo, work: state.workName,
       episodes: state.episodes || resolved.map((r) => r.episode),
       allFileIds: state.allFileIds, allWarns: state.allWarns,
       partialUpload: Boolean(state.partialUpload),
+      channel, threadTs,
     });
     const summary = state.completedItems.map(i => i.ok ? `✅ \`${i.name}\`` : `❌ \`${i.name}\``).join("\n");
     const warnNote = state.allWarns.join("\n");
@@ -7166,7 +7228,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
