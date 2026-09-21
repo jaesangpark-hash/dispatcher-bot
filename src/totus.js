@@ -176,54 +176,64 @@ async function _pivoUploadLarge(pid, episode, buffer, fileName) {
   const { url, tok } = creds();
   const authHeaders = { Authorization: `Bearer ${tok}`, "X-Confirm-Mutation": "I-UNDERSTAND-PROD", "Content-Type": "application/json" };
   const base = `${url}/api/v1/pivo/${encodeURIComponent(pid)}/episodes/${encodeURIComponent(episode)}/source-files`;
+  const post = async (path, body, ms) => {
+    const r = await fetch(`${base}/${path}`, { method: "POST", headers: authHeaders, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`TOTUS ${path} ${r.status}: ${text.slice(0, 500)}`);
+    try { return JSON.parse(text); } catch { return text; }
+  };
 
   // 1. upload-init
-  const initR = await fetch(`${base}/upload-init`, {
-    method: "POST", headers: authHeaders,
-    body: JSON.stringify({ fileName, fileSize: buffer.length }),
-    signal: AbortSignal.timeout(60000),
-  });
-  const initText = await initR.text();
-  if (!initR.ok) throw new Error(`TOTUS upload-init ${initR.status}: ${initText.slice(0, 500)}`);
-  const { data: { fileId, parts } } = JSON.parse(initText);
+  const { data: { fileId, parts } } = await post("upload-init", { fileName, fileSize: buffer.length }, 60000);
+
+  // 파트 URL은 1시간짜리다. 대용량이라 업로드가 길어지면 도중에 만료되므로,
+  // 만료로 거절당하면 upload-part-urls로 그 파트만 재발급받아 다시 올린다.
+  const urlOf = new Map(parts.map((p) => [p.partNumber, p.url]));
+  const isExpired = (status, body) => status === 403 && /expired|AccessDenied/i.test(body || "");
+  const reissue = async (partNumber) => {
+    const r = await post("upload-part-urls", { fileId, partNumbers: [partNumber] }, 60000);
+    const fresh = (r?.data?.parts || []).find((p) => p.partNumber === partNumber);
+    if (!fresh?.url) throw new Error(`파트 ${partNumber} URL 재발급 실패`);
+    urlOf.set(partNumber, fresh.url);
+  };
 
   // 2. 각 파트를 S3에 직접 PUT (Cloudflare 우회, 실패 시 최대 3회 재시도)
   const completedParts = [];
-  for (const part of parts) {
-    const slice = buffer.slice(part.byteStart, part.byteEnd + 1);
-    let lastErr;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const putR = await fetch(part.url, {
-          method: "PUT",
-          headers: { "Content-Length": String(slice.length) },
-          body: slice,
-          signal: AbortSignal.timeout(300000),
-        });
-        if (!putR.ok) {
-          const body = await putR.text().catch(() => "");
-          throw new Error(`HTTP ${putR.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+  try {
+    for (const part of parts) {
+      const slice = buffer.subarray(part.byteStart, part.byteEnd + 1);
+      let lastErr;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const putR = await fetch(urlOf.get(part.partNumber), {
+            method: "PUT",
+            headers: { "Content-Length": String(slice.length) },
+            body: slice,
+            signal: AbortSignal.timeout(300000),
+          });
+          if (!putR.ok) {
+            const body = await putR.text().catch(() => "");
+            if (isExpired(putR.status, body)) await reissue(part.partNumber);
+            throw new Error(`HTTP ${putR.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+          }
+          const eTag = putR.headers.get("ETag");
+          if (!eTag) throw new Error("ETag 없음");
+          completedParts.push({ partNumber: part.partNumber, eTag });
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          if (attempt < 3) await new Promise((r) => setTimeout(r, 3000 * attempt));
         }
-        const eTag = putR.headers.get("ETag");
-        if (!eTag) throw new Error("ETag 없음");
-        completedParts.push({ partNumber: part.partNumber, eTag });
-        lastErr = null;
-        break;
-      } catch (e) {
-        lastErr = e;
-        if (attempt < 3) await new Promise(r => setTimeout(r, 3000 * attempt));
       }
+      if (lastErr) throw new Error(`S3 파트 ${part.partNumber} PUT 실패 (3회 시도): ${lastErr.message}`);
     }
-    if (lastErr) throw new Error(`S3 파트 ${part.partNumber} PUT 실패 (3회 시도): ${lastErr.message}`);
-  }
 
-  // 3. upload-complete
-  const completeR = await fetch(`${base}/upload-complete`, {
-    method: "POST", headers: authHeaders,
-    body: JSON.stringify({ fileId, parts: completedParts }),
-    signal: AbortSignal.timeout(120000),
-  });
-  const completeText = await completeR.text();
-  if (!completeR.ok) throw new Error(`TOTUS upload-complete ${completeR.status}: ${completeText.slice(0, 500)}`);
-  try { return JSON.parse(completeText); } catch { return completeText; }
+    // 3. upload-complete
+    return await post("upload-complete", { fileId, parts: completedParts }, 120000);
+  } catch (e) {
+    // 중단된 세션을 남겨두지 않는다(완료된 파일에는 영향 없음). 정리 실패는 원래 에러를 덮지 않도록 삼킨다.
+    await post("upload-cancel", { fileId }, 30000).catch(() => {});
+    throw e;
+  }
 }
