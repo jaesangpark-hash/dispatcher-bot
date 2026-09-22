@@ -6838,6 +6838,8 @@ function _resolveFileList(items) {
   return { mainFiles: sorted.filter(f => !dupSet.has(f.name)), duplicatePairs };
 }
 
+// 확장자(소문자, 점 제외). 교체 업로드는 같은 형식일 때만 허용하기 위한 비교용.
+const _fileExt = (n) => (String(n || "").match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
 // 파일명에서 페이지 번호(마지막 숫자) 추출. "57-2.psd" → 2, "42_003（上）.psd" → 3
 function _extractPageNum(name) {
   const m = (name || "").match(/(\d+)[^0-9]*\.[^.]+$/);
@@ -7057,7 +7059,8 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
         }
       }
 
-      for (const item of filesToTransfer) {
+      for (const [fi, item] of filesToTransfer.entries()) {
+        const isLast = fi === filesToTransfer.length - 1;
         try {
           await updateProgress(buildProgressText(`\`${item.name}\` 다운로드 중...`));
           const { buffer, fileInfo } = await _downloadKuaikanBuffer(item.id);
@@ -7065,10 +7068,15 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
 
           const pageNum = _extractPageNum(fileInfo.name) ?? ((fileInfo.name.match(/(\d+)/) || [])[1] || "1");
           const mm = matchByNumber(pivoFiles, pageNum, "파일명");
-          const targetName = mm.confident ? mm.item.파일명 : fileInfo.name;
+          // ★확장자가 다르면 덮어쓰지 않는다(2026-09-22 사고): psd를 기존 .jpg 이름으로 올려
+          //   번역 작업용 jpg 원본이 338MB psd 내용으로 교체됐다. 교체는 같은 형식일 때만이다.
+          const sameExt = mm.confident && _fileExt(mm.item.파일명) === _fileExt(fileInfo.name);
+          const targetName = sameExt ? mm.item.파일명 : fileInfo.name;
+          if (mm.confident && !sameExt) allWarns.push(`ℹ️ ${episode}화 \`${fileInfo.name}\` — 기존 \`${mm.item.파일명}\`와 확장자가 달라 덮어쓰지 않고 새 파일로 올렸어요`);
           if (!mm.confident && pivoFiles.length) console.log(`[transfer] 파일명 매칭 미확정 (pageNum=${pageNum}, file=${fileInfo.name}) — Kuaikan 이름 그대로 사용`);
           await updateProgress(buildProgressText(`\`${targetName}\` 업로드 중...`));
-          const uploadRes = await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName);
+          // 회차 지정은 마지막 파일에서 한 번만 — 파일마다 돌리면 소스그룹에 중복 엔트리가 쌓인다.
+          const uploadRes = await pivoUploadSourceFile(entry.pivo, episode, buffer, targetName, { matchEpisode: isLast });
           const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
           console.log(`[transfer] 업로드 완료: ${targetName} — fileId: ${fileId ?? "(없음)"}, 응답키: ${Object.keys(uploadRes?.data || uploadRes || {}).join(",")}`);
           if (fileId) allFileIds.push(fileId);
@@ -7076,6 +7084,8 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
         } catch (e) {
           completedItems.push({ name: item.name, ok: false });
           allWarns.push(`⚠️ ${episode}화 \`${item.name}\` 이관 실패: ${e.message}`);
+          // 회차 지정은 마지막 파일 업로드에 얹혀 있다 — 그게 실패하면 폴더 동기화가 안 된 상태다.
+          if (isLast) allWarns.push(`⚠️ ${episode}화 회차 지정(폴더 동기화)이 안 됐어요 — TOTUS에서 확인이 필요합니다`);
         }
       }
 
@@ -7153,13 +7163,16 @@ async function _handleManualTransferDuplicateReply({ text, channel, threadTs, cl
   }
   if (!resolved.length) return false;
 
-  for (const { episode, chosenFile, pivoFiles } of resolved) {
+  for (const [ri, { episode, chosenFile, pivoFiles }] of resolved.entries()) {
     try {
       const { buffer, fileInfo } = await _downloadKuaikanBuffer(chosenFile.id);
       const pageNum = (fileInfo.name.match(/(\d+)/) || [])[1] || "1";
       const mm = matchByNumber(pivoFiles, pageNum, "파일명");
-      const targetName = mm.confident ? mm.item.파일명 : fileInfo.name;
-      const uploadRes = await pivoUploadSourceFile(state.entry.pivo, episode, buffer, targetName);
+      // 본 흐름과 동일 — 확장자가 다르면 덮어쓰지 않고, 회차 지정은 마지막 한 번만.
+      const sameExt = mm.confident && _fileExt(mm.item.파일명) === _fileExt(fileInfo.name);
+      const targetName = sameExt ? mm.item.파일명 : fileInfo.name;
+      if (mm.confident && !sameExt) state.allWarns.push(`ℹ️ \`${fileInfo.name}\` — 기존 \`${mm.item.파일명}\`와 확장자가 달라 새 파일로 올렸어요`);
+      const uploadRes = await pivoUploadSourceFile(state.entry.pivo, episode, buffer, targetName, { matchEpisode: ri === resolved.length - 1 });
       const fileId = uploadRes?.data?.fileId || uploadRes?.data?.파일Id || uploadRes?.파일Id;
       if (fileId) state.allFileIds.push(fileId);
       state.completedItems.push({ name: targetName, ok: true });

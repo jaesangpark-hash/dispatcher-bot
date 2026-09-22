@@ -155,9 +155,14 @@ export const pivoEpisodeSourceFiles = (pid, episode) => getJSON(`/pivo/${encodeU
 // 요청 바디는 OpenAPI에 미문서화(같은 게이트웨이의 /projects/{uuid}/files와 동일 규약으로 추정: multipart/form-data, 필드명 "file").
 // ★2026-08-23 실측 검증 완료: PV-210986 1화 4.psd(26.6MB)를 그대로 재업로드→"기존 파일 덮어쓰기 완료(재조회 검증됨)" 응답, 파일수 그대로 11개·크기 일치 확인.
 // PIVO 허용 확장자(psd·psb·png·jpg·pdf 등) 외 파일이 회차 폴더에 섞이면 그 폴더 전체 동기화가 스킵됨(409 EPISODE_MATCH_SKIPPED_UNSUPPORTED_EXTENSION).
-export async function pivoUploadSourceFile(pid, episode, buffer, fileName) {
+// matchEpisode=false면 업로드만 하고 회차 지정(directoryEpisodeUpdateV2)을 건너뛴다.
+// ★여러 파일을 연속으로 올릴 때는 마지막 한 번만 true로 줄 것 — 회차 지정은 "회차 폴더 전체를 다시
+//   동기화"하는 동작이라, 파일마다 돌리면 그때까지 올라간 파일이 매번 소스그룹에 다시 등록된다
+//   (2026-09-22 신이 되려는 자 181화: 10개 올리며 10번 돌아 페이지마다 중복 엔트리가 쌓였다).
+//   50MB 이하 소형 경로(구 단일 POST)는 이 옵션이 없어 항상 회차 지정이 함께 돈다.
+export async function pivoUploadSourceFile(pid, episode, buffer, fileName, { matchEpisode = true } = {}) {
   // 50MB 이상은 multipart 직접 업로드(S3 직접 PUT → Cloudflare 우회)
-  if (buffer.length > 50 * 1024 * 1024) return _pivoUploadLarge(pid, episode, buffer, fileName);
+  if (buffer.length > 50 * 1024 * 1024) return _pivoUploadLarge(pid, episode, buffer, fileName, matchEpisode);
   const { url, tok } = creds();
   const form = new FormData();
   form.append("file", new Blob([buffer]), fileName);
@@ -172,7 +177,7 @@ export async function pivoUploadSourceFile(pid, episode, buffer, fileName) {
   try { return JSON.parse(text); } catch { return text; }
 }
 
-async function _pivoUploadLarge(pid, episode, buffer, fileName) {
+async function _pivoUploadLarge(pid, episode, buffer, fileName, matchEpisode = true) {
   const { url, tok } = creds();
   const authHeaders = { Authorization: `Bearer ${tok}`, "X-Confirm-Mutation": "I-UNDERSTAND-PROD", "Content-Type": "application/json" };
   const base = `${url}/api/v1/pivo/${encodeURIComponent(pid)}/episodes/${encodeURIComponent(episode)}/source-files`;
@@ -184,7 +189,7 @@ async function _pivoUploadLarge(pid, episode, buffer, fileName) {
   };
 
   // 1. upload-init
-  const { data: { fileId, parts } } = await post("upload-init", { fileName, fileSize: buffer.length }, 60000);
+  const { data: { fileId, parts } } = await post("upload-init", { fileName, fileSize: buffer.length, matchEpisode }, 60000);
 
   // 파트 URL은 1시간짜리다. 대용량이라 업로드가 길어지면 도중에 만료되므로,
   // 만료로 거절당하면 upload-part-urls로 그 파트만 재발급받아 다시 올린다.
@@ -230,7 +235,7 @@ async function _pivoUploadLarge(pid, episode, buffer, fileName) {
     }
 
     // 3. upload-complete
-    return await post("upload-complete", { fileId, parts: completedParts }, 120000);
+    return await post("upload-complete", { fileId, parts: completedParts, matchEpisode }, 120000);
   } catch (e) {
     // 중단된 세션을 남겨두지 않는다(완료된 파일에는 영향 없음). 정리 실패는 원래 에러를 덮지 않도록 삼킨다.
     await post("upload-cancel", { fileId }, 30000).catch(() => {});
