@@ -6673,14 +6673,20 @@ async function _handleResupplyAutoTransfer({ message, client }) {
 // 전처리가 안 끝나 소스그룹 확정을 못 한 회차를 큐에 넣고 5분 간격으로 다시 본다.
 // 3번 시도해도 안 되면 그 스레드와 재상 님 DM에 알린다(조용히 묻히지 않게).
 const pendingFinalize = new PersistMap("finalize");   // key → {pivo,work,episodes,fileIds,channel,threadTs,tries,nextAt}
+// 픽코마 라인 실측(2026-07-10~23, 270건): 성공은 평균 14회·약 17분, 262건 중 174건이 6~15분 구간.
+// 실패 12건 중 11건은 감시창이 닫힌 뒤 2~4분 안에 완료된 오탐이었다. Totus 자체는 대기 한도가 없다.
+// 툰식이는 이관 전용 봇이 아니라 워커를 오래 붙들면 안 되므로, 블로킹 대기 대신 큐로 넘겨
+// 첫 확인 3분 → 이후 5분 간격 10회(약 48분)로 잡는다. 픽코마 라인의 63분보다는 짧지만
+// 평균(17분)과 주 구간(6~15분)은 넉넉히 덮는다.
+const FINALIZE_FIRST_MS = 3 * 60 * 1000;
 const FINALIZE_RETRY_MS = 5 * 60 * 1000;
-const FINALIZE_MAX_TRIES = 3;
+const FINALIZE_MAX_TRIES = 10;
 const _epText = (eps) => eps.map((e) => `${e}화`).join(", ");
 
 function queueFinalizeRetry(job) {
   if (!job?.channel || !job?.threadTs || !job?.fileIds?.length) return false;
   pendingFinalize.set(`${job.pivo}_${job.episodes.join("-")}_${Date.now()}`,
-    { ...job, tries: 0, nextAt: Date.now() + FINALIZE_RETRY_MS });
+    { ...job, tries: 0, nextAt: Date.now() + FINALIZE_FIRST_MS });
   return true;
 }
 
@@ -6730,7 +6736,7 @@ async function _finalizeTransferEpisodes({ pivo, work, episodes, allFileIds, all
   }
   if (allWarns.some((w) => w.includes("전처리"))) {
     if (queueFinalizeRetry({ pivo, work, episodes: [...new Set(episodes)], fileIds: allFileIds, channel, threadTs })) {
-      allWarns.push("ℹ️ 전처리가 안 끝나 소스그룹 확정은 보류했어요 — 5분 간격으로 최대 3번 다시 시도하고 결과를 이 스레드에 알려드릴게요");
+      allWarns.push(`ℹ️ 전처리가 끝나면 소스그룹을 확정할게요 — ${FINALIZE_FIRST_MS / 60000}분 뒤부터 ${FINALIZE_RETRY_MS / 60000}분 간격으로 최대 ${FINALIZE_MAX_TRIES}번 확인하고 결과를 이 스레드에 알려드릴게요`);
     } else {
       allWarns.push("⚠️ 전처리 미완으로 소스그룹 확정을 건너뛰었어요 — TOTUS에서 직접 확정해주세요");
     }
@@ -6749,7 +6755,7 @@ async function _finalizeTransferEpisodes({ pivo, work, episodes, allFileIds, all
   } catch (e) {
     allWarns.push(`⚠️ 소스그룹 확정 실패: ${e.message}`);
     if (queueFinalizeRetry({ pivo, work, episodes: [...new Set(episodes)], fileIds: allFileIds, channel, threadTs })) {
-      allWarns.push("ℹ️ 5분 간격으로 최대 3번 다시 시도할게요");
+      allWarns.push(`ℹ️ ${FINALIZE_RETRY_MS / 60000}분 간격으로 최대 ${FINALIZE_MAX_TRIES}번 다시 시도할게요`);
     }
   }
 }
@@ -7112,22 +7118,13 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
       return;
     }
 
-    // 전처리 대기 (skipPreprocessing이 아니고 업로드된 파일이 있을 때만)
+    // 전처리는 평균 17분이라 워커를 붙들고 기다리지 않는다(구 10분 블로킹 폐지, 2026-09-22).
+    // 여기서 한 번만 확인하고, 아직이면 확정을 큐에 넘겨 3분 뒤부터 5분 간격으로 본다.
     if (!skipPreprocessing && allFileIds.length) {
-      await updateProgress(buildProgressText("⏳ 전처리 대기 중..."));
-      console.log(`[transfer] 전처리 대기 시작: fileIds=${allFileIds.join(",")}`);
-      const maxWait = 10 * 60 * 1000;
-      const ppStart = Date.now();
-      let ppDone = false;
-      while (Date.now() - ppStart < maxWait) {
-        const s = await getPreprocessingStatus(allFileIds).catch(e => { console.error("[transfer] 전처리 상태 조회 실패:", e?.message); return null; });
-        console.log(`[transfer] 전처리 상태:`, JSON.stringify(s?.meta));
-        if (s?.meta?.오류있음) { allWarns.push("⚠️ 전처리 오류 발생"); break; }
-        if (s?.meta?.전체완료) { ppDone = true; break; }
-        await new Promise(r => setTimeout(r, 30000));
-      }
-      if (!ppDone && !allWarns.some(w => w.includes("전처리"))) allWarns.push("⚠️ 전처리 시간 초과 (10분)");
-      console.log(`[transfer] 전처리 결과: ppDone=${ppDone}`);
+      const s = await getPreprocessingStatus(allFileIds).catch((e) => { console.error("[transfer] 전처리 상태 조회 실패:", e?.message); return null; });
+      console.log("[transfer] 전처리 1차 확인:", JSON.stringify(s?.meta));
+      if (s?.meta?.오류있음) allWarns.push("⚠️ 전처리 오류 발생");
+      else if (!s?.meta?.전체완료) allWarns.push("⏳ 전처리 진행 중");
     } else {
       console.log(`[transfer] 전처리 스킵: skipPreprocessing=${skipPreprocessing}, allFileIds.length=${allFileIds.length}`);
     }
