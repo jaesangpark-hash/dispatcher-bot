@@ -549,15 +549,32 @@ async function reviewEngineReviewInner({ work, episode, stage, lang, taskUuid, p
   }
 }
 // review-engine 응답(reviews[])을 작업자 수정요청용 텍스트로 포맷(QA_INSTRUCTIONS 출력 템플릿과 동일 스타일).
+// ★2026-09-22: 엔진이 LLM 호출에 실패하면 지적을 못 만든 채 reviews:[]로 돌아온다(노드가 failed_count만
+//   올리고 빈 결과를 통과시킴). 그걸 「問題なし」로 옮기면 검수가 죽은 줄 모르고 "이상무"가 쌓인다.
+//   metadata로 "판단해서 문제없음"과 "판단 자체를 못 함"을 구분한다.
 function formatReviewEngineResult({ work, episode, stage, url }, resp) {
   const lines = [`${work} / ${episode}화  (${stage})`, `task: ${url}`];
   const reviews = resp?.reviews || [];
-  if (!reviews.length) { lines.push("", "問題なし"); return lines.join("\n"); }
+  const m = resp?.metadata || {};
+  const failed = Number(m.failed_text_boxes || 0);
+  const judged = Number(m.pass1_raw_count || 0) + Number(m.pass2_raw_count || 0) + Number(m.rejected_by_critic || 0);
+  if (!reviews.length) {
+    if (failed > 0 && judged === 0) {
+      lines.push("", `⚠️ 검수 실패 — 엔진이 판단을 못 했어요(청크 ${failed}건 실패, 후보 0건).`,
+        "「問題なし」가 아니라 검수가 안 된 상태입니다. 엔진 로그 확인이 필요해요.");
+    } else if (failed > 0) {
+      lines.push("", `問題なし  ⚠️ 다만 청크 ${failed}건이 실패해 그 부분은 검수되지 않았어요.`);
+    } else {
+      lines.push("", "問題なし");
+    }
+    return lines.join("\n");
+  }
   for (const it of reviews) {
     const pb = (it.page != null && it.tb != null) ? `${it.page}-${it.tb}` : `#${it.index + 1}`;
     lines.push("", pb, it.translation || "", "->", it.suggestion || it.translation || "",
       `사유: [${it.severity}/${it.issue_type}] ${it.issue_detail || ""}`.trim());
   }
+  if (failed > 0) lines.push("", `⚠️ 청크 ${failed}건 실패 — 그 부분은 검수되지 않았어요.`);
   return lines.join("\n");
 }
 let currentCtx = null;            // { client, channel, ts } — handle()가 메시지마다 갱신(직렬 가정). 영속 대상 아님(client 비직렬)
