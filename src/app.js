@@ -36,6 +36,7 @@ import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot,
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock } from "./learned.js";
+import { recordTurn, recordReply, runDistill, dueDailyDistill, listCandidates, setCandidateStatus, pruneTurns, kstDay as distillDay } from "./distill.js";
 import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode, deliveryReconcile, dailyCheckList, koTitlesByCommonNo } from "./schedule.js";
 import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText, findUndelivered } from "./deliveryNotice.js";
 import { collectTargets as collectSikjaHandover, buildMessage as buildSikjaHandoverMsg, buildLinkReply as buildSikjaHandoverLinks, markSent as markSikjaHandoverSent, syncNewWorks as syncSikjaHandoverWorks, HANDOVER_CHANNEL as SIKJA_HANDOVER_CHANNEL } from "./sikjaHandover.js";
@@ -1549,6 +1550,29 @@ async function checkDailyReport() {
     if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: report, ...SENDER });
     console.log(`[daily] ${yStr} 리포트 발송`);
   } catch (e) { console.error("[daily] 실패:", e?.message ?? e); }
+}
+
+// ── 대화 증류(2026-09-22) ────────────────────────────────────────
+// 어제 대화를 훑어 '재상 님이 결국 원했던 것'을 규칙 후보로 뽑아 DM한다. 채택은 재상 님이 한다.
+// 근거: 로그 실측상 길어진 대화는 "처음 시킨 것 → 되묻기 → 마지막에 원하는 형태 확정" 구조였고,
+//      그렇게 매번 다시 말해야 했던 것들이 learned.json 에는 한 줄도 없었다.
+const DISTILL_HOUR = Number(process.env.DISTILL_HOUR ?? 9);
+async function checkDailyDistill() {
+  try {
+    if (!dueDailyDistill(DISTILL_HOUR)) return;
+    const y = new Date(Date.now() + 9 * 3600 * 1000); y.setUTCDate(y.getUTCDate() - 1);
+    const day = y.toISOString().slice(0, 10);
+    const known = listLearned().map((x) => x.text);
+    const r = await runDistill({ model: DISPATCHER_MODEL, day, known });
+    try { pruneTurns(); } catch {}
+    if (r.skipped || !r.added) { console.log(`[distill] ${day} — ${r.skipped || `제안 ${r.proposed || 0} / 신규 0`}`); return; }
+    const lines = [`🧪 *어제(${day}) 대화에서 배운 것 후보 ${r.added}건* — 스레드 ${r.threads}개 검토`];
+    for (const it of r.items) lines.push(`\n*${it.id}. [${it.kind}]* ${it.rule}\n   _근거: ${it.why}_`);
+    lines.push(`\n채택하려면 「${r.items[0].id}번 채택」, 버리려면 「${r.items[0].id}번 버려」라고 말해주세요.`);
+    const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID });
+    if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: lines.join("\n"), ...SENDER });
+    console.log(`[distill] ${day} 후보 ${r.added}건 발송 (스레드 ${r.threads}, 제안 ${r.proposed})`);
+  } catch (e) { console.error("[distill] 실패:", e?.message ?? e); }
 }
 
 // ── 오늘 납품 대상 리포트(2026-09-04) ────────────────────────────
@@ -3634,6 +3658,26 @@ const apmTools = createSdkMcpServer({
       { match: z.string().describe("지울 학습 규칙의 번호 또는 내용 일부") },
       async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const r = removeLearned(a.match); return { content: [{ type: "text", text: JSON.stringify({ removed: r.removed, remaining: r.remaining }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: false } }),
+    tool("list_distill",
+      "하루 1회 '대화 증류'가 뽑아둔 학습 규칙 후보 목록. 재상 님이 '배운 거 후보 보여줘/증류 결과' 류로 물을 때. 상태 미지정이면 승인 대기(pending)만 보여준다. 채택은 approve_distill, 버리는 건 reject_distill.",
+      { status: z.string().optional().describe("pending(기본) | approved | rejected | all") },
+      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; const st = a.status && a.status !== "all" ? a.status : (a.status === "all" ? null : "pending"); return { content: [{ type: "text", text: capJson({ items: listCandidates(st) }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      { annotations: { readOnlyHint: true } }),
+    tool("approve_distill",
+      "증류 후보를 학습 규칙으로 채택한다(= remember 와 같은 효과, 재기동 후에도 유지). 재상 님이 '1번 채택/그건 맞아, 규칙으로 해' 할 때. 문구를 다듬어 저장하려면 rule 로 덮어쓴다.",
+      { id: z.number().describe("후보 번호"), rule: z.string().optional().describe("저장할 문구(생략하면 후보 문구 그대로)") },
+      async (a) => { try { const _d = ownerOnly(); if (_d) return _d;
+        const hit = listCandidates("all").find((x) => x.id === Number(a.id)) || listCandidates().find((x) => x.id === Number(a.id));
+        if (!hit) return { content: [{ type: "text", text: JSON.stringify({ error: `후보 ${a.id} 없음` }) }] };
+        const r = addLearned(a.rule || hit.rule);
+        setCandidateStatus(a.id, "approved");
+        return { content: [{ type: "text", text: JSON.stringify({ approved: a.id, saved: !r.error, dup: !!r.dup, total: r.total, rule: a.rule || hit.rule, note: "다음 재기동부터 시스템 지침에 포함된다." }) }] };
+      } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      { annotations: { readOnlyHint: false } }),
+    tool("reject_distill", "증류 후보를 버린다('그건 아니야/필요 없어'). 다시 제안되지 않는다.",
+      { id: z.number().describe("후보 번호") },
+      async (a) => { try { const _d = ownerOnly(); if (_d) return _d; return { content: [{ type: "text", text: JSON.stringify(setCandidateStatus(a.id, "rejected")) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
+      { annotations: { readOnlyHint: false } }),
     tool("list_learned", "지금까지 가르쳐 저장된 학습 규칙(remember) 목록. '뭐 기억하고 있어/배운 거 보여줘' 류.",
       {},
       async () => { try { const _d = ownerOnly(); if (_d) return _d; return { content: [{ type: "text", text: JSON.stringify({ items: listLearned() }) }] }; } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
@@ -3888,6 +3932,7 @@ function startSession() {
         "mcp__apm__query_schedule", "mcp__apm__collab_digest", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
+        "mcp__apm__list_distill", "mcp__apm__approve_distill", "mcp__apm__reject_distill",
         "mcp__apm__check_totalk_mentions", "mcp__apm__transfer_kuaikan_files",
         "WebSearch"],
     },
@@ -3919,6 +3964,7 @@ function startSession() {
         // th: 스레드 식별자 — 한 상담이 여러 턴으로 이어질 때 채널+th로 하나의 대화로 묶는다
         logUsage({ kind: "main", user: currentTurn?.user || null, channel: ctx?.channel || null, th: ctx?.threadTs || ctx?.ts || null, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, chars: text.length, isError: !!m.is_error, req: reqRaw.replace(/\s+/g, " ").trim().slice(0, 200) || null, tools: toolList, res, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null, cacheRead: m.usage?.cache_read_input_tokens ?? null, cacheWrite: m.usage?.cache_creation_input_tokens ?? null });
         turnTools = new Set();
+        try { recordReply({ channel: ctx?.channel, threadTs: ctx?.threadTs, text, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, isError: !!m.is_error }); } catch {}
         if (m.is_error) console.log(`[brain] 에러내용: ${text.slice(0, 200).replace(/\n/g, " ")}`);
         const rlTurn = currentTurn;   // rate-limit 재시도용 캡처
         currentTurn = null;
@@ -3989,6 +4035,8 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   if (chPol) llmText = `[이 채널 규칙(최우선): ${chPol}]\n${llmText}`;
   console.log(`[handle] 수신 (ch=${channel}, inThread=${inThread}, 첨부=${attFiles.length}): ${String(text || "").slice(0, 80).replace(/\n/g, " ")}`);
   try { appendFileSync("logs/review-debug.log", `${new Date().toISOString()} [handle] pid=${process.pid} ch=${channel}: ${String(text || "").slice(0, 80).replace(/\n/g, " ")}\n`); } catch {}
+  // 대화 원장 — 하루 1회 '증류'가 여기서 재상 님이 결국 원했던 것을 뽑는다(distill.js). 기록만, 판단 없음.
+  try { recordTurn({ channel, threadTs: thread, user, text }); } catch (e) { console.error("[distill] 턴 기록 실패:", e?.message); }
 
   // currentCtx는 messageStream이 '이 턴을 실제로 처리할 때' 설정한다 (도착 순간 아님 → 도구 오배달 방지)
   const ph = await say({ text: "처리 중…", thread_ts: thread, ...SENDER });   // 자리표시자(완료 시 삭제되고 새 메시지로 답함)
@@ -7276,7 +7324,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
