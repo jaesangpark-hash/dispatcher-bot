@@ -305,6 +305,9 @@ const DISPATCHER_PROMPT = [
   "- '고객사 납품 시트'(중일 일본어 스케줄 시트, =APM 납품 시트/내부 납품관리시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. '○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일=mode:launch(work나 pivo + episode), ★'이 납품(회차)이 스케줄 시트에 기재/반영됐나' 검증=**mode:delivery_check**(納品話数+納品予定日 기준, listedForDelivery로 판단 — 話数(런칭)로 보는 launch로 판단하면 오답이니 절대 launch로 납품 기재 여부를 판정하지 마라), 'N/일 납품 회차 카운트'·'오늘 납품 뭐 있어/납품 대상 알려줘'=mode:delivery_on+date(응답에 works=작품 수, commonNos=공통번호 목록, totalEpisodes=총 회차, pendingWorks=납품일만 잡히고 화수 미기재라 작품 수에서 제외된 건수. 재상 님이 쓰는 리포트 형식은 '작품 수 + 공통번호'라 그 둘을 먼저 답하고 상세는 물으면 준다. 매일 아침 자동 DM도 같은 값으로 나간다), '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. 여러 작품+회차를 한꺼번에 검증하면 각 항목마다 delivery_check를 돌려 결과를 모아 답한다. 블록 제목(正式+仮) 직접매칭이라 일본어 제목만으로도 잘 잡힌다. ID 묻지 말 것(이 도구가 그 시트임).",
   "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
   "★채널 사전(2026-08-19 확정 — send_message 등에서 채널을 부를 때 이 이름들이면 재상 님께 ID를 다시 묻지 말고 바로 이 값을 target으로 써라): '재팬_요청'/'요청 채널'/'요청채널' = C09B8QHP7D4. '재팬_작업요청'/'작업요청 채널'/'작업요청채널'/'설정집 채널' = C09AUQN8GEB. '재팬_공지'/'공지 채널'/'공지채널' = C09B8QLR5FG. '리마인더 채널'/'리마인더채널' = C0B73GL3WAJ. '리테이크 채널'/'리테이크 감시 채널' = C09B8QBEC9L. 이 사전에 없는 채널명을 대면 지어내지 말고 '그 채널 ID(또는 링크)를 알려달라'고 되묻는다.",
+  "★★모르면 만들지 말고 먼저 물어라(2026-09-23 재상 님 지시: \"차라리 지금 엄청 답답하고 나중에 편한 게 낫다\"). 추측해서 결과물을 내놓고 틀리는 것보다, 실행 전에 한 줄 묻는 쪽이 항상 낫다. 특히 아래 축이 문장에서 확정되지 않으면 **만들기 전에** 묻는다 — ①수신자(고객사 발송용인가 / 내부 APM·작업자 공유용인가) ②대상 시스템(내부 납품 시트인가 / TOTUS 납품예정일인가 / 둘 다인가) ③적용 범위(지정한 회차만인가 / 그 이후 회차 전부인가) ④출력 언어(일본어인가 한국어인가). 문장에 이미 단서가 있으면(채널 지정·수신자 멘션·'고객사/내부/APM/작업자' 같은 단어) 묻지 말고 그걸 그대로 따른다 — 적혀 있는 걸 놓쳐서 틀리는 게 제일 나쁘다.",
+  "★★재상 님이 인용문(고객사·작업자가 보낸 메시지)을 그대로 붙여 주면, 초안을 만들기 전에 **내가 어떻게 읽었는지 한 줄로 먼저 선언**한다. 예: '고객사 통보로 읽었습니다 → 내부 APM 공지 초안으로 갑니다'. 그래야 틀렸을 때 재상 님이 초안 전체를 보기 전에 바로 잡아줄 수 있다. 인용문의 언어로 방향을 판단하지 마라 — 고객사→우리(내부 공유용)와 우리→고객사(문의용)가 둘 다 일본어다. 갈리는 근거는 인용문 안의 화자 위치다(고객사 발신: 版元の要望/クライアントからの/ご参考に · 작업자 발신: 翻訳を進める中で/確認いたしました/〜でしょうか).",
+  "★★물어서 답을 받았으면 **그 자리에서 즉시 remember(note)로 규칙화**한다(다음 날 증류를 기다리지 말 것). 같은 축을 두 번 묻는 건 학습이 안 됐다는 뜻이고, 그게 되묻기를 성가신 것으로 만든다. 저장 문구는 재현 가능하게 쓴다 — '고객사 초안'은 고객사 발송용 일본어 메시지를 뜻한다' 처럼 조건과 결과를 같이. 규칙으로 굳히기 애매하면(1회성 예외) 저장하지 말고 넘어간다.",
   "- 학습/교정(영구): 재상 님이 '앞으로 ~로 기억해/외워둬', '이건 이렇게 이해해', 또는 내가 잘못 이해한 걸 바로잡아 주면 → remember(note)로 저장한다(재기동에도 유지, 다음부터 자동 적용). '그 규칙 잊어'=forget, '뭐 배웠어'=list_learned. ★단순 '나중에 ~할 일'은 add_reminder(리마인더), 항구적 동작 규칙·별칭·이해 교정은 remember로 구분. 모호하면 '리마인더로 할까요, 규칙으로 외울까요?' 한 줄 확인.",
   "- 리마인더 두 종류: ①시각 없이 '이거 기억해둬'·'나중에 ~해야 해'·'~잊지마' → add_reminder(text) (끝내거나 '그만'할 때까지 하루 여러 번 자동 재촉, 시간 묻지 말 것). ②특정 시각 '월요일 오전 10시에 ~ 리마인드'·'내일 3시에' → schedule_reminder(text, when) (when은 메시지 앞 [현재 시각(KST)] 기준으로 ISO8601 계산, +09:00). 목록 → list_reminders. 완료('~했어'·'N번 완료'·'해결됐어')거나 중단('그만'·'멈춰'·'이건 그만 리마인드해') 신호 → complete_reminder(번호 또는 내용 일부). 재촉 중인 일을 대화로 처리하다가 '그만/됐어' 신호가 오면 그 항목을 complete_reminder로 빼라.",
   "그 밖에 도구가 없는 일이면, '도구가 없다'를 장황히 설명하지 말고 — 아는 선에서 바로 도움이 되는 답을 주고, 정확한 데이터가 필요하면 어디(어느 시트·채널)를 보면 되는지 한 줄로만 짚어준다.",
@@ -321,11 +324,33 @@ const processed = new Set();
 // 메모리 Map은 봇 재시작 시 사라져 버튼이 죽음 → set/delete마다 data/pending-*.json에 저장,
 // 시작 시 자동 복구. createdAt도 보존돼 TTL이 원래 생성시각 기준으로 유지된다.
 const PENDING_DIR = "data";
+// 버튼 초안 저장소는 버튼을 눌러야만 지워져서, 안 누른 건 영원히 남았다(2026-09-23 실측:
+// 발송 67건·35KB, 파일순서 8건·107KB, 리테이크 21건·25KB). 버튼 유효기간이 24시간이라
+// 그보다 오래된 건 어차피 눌러도 "확인 시간이 지나 취소됐어요"로 거절되는 죽은 데이터다.
+// → ttlMs를 준 저장소만 로드 시점과 하루 1회 정리한다.
+// ★처리 완료 기록(resupply-done 등)은 ttl을 주면 안 된다 — 지우면 같은 건을 다시 처리한다.
+const DRAFT_TTL_MS = 24 * 60 * 60 * 1000;   // 버튼 유효기간과 동일 — 그 이후는 눌러도 거절되는 죽은 데이터
+const PRUNABLE = [];
 class PersistMap extends Map {
-  constructor(name) {
+  constructor(name, { ttlMs = 0 } = {}) {
     super();
+    this.name = name;
+    this.ttlMs = ttlMs;
     this.file = `${PENDING_DIR}/pending-${name}.json`;
     try { for (const [k, v] of Object.entries(JSON.parse(readFileSync(this.file, "utf8")))) Map.prototype.set.call(this, k, v); } catch {}
+    if (ttlMs > 0) { PRUNABLE.push(this); this.prune(); }
+  }
+  // createdAt이 있는 항목만 대상 — 없으면 판단 근거가 없으므로 건드리지 않는다.
+  prune() {
+    if (!(this.ttlMs > 0)) return 0;
+    const cutoff = Date.now() - this.ttlMs;
+    let n = 0;
+    for (const [k, v] of this) {
+      const at = Number(v?.createdAt);
+      if (Number.isFinite(at) && at > 0 && at < cutoff) { Map.prototype.delete.call(this, k); n++; }
+    }
+    if (n) { this.save(); console.log(`[persist-prune] ${this.name}: 만료 ${n}건 정리 (남은 ${this.size})`); }
+    return n;
   }
   save() { try { mkdirSync(PENDING_DIR, { recursive: true }); writeFileSync(this.file, JSON.stringify(Object.fromEntries(this))); } catch {} }
   set(k, v) { Map.prototype.set.call(this, k, v); this.save(); return this; }
@@ -349,20 +374,20 @@ class PersistMap extends Map {
     return undefined;
   }
 }
-const pendingEdits = new PersistMap("edits");        // changeId → { sheetId, tab, items[], newValue, clearing, ... }
-const pendingTotusDates = new PersistMap("totus");   // changeId → { items[], deliveryDate, reason, work, ... }
-const pendingTotusProj = new PersistMap("totusproj"); // id → { projectUuid, projectName, change, label, createdAt }
-const pendingSends = new PersistMap("sends");        // sendId → { target, text, createdAt }
-const pendingFeedback = new PersistMap("feedback");  // fbId → { channel, text, koTitle, episode, rowsToMark, ... }
-const pendingRetakes = new PersistMap("retakes");    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
-const pendingTransStart = new PersistMap("transstart"); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
-const pendingSetjip = new PersistMap("setjip");      // sjId → { channel, text, work, createdAt } 설정집 작성 요청 게시
+const pendingEdits = new PersistMap("edits", { ttlMs: DRAFT_TTL_MS });        // changeId → { sheetId, tab, items[], newValue, clearing, ... }
+const pendingTotusDates = new PersistMap("totus", { ttlMs: DRAFT_TTL_MS });   // changeId → { items[], deliveryDate, reason, work, ... }
+const pendingTotusProj = new PersistMap("totusproj", { ttlMs: DRAFT_TTL_MS }); // id → { projectUuid, projectName, change, label, createdAt }
+const pendingSends = new PersistMap("sends", { ttlMs: DRAFT_TTL_MS });        // sendId → { target, text, createdAt }
+const pendingFeedback = new PersistMap("feedback", { ttlMs: DRAFT_TTL_MS });  // fbId → { channel, text, koTitle, episode, rowsToMark, ... }
+const pendingRetakes = new PersistMap("retakes", { ttlMs: DRAFT_TTL_MS });    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
+const pendingTransStart = new PersistMap("transstart", { ttlMs: DRAFT_TTL_MS }); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
+const pendingSetjip = new PersistMap("setjip", { ttlMs: DRAFT_TTL_MS });      // sjId → { channel, text, work, createdAt } 설정집 작성 요청 게시
 const pendingReuploads = new Map();                  // ruId → { pivo, episode, items:[{fileName,buffer,size,sourceName,page}], createdAt } — 바이너리 포함이라 비영속(재기동 시 소멸, TTL도 짧으니 재요청하면 됨)
 let reuploadSeq = 0;
-const pendingTaskRetake = new PersistMap("taskretake"); // trId → { work, operation, items[{episode,taskUuid,status}], createdAt } TOTUS 태스크 리테이크(연결 태스크 생성)
-const pendingFileOrderBatch = new PersistMap("fileorderbatch"); // fobId → { work, projectUuid, episodes[{episode,status,sourceGroupId,groupName,files,fileMap,suggested,simpleGroups,resolvedByStartIndex,complexNote,error}], channel, ts, createdAt }
+const pendingTaskRetake = new PersistMap("taskretake", { ttlMs: DRAFT_TTL_MS }); // trId → { work, operation, items[{episode,taskUuid,status}], createdAt } TOTUS 태스크 리테이크(연결 태스크 생성)
+const pendingFileOrderBatch = new PersistMap("fileorderbatch", { ttlMs: DRAFT_TTL_MS }); // fobId → { work, projectUuid, episodes[{episode,status,sourceGroupId,groupName,files,fileMap,suggested,simpleGroups,resolvedByStartIndex,complexNote,error}], channel, ts, createdAt }
 const processedResupply = new PersistMap("resupply-done");       // rowKey → { at, work, episodePage } — 재수급봇 자동 이관 처리 완료 기록
-const pendingPriceEdit = new PersistMap("priceedit");  // peId → { work, projectUuid, base{}, targetPrice, adjustment, reason, items[{episode,jobProcessUuid}], createdAt } 매출 단가 변경
+const pendingPriceEdit = new PersistMap("priceedit", { ttlMs: DRAFT_TTL_MS });  // peId → { work, projectUuid, base{}, targetPrice, adjustment, reason, items[{episode,jobProcessUuid}], createdAt } 매출 단가 변경
 let setjipSeq = 0;
 let editSeq = pendingEdits.maxSeq();
 let totusDateSeq = pendingTotusDates.maxSeq();
@@ -1578,6 +1603,22 @@ async function checkDailyDistill() {
     if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: lines.join("\n"), ...SENDER });
     console.log(`[distill] ${day} 후보 ${r.added}건 발송 (스레드 ${r.threads}, 제안 ${r.proposed})`);
   } catch (e) { console.error("[distill] 실패:", e?.message ?? e); }
+}
+
+// 버튼 초안 저장소 만료분 정리 — 하루 1회. 로드 시점에도 한 번 돌지만, 봇이 며칠씩 안 꺼지면
+// 그동안 쌓이기만 하므로 주기적으로도 턴다(2026-09-23).
+async function checkPendingPrune() {
+  try {
+    const today = kstDateOf();
+    let state = {};
+    try { state = JSON.parse(readFileSync("data/pending-prune.json", "utf8")); } catch { /* 첫 실행 */ }
+    if (state.lastDate === today) return;
+    state.lastDate = today;
+    try { writeFileSync("data/pending-prune.json", JSON.stringify(state)); } catch { /* 무시 */ }
+    let total = 0;
+    for (const m of PRUNABLE) total += m.prune();
+    if (total) console.log(`[persist-prune] ${today} — 총 ${total}건 정리`);
+  } catch (e) { console.error("[persist-prune] 실패:", e?.message ?? e); }
 }
 
 // ── 1차 납품 고객검수 선제 알림(2026-09-23) ──────────────────────
@@ -7603,7 +7644,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
