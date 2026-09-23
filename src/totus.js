@@ -121,6 +121,17 @@ async function sendJSON(method, path, body, extra = {}) {
 // dryRun=true면 부작용 없이 정규화 결과만. Prod warn 모드지만 X-Confirm-Mutation 권장.
 export const setDeliveryDate = (jps, dryRun = false) =>
   sendJSON("POST", `/job-processes/dates`, { jobProcesses: jps, dryRun }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
+// #32 프로젝트 조건(고객사·콘텐츠유형·언어쌍)에 맞는 "적용 가능 단가표" 후보 목록.
+// 팩터(수량난이도·번역난이도·식자난이도) 조합별 행이 나오며, 여기서 productPriceUuid/version을 얻는다.
+export const productPrices = (projectUuid, orderUuid) => getJSON(`/projects/${projectUuid}/product-prices`, { orderUuid });
+// 주문(ProjectOrder)에 "실제 적용된" 매출 단가 — 주문별 1건. 후보 목록(#32)과 달리 현재값이다.
+// 반환: 주문목록[].확정단가{productPriceUuid,version,금액,통화코드,단위코드,팩터} · 단가조정액 · 단가조정사유 · 견적확정단가.
+export const confirmedPrice = (projectUuid) => getJSON(`/projects/${projectUuid}/confirmed-price`);
+// #33 JOB(회차) 매출 단가 일괄 설정. mods=[{jobProcessUuid, productPriceUuid, productPriceVersion, unitPriceAdjustment?, priceAdjustmentReason?}]
+// unitPriceAdjustment: 양수=추가, 음수=할인, null=조정없음(기준 단가 그대로). 최종 단가 = 단가표 금액 + unitPriceAdjustment.
+// 응답 data: {성공,실패,succeededJobProcessUuids,failedJobProcessUuids}.
+export const setJobProductPrices = (mods) =>
+  sendJSON("PATCH", `/jobs/product-prices`, { modifications: mods }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
 // 프로젝트 설정 변경(한 번에 하나, 우선순위 action>managerAuthUuid>name>genre).
 // body 예: { name: "새 프로젝트명" } / { action: "hold"|"unhold"|"process"|"pause"|"complete"|"cancel" } / { managerAuthUuid } / { genreCode }
 export const setProjectSettings = (projectUuid, body) =>
