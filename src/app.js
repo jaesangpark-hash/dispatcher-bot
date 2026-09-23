@@ -2393,7 +2393,7 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "totus_product_price",
-      "TOTUS 매출 단가(JOB product price)를 조회한다. 주문에 실제 적용된 기준 단가(단가표 행)와 현재 조정액, 견적 확정단가를 같이 준다. '○○ 매출 단가 얼마야/단가 확인' 류에 쓴다. 이건 고객사에 청구하는 매출 단가이고, 작업자에게 지급하는 원가(작업 단가)와는 다르다. 변경은 propose_totus_price_edit.",
+      "TOTUS 매출 단가(JOB product price)를 조회한다. '○○ 매출 단가 얼마야/단가 확인' 류에 쓴다. 고객사 청구 단가이고 작업자 지급 단가(원가)와는 다르다. ★읽히는 건 **주문 단위 기준가**뿐이다 — 회차별로 따로 걸린 조정액은 게이트웨이에 읽는 API가 없어 조회 자체가 불가능하다(실측 확인). 그러니 절대 '현재 단가는 N원입니다'라고 단정하지 말고, 주문 기준가라는 것과 회차별 조정액이 따로 있을 수 있다는 걸 같이 말해라. 정확한 회차 단가는 어드민 작업진행관리에서만 보인다. 변경은 propose_totus_price_edit.",
       {
         work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
         show_table: z.boolean().optional().describe("true면 적용 가능한 단가표 후보 목록도 같이 보여준다(팩터·금액별 행)"),
@@ -2405,14 +2405,14 @@ const apmTools = createSdkMcpServer({
           const cur = `${ctx.base.currency}`;
           const out = {
             work: ctx.projName,
-            적용단가: `${(ctx.orderAmount + (ctx.currentAdjustment || 0)).toLocaleString()} ${cur}/${ctx.base.unit}`,
-            주문확정단가: `${ctx.orderAmount.toLocaleString()} ${cur} (v${ctx.orderVersion})`,
-            조정액: ctx.currentAdjustment == null ? "없음" : `${ctx.currentAdjustment > 0 ? "+" : ""}${ctx.currentAdjustment.toLocaleString()} ${cur}`,
+            주문기준가: `${ctx.orderAmount.toLocaleString()} ${cur}/${ctx.base.unit} (v${ctx.orderVersion})`,
+            주문조정액: ctx.currentAdjustment == null ? "없음" : `${ctx.currentAdjustment > 0 ? "+" : ""}${ctx.currentAdjustment.toLocaleString()} ${cur}`,
             조정사유: ctx.currentReason || undefined,
+            회차별_실제단가: "조회 불가 — 게이트웨이에 회차별 매출 단가 읽기 API가 없다(라우트 전수 확인). 어드민 작업진행관리에서만 보인다. ★'현재 단가는 N원'이라고 단정하지 말고, 위 값은 주문 기준가일 뿐이며 회차별로 조정액이 따로 걸려 있을 수 있다고 반드시 덧붙여라.",
             변경시_기준단가: `${ctx.base.amount.toLocaleString()} ${cur} (단가표 현재 v${ctx.base.version})`,
             견적확정단가: ctx.quotationAmount == null ? undefined : `${ctx.quotationAmount.toLocaleString()} ${cur}`,
             버전드리프트: ctx.versionDrift ? `주문은 v${ctx.orderVersion}(${ctx.orderAmount.toLocaleString()})에 고정, 단가표 현재는 v${ctx.base.version}(${ctx.base.amount.toLocaleString()}) — 단가 변경 시 기준이 바뀌니 사용자에게 반드시 알려라.` : undefined,
-            note: "조정액은 주문 단위로 읽은 값이다. 회차별로 따로 설정한 조정액은 여기 안 나올 수 있음.",
+            note: "실측 확인(2026-09-23): 회차별 조정액은 주문 단위 조회에 전혀 반영되지 않는다. 두 층이 별개다.",
           };
           if (show_table) {
             const pp = (await productPrices(ctx.projectUuid, ctx.orderUuid))?.data || [];
@@ -2459,7 +2459,7 @@ const apmTools = createSdkMcpServer({
               `💰 *TOTUS 매출 단가 변경 제안* — ${ctx.projName}`,
               `대상 ${items.length}건 (회차: ${compactRanges(items.map((i) => i.episode))})`,
               `기준 단가 ${ctx.base.amount.toLocaleString()} ${cur} (단가표 v${ctx.base.version}) ${adj >= 0 ? "+" : "−"} 조정액 ${Math.abs(adj).toLocaleString()} ${cur} → *최종 ${final.toLocaleString()} ${cur}/${ctx.base.unit}*`,
-              `현재 적용가: ${(ctx.orderAmount + (ctx.currentAdjustment || 0)).toLocaleString()} ${cur}${ctx.currentAdjustment ? ` (기준 ${ctx.orderAmount.toLocaleString()} ${ctx.currentAdjustment > 0 ? "+" : "−"} ${Math.abs(ctx.currentAdjustment).toLocaleString()}${ctx.currentReason ? `, ${ctx.currentReason}` : ""})` : ""}`,
+              `주문 기준가: ${ctx.orderAmount.toLocaleString()} ${cur}${ctx.currentAdjustment ? ` (주문 조정액 ${ctx.currentAdjustment > 0 ? "+" : "−"}${Math.abs(ctx.currentAdjustment).toLocaleString()}${ctx.currentReason ? `, ${ctx.currentReason}` : ""})` : ""} — ⓘ 회차별로 이미 걸린 조정액은 API로 읽을 수 없습니다(어드민에서 확인). 실행하면 그 값을 덮어씁니다.`,
               ctx.versionDrift ? `⚠️ 주문은 단가표 v${ctx.orderVersion}(${ctx.orderAmount.toLocaleString()} ${cur})에 고정돼 있는데 현재 단가표는 v${ctx.base.version}(${ctx.base.amount.toLocaleString()} ${cur})입니다. 변경하면 기준이 v${ctx.base.version}으로 바뀝니다 — 최종 금액은 위 값이 맞지만 기준선이 달라지는 점 확인 필요.` : "",
               reason ? `사유: ${reason}` : "",
               missing.length ? `⚠️ 못 찾은 회차: ${compactRanges(missing)}` : "",
