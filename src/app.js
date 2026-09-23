@@ -1584,15 +1584,23 @@ async function checkDailyDistill() {
 // 고객사 채널을 볼 수 없고 고객검수 코멘트 본문 API도 없어서, "언제 확인하러 가야 하는지"만 먼저 알린다.
 // 스케쥴 시트의 1차 납품 행 × TOTUS 고객검수(OTC0025) 완료 여부를 대조해, 시트 FB完了日이 비어 있는데
 // 검수가 끝난 건만 에디터 링크와 함께 올린다. 시트에 날짜가 채워지면 자동으로 조용해진다.
-const FIRST_DELIVERY_QA_HOUR = Number(process.env.FIRST_DELIVERY_QA_HOUR ?? 10);
+// 3시간 간격(재상 님 지정, 2026-09-23). 새벽 DM을 막으려고 업무시간 안에서만 슬롯을 돈다 → 10·13·16·19시.
+// EC2가 UTC라 시각 게이트는 반드시 kstHourNow()로 잡는다(19시 알림이 새벽 4시에 간 전례).
+const FIRST_DELIVERY_QA_HOUR = Number(process.env.FIRST_DELIVERY_QA_HOUR ?? 10);        // 첫 슬롯
+const FIRST_DELIVERY_QA_END_HOUR = Number(process.env.FIRST_DELIVERY_QA_END_HOUR ?? 19); // 마지막 슬롯 상한
+const FIRST_DELIVERY_QA_INTERVAL_H = Number(process.env.FIRST_DELIVERY_QA_INTERVAL_H ?? 3);
 const FIRST_DELIVERY_QA_RENOTIFY_DAYS = 7;   // 시트가 계속 비어 있으면 이 간격으로만 다시 올린다
 async function checkFirstDeliveryQA() {
   try {
-    if (kstHourNow() < FIRST_DELIVERY_QA_HOUR) return;
+    const hour = kstHourNow();
+    if (hour < FIRST_DELIVERY_QA_HOUR || hour > FIRST_DELIVERY_QA_END_HOUR) return;
+    const iv = Math.max(1, FIRST_DELIVERY_QA_INTERVAL_H);
+    const slot = FIRST_DELIVERY_QA_HOUR + Math.floor((hour - FIRST_DELIVERY_QA_HOUR) / iv) * iv;
     const today = kstDateOf();
+    const slotKey = `${today}:${String(slot).padStart(2, "0")}`;
     let state = { lastRun: null, notified: {} };
     try { state = { notified: {}, ...JSON.parse(readFileSync("data/first-delivery-qa.json", "utf8")) }; } catch { /* 첫 실행 */ }
-    if (state.lastRun === today) return;                        // 하루 1회
+    if (state.lastSlot === slotKey) return;                     // 이 슬롯은 이미 돌았다
     const scan = await scanFirstDeliveryQA({ lookbackDays: 21 });
     // 최근에 이미 알린 건은 뺀다(시트 J열이 채워지면 scan 단계에서 아예 안 올라온다)
     const fresh = (list) => list.filter((r) => {
@@ -1600,13 +1608,14 @@ async function checkFirstDeliveryQA() {
       return !last || (new Date(today) - new Date(last)) / 86400000 >= FIRST_DELIVERY_QA_RENOTIFY_DAYS;
     });
     const picked = { ...scan, ready: fresh(scan.ready), late: fresh(scan.late) };
-    state.lastRun = today;
+    state.lastSlot = slotKey;
+    // 한 번 알린 건은 날짜로 기록 — 같은 날 다음 슬롯에서 또 뜨지 않고, 7일 뒤에야 다시 올라온다
     for (const r of [...picked.ready, ...picked.late]) state.notified[`${r.pivo}|${r.due}`] = today;
     try { writeFileSync("data/first-delivery-qa.json", JSON.stringify(state)); } catch { /* 무시 */ }
     const text = formatFirstDeliveryQA(picked);
-    if (!text) { console.log(`[1차납품QA] ${today} — 점검 ${scan.scanned}행, 알릴 것 없음`); return; }
+    if (!text) { console.log(`[1차납품QA] ${slotKey}시 — 점검 ${scan.scanned}행, 알릴 것 없음`); return; }
     await dmOwner(text);
-    console.log(`[1차납품QA] ${today} 발송 — 확인필요 ${picked.ready.length} / 지연 ${picked.late.length} (점검 ${scan.scanned}행)`);
+    console.log(`[1차납품QA] ${slotKey}시 발송 — 확인필요 ${picked.ready.length} / 지연 ${picked.late.length} (점검 ${scan.scanned}행)`);
   } catch (e) { console.error("[1차납품QA] 실패:", e?.message ?? e); }
 }
 
