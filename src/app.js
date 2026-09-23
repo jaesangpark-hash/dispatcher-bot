@@ -37,6 +37,7 @@ import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock } from "./learned.js";
 import { recordTurn, recordReply, runDistill, dueDailyDistill, listCandidates, setCandidateStatus, pruneTurns, kstDay as distillDay } from "./distill.js";
+import { scanFirstDeliveryQA, formatFirstDeliveryQA, customerQaStatus } from "./firstDeliveryQA.js";
 import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode, deliveryReconcile, dailyCheckList, koTitlesByCommonNo } from "./schedule.js";
 import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText, findUndelivered } from "./deliveryNotice.js";
 import { collectTargets as collectSikjaHandover, buildMessage as buildSikjaHandoverMsg, buildLinkReply as buildSikjaHandoverLinks, markSent as markSikjaHandoverSent, syncNewWorks as syncSikjaHandoverWorks, HANDOVER_CHANNEL as SIKJA_HANDOVER_CHANNEL } from "./sikjaHandover.js";
@@ -269,6 +270,7 @@ const DISPATCHER_PROMPT = [
   "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. ★한 리테이크 알림에 화수가 여럿(예 '121, 123')이면 화수마다 이 도구를 나눠 부르지 말고 episode에 콤마로 합쳐('121,123') **한 번만** 호출—fix도 화수별 내용이 다르면 '121話：...\\n123話：...'처럼 한 문자열에 줄바꿈으로 합친다(회차별 성격이 달라도 마찬가지). 나눠 부르면 참고 에디터가 화수별로 하나씩만 잡혀 사용자가 혼란스러워한다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode,batch): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님). ★배치: 1-3화 등 초회분이면 batch 생략(初回分 기본), '재제출/추가분/再提出/追話'이거나 4화 이상 후속분이면 batch='再提出追話'로 그 배치 등급·코멘트를 고른다. 회차(예 '4')는 사용자가 말한 그대로 episode에. 초안은 ✏️수정 모달로 본문(문구·코멘트·등급) 손볼 수 있음.",
   "- 완결 작품 처리('○○ 완결 작품 처리해줘/완결처리'): propose_totus_complete(work나 pivo). 프로젝트명 뒤 '(완)' + 상태 완료를 한 번에(게이트). 이미 (완) 있으면 상태만. '처리했다' 단정 금지.",
   "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
+  "- 1차 납품 고객검수: first_delivery_qa — 스케쥴 시트 1차 납품 행 × TOTUS 고객검수(OTC0025) 대조. '고객검수 끝난 거 있어?'·'1차 납품 확인할 거' 류. 매일 오전 10시에도 자동으로 DM이 간다. ★코멘트 본문은 API가 없어 못 읽으니 '무슨 코멘트인지' 물으면 에디터 링크를 주고 직접 보시라고 해라(지어내지 말 것).",
   "- TOTUS 매출 단가: 조회는 totus_product_price(work), 변경은 propose_totus_price_edit(work, episode, target_price) — 게이트형(버튼). **고객사에 청구하는 매출 단가**이고 작업자 지급 단가(원가)와는 다르니 헷갈리지 말 것. 원하는 금액이 단가표에 없는 게 보통이라, 주문의 기준 단가는 두고 조정액(추가 단가)을 붙여 목표 금액을 맞춘다 — target_price만 주면 조정액은 자동 계산. 통화는 기준 단가 통화(중일은 보통 엔). 여러 회차는 episode에 범위·목록으로 한 번에. '바꿨다' 단정 금지.",
   "- TOTUS 태스크 리테이크(연결 태스크 생성, '○○ N화 [오퍼레이션] task 열어줘/리테이크해줘'): propose_task_retake(work, episode, operation, [startDate], [endDate]). 대상은 COMPLETED 태스크만 가능하고, 실행하면 그 태스크+하위 오퍼레이션이 전부 새로 생성됨(진행중 하위는 닫힘, 완료된 하위는 유지)+새 태스크들에 일정도 같이 입력됨. ★일정 기본값=오늘 하루(시작·마감 둘 다 오늘, KST) — 사용자가 날짜/기간을 말하면 그걸로(예 '4/15~4/20으로 잡아줘'는 startDate=4/15,endDate=4/20; '4/20까지'처럼 하나만 말하면 그 문맥에 맞게). 여러 회차가 **같은 오퍼레이션·같은 일정**이면 episode에 범위/목록으로 한 번에 담아라(회차마다 도구 나눠 부르지 말 것) — 단 **회차 그룹마다 일정이 다르면** 그건 그룹별로 도구를 따로 호출하는 게 맞다(예 '1-10화는 4/15~4/17, 11-20화는 4/18~4/20'이면 2번 호출, 확인 버튼도 그룹마다 따로 뜸). COMPLETED 아닌 회차는 자동 제외되고 미리보기에 표시됨. 게이트형(버튼)—'열었다/리테이크했다/일정 잡았다' 단정 금지.",
   "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, [apm], [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 번역/식자/APM은 사용자가 이 대화에서 이미 줬으면 반영하고 없으면 전부 생략. 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. ★APM을 몰라도 절대 되묻지 말고 그냥 apm 생략하고 호출할 것 — 미리보기 메시지에 'APM 멘션 없음' 경고가 자동으로 뜨고, 재상 님이 그 자리에서 ✏️수정 모달로 직접 입력한다(이게 원래 설계된 입력 경로). 게이트(버튼)—'게시했다' 단정 금지. 게시하면 그 스레드에 '🔍 설정집 검수' 버튼도 자동으로 붙는다(신규 요청만 — 이 기능 이전에 만든 옛 요청 스레드엔 버튼이 없음).",
@@ -1578,6 +1580,36 @@ async function checkDailyDistill() {
   } catch (e) { console.error("[distill] 실패:", e?.message ?? e); }
 }
 
+// ── 1차 납품 고객검수 선제 알림(2026-09-23) ──────────────────────
+// 고객사 채널을 볼 수 없고 고객검수 코멘트 본문 API도 없어서, "언제 확인하러 가야 하는지"만 먼저 알린다.
+// 스케쥴 시트의 1차 납품 행 × TOTUS 고객검수(OTC0025) 완료 여부를 대조해, 시트 FB完了日이 비어 있는데
+// 검수가 끝난 건만 에디터 링크와 함께 올린다. 시트에 날짜가 채워지면 자동으로 조용해진다.
+const FIRST_DELIVERY_QA_HOUR = Number(process.env.FIRST_DELIVERY_QA_HOUR ?? 10);
+const FIRST_DELIVERY_QA_RENOTIFY_DAYS = 7;   // 시트가 계속 비어 있으면 이 간격으로만 다시 올린다
+async function checkFirstDeliveryQA() {
+  try {
+    if (kstHourNow() < FIRST_DELIVERY_QA_HOUR) return;
+    const today = kstDateOf();
+    let state = { lastRun: null, notified: {} };
+    try { state = { notified: {}, ...JSON.parse(readFileSync("data/first-delivery-qa.json", "utf8")) }; } catch { /* 첫 실행 */ }
+    if (state.lastRun === today) return;                        // 하루 1회
+    const scan = await scanFirstDeliveryQA({ lookbackDays: 21 });
+    // 최근에 이미 알린 건은 뺀다(시트 J열이 채워지면 scan 단계에서 아예 안 올라온다)
+    const fresh = (list) => list.filter((r) => {
+      const last = state.notified[`${r.pivo}|${r.due}`];
+      return !last || (new Date(today) - new Date(last)) / 86400000 >= FIRST_DELIVERY_QA_RENOTIFY_DAYS;
+    });
+    const picked = { ...scan, ready: fresh(scan.ready), late: fresh(scan.late) };
+    state.lastRun = today;
+    for (const r of [...picked.ready, ...picked.late]) state.notified[`${r.pivo}|${r.due}`] = today;
+    try { writeFileSync("data/first-delivery-qa.json", JSON.stringify(state)); } catch { /* 무시 */ }
+    const text = formatFirstDeliveryQA(picked);
+    if (!text) { console.log(`[1차납품QA] ${today} — 점검 ${scan.scanned}행, 알릴 것 없음`); return; }
+    await dmOwner(text);
+    console.log(`[1차납품QA] ${today} 발송 — 확인필요 ${picked.ready.length} / 지연 ${picked.late.length} (점검 ${scan.scanned}행)`);
+  } catch (e) { console.error("[1차납품QA] 실패:", e?.message ?? e); }
+}
+
 // ── 오늘 납품 대상 리포트(2026-09-04) ────────────────────────────
 // 고객사 납품 시트의 納品予定日이 오늘인 작품 = 작품 수 + 공통번호만 간단히.
 // ★納品話数가 빈 칸(휴재·미배정)인 작품은 작품 수에서 빼고 "화수 미기재" 건수로만 알린다(재상 님 기준).
@@ -2390,6 +2422,32 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: {} }
+    ),
+    tool(
+      "first_delivery_qa",
+      "1차 납품 작품의 고객검수(OTC0025) 진행 상태를 확인한다. 스케쥴 시트의 1차 납품 행과 TOTUS를 대조해 '고객검수는 끝났는데 아직 확인 안 한 것'과 '제출예정일이 지났는데 검수가 안 끝난 것'을 추린다. '1차 납품 확인할 거 있어?'·'고객검수 끝난 거 있나' 류에 쓴다. 코멘트 본문은 API가 없어서 못 읽는다 — 에디터 링크를 주고 사람이 직접 읽는 구조다. 매일 오전에도 자동으로 올라간다.",
+      {
+        lookback_days: z.number().optional().describe("제출예정일 기준 며칠 전까지 볼지(기본 21)"),
+        include_done: z.boolean().optional().describe("true면 시트에 FB完了日이 이미 기입된 행도 같이 보여준다"),
+      },
+      async ({ lookback_days, include_done }) => {
+        try {
+          const scan = await scanFirstDeliveryQA({ lookbackDays: lookback_days ?? 21 });
+          const brief = (r) => ({ 작품: r.title, pivo: r.pivo, 제출예정: r.due, 기대치: r.expect || undefined, FB담당: r.fbWorker || undefined });
+          const out = {
+            기준일: scan.today,
+            점검행수: scan.scanned,
+            확인필요: scan.ready.map((r) => ({ ...brief(r), 완료회차: r.qa.episodes, 검수완료일: r.qa.finishedAt, 에디터: r.qa.links.map((l) => `${l.episode}화 ${l.url}`) })),
+            검수미완료: scan.late.map(brief),
+            실패: scan.failed.length ? scan.failed.map((f) => ({ 작품: f.title, 사유: f.why })) : undefined,
+            처리완료: include_done ? scan.skipped.map(brief) : `${scan.skipped.length}건(시트 FB完了日 기입됨, 생략)`,
+            note: "확인필요가 있으면 작품·회차·에디터 링크를 담백하게 보여주고, 코멘트 본문은 읽을 수 없으니 직접 확인하시라고 안내해라. 없으면 '없다'고만 짧게.",
+          };
+          return { content: [{ type: "text", text: JSON.stringify(out) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
     ),
     tool(
       "totus_product_price",
@@ -4080,7 +4138,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__edit_posted_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__setjip_reference_files", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__totus_product_price", "mcp__apm__propose_totus_price_edit", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__edit_posted_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__setjip_reference_files", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__totus_product_price", "mcp__apm__propose_totus_price_edit", "mcp__apm__first_delivery_qa", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__collab_digest", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
@@ -7516,7 +7574,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
