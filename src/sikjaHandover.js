@@ -96,7 +96,12 @@ export async function inspectWork(pivo, nameOf) {
 }
 
 // 트래킹 탭에서 오늘 요청을 보낼 작품을 고른다. TOTUS는 후보에만 물어본다(전수 조회 금지).
-export async function collectTargets() {
+//
+// includeToday: 납품예정일이 **오늘인** 행까지 포함할지(2026-09-23 추가).
+//   납품예정일은 그날 23:59:59 KST 마감이라, 오전에 도는 슬롯에서 당일 건을 넣으면 아직 납품 전이다.
+//   그래서 오전 슬롯은 지난 건만(false), 저녁 슬롯은 당일 건까지(true) 본다.
+//   이걸 안 나누면 "오늘 초도 납품했는데 공지가 안 왔다"가 된다(재상 님 리포트, 2026-09-23).
+export async function collectTargets({ includeToday = false } = {}) {
   const nameOf = await workerNames();
   const today = kstToday();
   const rows = await readRange(OPS_SHEET, `'${TRACK_TAB}'!A1:J`);
@@ -113,7 +118,8 @@ export async function collectTargets() {
     if (String(r[8] || "").trim().toUpperCase() === "TRUE") continue;   // 처리 완료 — 사람이 체크
     if (String(r[7] || "").trim()) continue;                            // 이미 요청 보낸 행
     const due = String(r[4] || "").trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(due) || due >= today) continue;     // 초도 납품 전
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) continue;                     // 납품예정일 미기입
+    if (includeToday ? due > today : due >= today) continue;            // 초도 납품 전
     const ko = koTitle[pivo];
     if (!ko) { skipped.push({ pivo, row: i + 1, why: "한국어 타이틀 없음" }); continue; }
 

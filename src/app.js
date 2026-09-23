@@ -7546,24 +7546,31 @@ async function checkKpFbWeekly() {
 // 「초도 완료 트래킹」 탭에서 미체크 + 초도 납품일 경과 행만 골라 담당 APM에게 #재팬_작업요청으로
 // 요청하고 스레드에 프로젝트 링크를 붙인다. 판정 상세와 제외 규칙은 src/sikjaHandover.js 주석 참조.
 // 시트가 상태를 들고 있어(요청 발송일 기록) 하루 1회 제한만 두면 중복 발송이 없다.
+// ★당일 발송(2026-09-23 재상 님 지정). 납품예정일은 그날 23:59:59 마감이라 오전에 보내면 아직 납품 전이다.
+// 그래서 슬롯을 둘로 나눈다 — 오전 11시는 지난 건만, 저녁 19시는 당일 건까지. 하루 안에 나가고 오탐도 없다.
 const SIKJA_HANDOVER_HOUR = Number(process.env.SIKJA_HANDOVER_HOUR ?? 11);
+const SIKJA_HANDOVER_SAMEDAY_HOUR = Number(process.env.SIKJA_HANDOVER_SAMEDAY_HOUR ?? 19);
 async function checkSikjaHandover() {
   try {
     if (process.env.SIKJA_HANDOVER_ENABLED === "false") return;
-    if (kstHourNow() < SIKJA_HANDOVER_HOUR) return;
+    const hour = kstHourNow();
+    if (hour < SIKJA_HANDOVER_HOUR) return;
+    const includeToday = hour >= SIKJA_HANDOVER_SAMEDAY_HOUR;
+    const slot = includeToday ? "evening" : "morning";
     const today = kstDateOf();
     let state = {};
     try { state = JSON.parse(readFileSync("data/sikja-handover-run.json", "utf8")); } catch { /* 첫 실행 */ }
-    if (state.lastDate === today) return;
-    state.lastDate = today;
+    if (state[`last_${slot}`] === today) return;
+    state[`last_${slot}`] = today;
+    state.lastDate = today;   // 구 필드 유지(다른 도구가 볼 수 있음)
     try { writeFileSync("data/sikja-handover-run.json", JSON.stringify(state)); } catch { /* 무시 */ }
 
     try { const n = await syncSikjaHandoverWorks(); if (n) console.log(`[sikja-handover] 신규 작품 ${n}건 트래킹 탭에 추가`); }
     catch (e) { console.error("[sikja-handover] 신규 동기화 실패:", e?.message ?? e); }
 
-    const { items, skipped } = await collectSikjaHandover();
+    const { items, skipped } = await collectSikjaHandover({ includeToday });
     if (skipped.length) console.log(`[sikja-handover] 건너뜀 ${skipped.length}건 — ${skipped.map((s) => `${s.pivo}:${s.why}`).join(" / ")}`);
-    if (!items.length) { console.log(`[sikja-handover] ${today} 대상 없음`); return; }
+    if (!items.length) { console.log(`[sikja-handover] ${today} ${slot} 대상 없음`); return; }
 
     const main = await app.client.chat.postMessage({
       channel: SIKJA_HANDOVER_CHANNEL, text: buildSikjaHandoverMsg(items), unfurl_links: false, ...SENDER,
