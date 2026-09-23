@@ -171,6 +171,42 @@ export async function markSent(items, date) {
   return items.length;
 }
 
+// 납품예정일이 바뀌면 트래킹 탭 E열(초도 납품일)도 따라가야 한다(2026-09-23 재상 님 지정).
+//
+// 왜 필요한가: E열은 행을 처음 만들 때 한 번만 쓰이고 그 뒤로 갱신되지 않았다. 그래서 날짜가
+// 미뤄지면 아직 납품도 안 한 작품에 이관 요청이 나가고, 당겨지면 늦게 나간다. 전수 재조회는
+// 비싸니, **툰식이로 납품일을 바꾸는 그 순간** 해당 작품 행만 다시 읽어 맞춘다.
+//
+// 이미 요청을 보냈거나(H) 사람이 처리 완료로 체크한(I) 행은 건드리지 않는다.
+// 작업자(F·G)도 같이 갱신한다 — 날짜가 바뀌는 시점이면 배정도 바뀌었을 수 있다.
+export async function refreshTrackingRow(pivo) {
+  const p = String(pivo || "").trim();
+  if (!p) return { skipped: "pivo 없음" };
+  const rows = await readRange(OPS_SHEET, `'${TRACK_TAB}'!A1:J`);
+  const idx = rows.findIndex((r, i) => i > 0 && String(r?.[0] || "").trim() === p);
+  if (idx < 0) return { skipped: "트래킹 탭에 없는 작품" };
+  const r = rows[idx] || [];
+  if (String(r[7] || "").trim()) return { skipped: "이미 요청 발송됨" };
+  if (String(r[8] || "").trim().toUpperCase() === "TRUE") return { skipped: "처리 완료 행" };
+
+  const nameOf = await workerNames();
+  let info;
+  try { info = await inspectWork(p, nameOf); } catch (e) { return { skipped: `TOTUS 조회 실패(${e?.message ?? e})` }; }
+  if (info.skip || !info.initialDue) return { skipped: info.skip || "납품예정일 없음" };
+
+  const row = idx + 1;
+  const before = String(r[4] || "").trim();
+  const cells = [];
+  if (before !== info.initialDue) cells.push({ a1: `'${TRACK_TAB}'!E${row}`, value: info.initialDue });
+  if (info.initialEps != null && String(r[3] || "").trim() !== String(info.initialEps)) cells.push({ a1: `'${TRACK_TAB}'!D${row}`, value: info.initialEps });
+  const wk = (info.workers || []).join(", "), tg = (info.targets || []).join(", ");
+  if (String(r[5] || "").trim() !== wk) cells.push({ a1: `'${TRACK_TAB}'!F${row}`, value: wk });
+  if (String(r[6] || "").trim() !== tg) cells.push({ a1: `'${TRACK_TAB}'!G${row}`, value: tg });
+  if (!cells.length) return { row, changed: false, due: info.initialDue };
+  await setCells(OPS_SHEET, cells);
+  return { row, changed: true, before, due: info.initialDue, eps: info.initialEps };
+}
+
 // 배정 현황에 새로 생긴 작품을 트래킹 탭 맨 아래에 덧붙인다(기존 행은 건드리지 않는다).
 export async function syncNewWorks() {
   const nameOf = await workerNames();

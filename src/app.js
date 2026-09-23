@@ -40,7 +40,7 @@ import { recordTurn, recordReply, runDistill, dueDailyDistill, listCandidates, s
 import { scanFirstDeliveryQA, formatFirstDeliveryQA, customerQaStatus } from "./firstDeliveryQA.js";
 import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode, deliveryReconcile, dailyCheckList, koTitlesByCommonNo } from "./schedule.js";
 import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText, findUndelivered } from "./deliveryNotice.js";
-import { collectTargets as collectSikjaHandover, buildMessage as buildSikjaHandoverMsg, buildLinkReply as buildSikjaHandoverLinks, markSent as markSikjaHandoverSent, syncNewWorks as syncSikjaHandoverWorks, HANDOVER_CHANNEL as SIKJA_HANDOVER_CHANNEL } from "./sikjaHandover.js";
+import { collectTargets as collectSikjaHandover, buildMessage as buildSikjaHandoverMsg, buildLinkReply as buildSikjaHandoverLinks, markSent as markSikjaHandoverSent, syncNewWorks as syncSikjaHandoverWorks, refreshTrackingRow as refreshSikjaTrackingRow, HANDOVER_CHANNEL as SIKJA_HANDOVER_CHANNEL } from "./sikjaHandover.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
 
@@ -2002,6 +2002,18 @@ async function uploadTextCsv(ctx, { work, pivo, of, to, csv, missing, sheetRows 
 
 // findProject 검색 결과가 여럿일 때(동명/구표기 프로젝트 중복) 되묻지 않고 [PV-정식6자리] 태그 붙은 것 하나로 자동 특정.
 // 그것도 0개거나 2개 이상이면(진짜 모호) null 반환 — 그때만 candidates 목록으로 폴백.
+// TOTUS 납품예정일을 바꾸면 「초도 완료 트래킹」 탭 E열도 같이 맞춘다(2026-09-23 재상 님 지정).
+// 그 탭 값은 행 생성 시점에 한 번 박히고 갱신되지 않아, 날짜가 미뤄지면 납품 전에 이관 요청이 나갔다.
+// 실패해도 본 작업(날짜 변경)에는 영향 없게 조용히 삼킨다.
+async function syncSikjaTrackingAfterDateChange(proj, projName) {
+  try {
+    const pivo = String(proj?._detail?.pivoId || (String(proj?.프로젝트 || "").match(/\[PV-(\d+)\]/) || [])[1] || "").trim();
+    if (!pivo) return;
+    const r = await refreshSikjaTrackingRow(pivo);
+    if (r?.changed) console.log(`[sikja-handover] 트래킹 탭 갱신 — ${projName} (PV-${pivo}) 초도 납품일 ${r.before || "(빈칸)"} → ${r.due}`);
+  } catch (e) { console.error("[sikja-handover] 트래킹 갱신 실패:", e?.message ?? e); }
+}
+
 function pickPivoTagged(candidates) {
   if (candidates.length === 1) return candidates[0];
   const tagged = candidates.filter((p) => /\[PV-\d{6}\]/.test(String(p.프로젝트 || "")));
@@ -2331,6 +2343,7 @@ const apmTools = createSdkMcpServer({
           const rsn = reason || "CUSTOMER_REQUEST";
           const res = await setDeliveryDate(list.map((it) => ({ jobProcessUuid: it.jobProcessUuid, deliveryDate: it.deliveryDate, modificationReason: rsn })), false);
           appendFileSync("logs/totus-dates.jsonl", JSON.stringify({ at: new Date().toISOString(), user: DISPATCHER_USER_ID, work: projName, items: list.map((it) => ({ episode: it.episode, to: it.deliveryDate })), reason: rsn, ok: res?.success, resp: res?.data }) + "\n");
+          if (res?.success) await syncSikjaTrackingAfterDateChange(proj, projName);
           const groups = {};  // 날짜별 회차 묶기(보고용)
           for (const it of list) (groups[it.deliveryDate] ||= []).push(it.episode);
           const changed = Object.entries(groups).sort(([a], [b]) => a.localeCompare(b)).map(([d, eps]) => `${compactRanges(eps.sort((x, y) => x - y))}화 → ${d}`);
