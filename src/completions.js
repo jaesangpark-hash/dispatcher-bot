@@ -30,7 +30,10 @@ export async function dueCompletions(catchUpDays = 7) {
   const found = [];
   for (const [lang, tab] of Object.entries(TABS)) {
     let rows;
-    try { rows = (await readRange(DELIVERY_ID, `${tab}!A2:P3000`)) || []; }
+    // ★행 상한을 두면 안 된다(2026-09-23). 예전엔 A2:P3000이었는데 시트가 22,000행을 넘어가면서
+    // '완' 마커 49건 중 33건이 범위 밖으로 밀려 **8/14 이후 감지가 0건**이 됐다(8/18 웬수와 결혼해버렸다,
+    // 9/15 향기 그리고 너와 나 등을 통째로 놓침). 행은 계속 늘어나니 끝을 열어 둔다.
+    try { rows = (await readRange(DELIVERY_ID, `${tab}!A2:P`)) || []; }
     catch (e) { console.error(`[completion] ${tab} 읽기 실패:`, e?.message ?? e); continue; }
     for (const r of rows) {
       if (!isWan(r[C.job])) continue;
