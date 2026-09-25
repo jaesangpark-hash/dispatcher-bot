@@ -3109,8 +3109,46 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("get_file_order",
+      "회차의 **현재 원본 파일 순서**를 있는 그대로 보여준다(읽기 전용, 아무것도 바꾸지 않는다). '지금 파일 순서 보여줘', '순서 맞아?', '今のファイル順を示して' 류. ★순서를 묻는 질문에는 반드시 이걸 써라 — check_and_fix_file_order는 조회가 아니라 **실행**이라 그냥 부르면 순서를 바꿔버리고, check_original_source_files는 저장소 나열 순이라 실제 순서와 뒤집혀 나온다(2026-09-25 실사고). 판정 결과(정상/재정렬 필요)도 같이 준다 — '재정렬 필요'로 나오면 그때 고칠지 물어보고 check_and_fix_file_order로 넘어가라.",
+      {
+        work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
+        episode: z.union([z.string(), z.number()]).describe("회차 번호"),
+      },
+      async ({ work, episode }) => {
+        try {
+          const num = String(work).match(/^\D*(\d{4,})\D*$/)?.[1] || null;
+          const proj = num ? (await projectByPivo(num))?.data?.[0] : pickPivoTagged((await findProject(work))?.data || []);
+          if (!proj?.uuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 못 찾음.` }) }] };
+          const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
+          const groups = (await episodeSourceGroups(proj.uuid, episode))?.data || [];
+          if (!groups.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, episode, msg: "이 회차에 소스그룹이 없음(파일 미등록이거나 회차 번호 확인 필요)." }) }] };
+          // ★TOTUS 명세: "순서 조회는 Source Group 목록 조회 사용". 각 파일에 `순서`(0-base) 필드가 있으니
+          // 배열 나열에 의존하지 말고 그걸로 정렬한다. 그룹이 여러 개면 그룹의 `순서`도 함께 보여준다.
+          const out = groups
+            .slice()
+            .sort((a, b) => (Number(a.순서) || 0) - (Number(b.순서) || 0))
+            .map((g) => {
+              const files = (g.파일목록 || []).slice().sort((a, b) => (Number(a.순서) || 0) - (Number(b.순서) || 0));
+              const names = files.map((f) => f.파일이름);
+              const a = analyzeOrder(names);
+              return {
+                그룹: g.이름, 확정여부: g.확정여부, 파일수: names.length,
+                현재순서: names,
+                판정: a.complexGroups.length ? "수정본 표시 섞임 — 자동판정 불가"
+                  : (a.simpleAmbiguousGroups.length ? "동률 있음 — 사람 확인 필요"
+                    : (a.isDifferent ? "재정렬 필요" : "정상")),
+                권장순서: a.isDifferent ? a.suggested : undefined,
+              };
+            });
+          return { content: [{ type: "text", text: JSON.stringify({ found: true, work: projName, episode, groups: out, note: "읽기만 했고 아무것도 바꾸지 않았다. '현재순서'를 번호 매겨 그대로 보여주고, 판정이 '정상'이면 문제없다고 답해라. '재정렬 필요'면 고칠지 물어본 뒤 check_and_fix_file_order로 진행." }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
+        }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("check_original_source_files",
-      "TOTUS PIVO 작품의 특정 회차에 **어떤 원본 파일이 올라와 있는지**(파일명·용량) 조회한다. 키워드: '원본 목록 [작품명] [N화]', '몇 개 올라와 있어'. 게이트 없이 즉시 실행(읽기성 조회, 부작용 없음). ★**파일 '순서'를 묻는 질문에는 절대 쓰지 마라** — 이 API의 나열 순서는 저장소 응답 순이라 실제 작업 순서(에디터 파일관리 탭)와 뒤집혀 나오는 일이 있다(2026-09-25 실사고: 멀쩡한 회차를 역순으로 보여줘 오인 발생). '지금 파일 순서 보여줘/순서 맞아?'는 check_and_fix_file_order를 써야 한다.",
+      "TOTUS PIVO 작품의 특정 회차에 **어떤 원본 파일이 올라와 있는지**(파일명·용량) 조회한다. 키워드: '원본 목록 [작품명] [N화]', '몇 개 올라와 있어'. 게이트 없이 즉시 실행(읽기성 조회, 부작용 없음). ★**파일 '순서'를 묻는 질문에는 절대 쓰지 마라** — 이 API의 나열 순서는 저장소 응답 순이라 실제 작업 순서와 뒤집혀 나온다(2026-09-25 실사고: 멀쩡한 회차를 역순으로 보여줘 오인 발생). '지금 파일 순서 보여줘/순서 맞아?'는 **get_file_order**를 써라.",
       {
         pivo: z.string().describe("PIVO 번호(PV- 접두 붙여도 됨, 숫자만 추출해서 씀)"),
         episode: z.union([z.string(), z.number()]).describe("회차 번호"),
@@ -3121,12 +3159,12 @@ const apmTools = createSdkMcpServer({
           const res = await pivoEpisodeSourceFiles(num, String(episode));
           // ★이 응답의 나열 순서는 작업 순서가 아니다(2026-09-25 실사고). 저장소가 주는 대로일 뿐이라
           // 같은 회차에서도 source-groups(에디터 파일관리 탭)와 뒤집혀 나온다 — 회귀 좀비 서바이버 188화:
-          // 여기선 9→15→14→…→10, source-groups에선 9→10→…→15(정상). 순서를 물었을 때 이걸 보여주면
-          // 멀쩡한 회차를 "순서가 깨졌다"로 오인하게 된다. 그래서 파일명 기준으로 정렬해 내보내고,
-          // 순서 질문에는 이 도구를 쓰지 말라고 아래 설명에 명시했다.
+          // 여기선 9→15→14→…→10, source-groups에선 9→10→…→15(정상).
+          // TOTUS 명세도 "순서 조회는 Source Group 목록 조회 사용"이라고 못박고 있다.
+          // 그래서 여기선 순서를 주장하지 않고(파일명 정렬해 읽기 편하게만 함), 순서 질문은 get_file_order로 보낸다.
           const raw = (res?.data?.파일목록 || []).map((f) => ({ 파일명: f.파일명, 크기MB: f.크기 ? +(f.크기 / (1024 * 1024)).toFixed(1) : null }));
           const files = [...raw].sort((a, b) => String(a.파일명).localeCompare(String(b.파일명), "en", { numeric: true }));
-          return { content: [{ type: "text", text: JSON.stringify({ found: true, work: res?.data?.작품명, folder: res?.data?.회차폴더?.폴더명, files, note: "여기 나열 순서는 저장소 응답을 파일명으로 정렬한 것이지 TOTUS 작업 순서가 아니다. '파일 순서'를 묻는 질문에는 이 도구로 답하지 말고 check_and_fix_file_order를 써라." }) }] };
+          return { content: [{ type: "text", text: JSON.stringify({ found: true, work: res?.data?.작품명, folder: res?.data?.회차폴더?.폴더명, files, note: "★나열 순서는 파일명으로 정렬한 것일 뿐, TOTUS 작업 순서가 아니다. 순서를 묻는 질문에는 get_file_order를 써라." }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
@@ -4207,7 +4245,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__edit_posted_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__setjip_reference_files", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__totus_product_price", "mcp__apm__propose_totus_price_edit", "mcp__apm__first_delivery_qa", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__edit_posted_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__setjip_reference_files", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__get_file_order", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__totus_product_price", "mcp__apm__propose_totus_price_edit", "mcp__apm__first_delivery_qa", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__collab_digest", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
