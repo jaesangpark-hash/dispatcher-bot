@@ -3110,7 +3110,7 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: true } }),
     tool("check_original_source_files",
-      "TOTUS PIVO 작품의 특정 회차에 현재 등록된 원본(작업용) 파일 목록을 조회한다. 키워드: '원본 목록 [작품명] [N화]'. 게이트 없이 즉시 실행(읽기성 조회, 부작용 없음).",
+      "TOTUS PIVO 작품의 특정 회차에 **어떤 원본 파일이 올라와 있는지**(파일명·용량) 조회한다. 키워드: '원본 목록 [작품명] [N화]', '몇 개 올라와 있어'. 게이트 없이 즉시 실행(읽기성 조회, 부작용 없음). ★**파일 '순서'를 묻는 질문에는 절대 쓰지 마라** — 이 API의 나열 순서는 저장소 응답 순이라 실제 작업 순서(에디터 파일관리 탭)와 뒤집혀 나오는 일이 있다(2026-09-25 실사고: 멀쩡한 회차를 역순으로 보여줘 오인 발생). '지금 파일 순서 보여줘/순서 맞아?'는 check_and_fix_file_order를 써야 한다.",
       {
         pivo: z.string().describe("PIVO 번호(PV- 접두 붙여도 됨, 숫자만 추출해서 씀)"),
         episode: z.union([z.string(), z.number()]).describe("회차 번호"),
@@ -3119,8 +3119,14 @@ const apmTools = createSdkMcpServer({
         try {
           const num = String(pivo).match(/\d{4,}/)?.[0] || String(pivo).trim();
           const res = await pivoEpisodeSourceFiles(num, String(episode));
-          const files = (res?.data?.파일목록 || []).map((f) => ({ 파일명: f.파일명, 크기MB: f.크기 ? +(f.크기 / (1024 * 1024)).toFixed(1) : null }));
-          return { content: [{ type: "text", text: JSON.stringify({ found: true, work: res?.data?.작품명, folder: res?.data?.회차폴더?.폴더명, files }) }] };
+          // ★이 응답의 나열 순서는 작업 순서가 아니다(2026-09-25 실사고). 저장소가 주는 대로일 뿐이라
+          // 같은 회차에서도 source-groups(에디터 파일관리 탭)와 뒤집혀 나온다 — 회귀 좀비 서바이버 188화:
+          // 여기선 9→15→14→…→10, source-groups에선 9→10→…→15(정상). 순서를 물었을 때 이걸 보여주면
+          // 멀쩡한 회차를 "순서가 깨졌다"로 오인하게 된다. 그래서 파일명 기준으로 정렬해 내보내고,
+          // 순서 질문에는 이 도구를 쓰지 말라고 아래 설명에 명시했다.
+          const raw = (res?.data?.파일목록 || []).map((f) => ({ 파일명: f.파일명, 크기MB: f.크기 ? +(f.크기 / (1024 * 1024)).toFixed(1) : null }));
+          const files = [...raw].sort((a, b) => String(a.파일명).localeCompare(String(b.파일명), "en", { numeric: true }));
+          return { content: [{ type: "text", text: JSON.stringify({ found: true, work: res?.data?.작품명, folder: res?.data?.회차폴더?.폴더명, files, note: "여기 나열 순서는 저장소 응답을 파일명으로 정렬한 것이지 TOTUS 작업 순서가 아니다. '파일 순서'를 묻는 질문에는 이 도구로 답하지 말고 check_and_fix_file_order를 써라." }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
