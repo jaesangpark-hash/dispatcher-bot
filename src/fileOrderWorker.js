@@ -30,33 +30,43 @@ export const WORKER_CHANNELS = {
 
 const lc = (s) => String(s ?? "").trim().toLowerCase();
 
+// 전각 숫자(０-９)를 반각으로. 작업자가 일본어 IME로 치면 전각이 섞여 들어오는데
+// 예전엔 \d가 이걸 못 잡아 「６話」가 통째로 무시됐다(2026-09-24 田村 님 실사례).
+const toHalfWidth = (s) => String(s ?? "").replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+
 // ── 의도 판정 ─────────────────────────────────────────────
 // 「順」「原本」계열 + 고쳐달라는 뜻이 함께 있으면 발동. 한국어·영어도 받는다.
 const WORD_ORDER = /順番|順序|順|並び|ならび|順서|순서|order/i;
 const WORD_SOURCE = /原本|原稿|ファイル|ページ|원본|파일|file|page/i;
 const WORD_FIX = /直|なお|並べ|替え|整|修正|おかしい|違う|ちがう|ずれ|逆|お願い|ください|確認|고쳐|바꿔|정리|이상|틀|확인|fix|wrong/i;
 export function detectIntent(text) {
-  const t = String(text ?? "");
+  const t = toHalfWidth(text);
   if (!t.trim()) return false;
   // 「順」+「ください」 정도로는 안 된다(手順を確認してください 같은 평범한 말이 다 걸린다).
   // 원본·파일·페이지 계열이 반드시 같이 나와야 발동한다. 2026-09-18 오탐 제보 후 강화.
-  return WORD_ORDER.test(t) && WORD_SOURCE.test(t);
+  if (WORD_ORDER.test(t) && WORD_SOURCE.test(t)) return true;
+  // ★작품명+회차만 적어 보내는 경우도 요청으로 본다(2026-09-24 실사례: 「これこそ真の武道だ！6話」가
+  // 사용법 안내로 빠져 작업자가 세 번 다시 보냈다). 이 채널은 파일순서 전용이라 회차를 적었다는 것
+  // 자체가 요청 신호다. 다만 숫자만 덜렁 있는 건("6") 제외 — 단위(話/화)가 붙어야 한다.
+  return /\d{1,4}\s*(?:話|话|화)/.test(t);
 }
 
 // 회차 추출: 「12話」「12화」「12」「1-3話」「1,2,3」
+// ★단위는 話·화·ep 외에 중국어 简体 话·繁体 話도 받는다 — 원본 파일명이 「006_006话」처럼
+//   중국어 표기로 오는 경우가 많다(2026-09-24 실사례: 006_006话를 못 읽어 되물었다).
 export function parseEpisodes(text) {
-  const t = String(text ?? "");
+  const t = toHalfWidth(text);
   const out = new Set();
   // 범위: 12-14 / 12~14 / 12〜14 / 12～14 (전각 물결 포함)
-  for (const m of t.matchAll(/(\d{1,4})\s*[-~〜～]\s*(\d{1,4})\s*(?:話|화|ep)?/gi)) {
+  for (const m of t.matchAll(/(\d{1,4})\s*[-~〜～]\s*(\d{1,4})\s*(?:話|话|화|ep)?/gi)) {
     const a = Number(m[1]), b = Number(m[2]);
     if (a <= b && b - a <= 30) for (let i = a; i <= b; i++) out.add(i);
   }
   // 쉼표 나열: 1,2,3話 / 1、2、3화 (마지막에만 単位가 붙는 경우가 많다)
-  for (const m of t.matchAll(/((?:\d{1,4}\s*[,、]\s*)+\d{1,4})\s*(?:話|화|ep)?/gi)) {
+  for (const m of t.matchAll(/((?:\d{1,4}\s*[,、]\s*)+\d{1,4})\s*(?:話|话|화|ep)?/gi)) {
     for (const n of m[1].split(/[,、]/)) { const v = Number(n.trim()); if (Number.isFinite(v)) out.add(v); }
   }
-  for (const m of t.matchAll(/(\d{1,4})\s*(?:話|화|ep)/gi)) out.add(Number(m[1]));
+  for (const m of t.matchAll(/(\d{1,4})\s*(?:話|话|화|ep)/gi)) out.add(Number(m[1]));
   if (!out.size) for (const m of t.matchAll(/\b(\d{1,4})\b/g)) out.add(Number(m[1]));
   return [...out].filter((n) => n >= 0 && n <= 2000).sort((a, b) => a - b);
 }
