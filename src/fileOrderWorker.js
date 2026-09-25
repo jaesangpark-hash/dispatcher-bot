@@ -144,11 +144,17 @@ export async function inspectEpisodes(projectUuid, episodes) {
       const fileMap = {};
       for (const f of fileList) fileMap[f["파일이름"]] = f.id;
       const a = analyzeOrder(files);
-      const missing = detectMissingPages(files);
+      const mp = detectMissingPages(files);
       const status = a.complexGroups.length ? "complex_skip"
         : (a.simpleAmbiguousGroups.length ? "ambiguous"
           : (a.isDifferent ? "fix" : "clean"));
-      recs.push({ episode: ep, status, groupId: group.id, files, sorted: a.sorted, fileMap, missing });
+      // ★필드명 주의(2026-09-25 버그 수정): analyzeOrder는 `suggested`를, detectMissingPages는
+      // `{missing,min,max}` 객체를 돌려준다. 예전엔 `a.sorted`·`missing`(객체 통째)를 담고 있어서
+      //   · sorted가 항상 undefined → status가 "fix"일 때만 r.sorted.slice()로 크래시
+      //     ("確認中にエラーが発生しました" — 정작 고쳐야 할 회차에서만 실패해 기능이 무용지물이었다)
+      //   · missing이 배열이 아니라 객체 → r.missing?.length가 항상 거짓
+      // 본체 경로(app.js)는 처음부터 suggested/mp.missing을 맞게 읽고 있었다. 그래서 한국어 요청만 됐다.
+      recs.push({ episode: ep, status, groupId: group.id, files, sorted: a.suggested, fileMap, missing: mp.missing });
     } catch (e) {
       recs.push({ episode: ep, status: "error", error: String(e?.message ?? e).slice(0, 80) });
     }
