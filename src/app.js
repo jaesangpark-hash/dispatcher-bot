@@ -4350,6 +4350,18 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   }
   const chPol = CHANNEL_POLICY[channel];   // 채널별 행동 지침(임시) — 있으면 최우선 규칙으로 주입
   if (chPol) llmText = `[이 채널 규칙(최우선): ${chPol}]\n${llmText}`;
+  // 증류 후보 번호 응답 — "2번 채택" 같은 답은 증류 DM 스레드에 달리는데, 그 제안 메시지는
+  // 선제 발송이라 대화 기록에 없다. 번호만 보고는 무엇의 2번인지 알 수 없어 되물었던 사고(2026-09-29).
+  // 번호+채택/버려 패턴이면 승인 대기 후보를 그대로 붙여준다.
+  try {
+    if (/\d+\s*번\s*(채택|승인|적용|버려|버림|반려|거절|삭제)/.test(String(text || ""))) {
+      const pend = listCandidates("pending");
+      if (pend.length) {
+        llmText += `\n\n[증류 후보(승인 대기) — 위 "N번"은 이 목록의 번호다. 채택이면 approve_distill(id), 버리는 거면 reject_distill(id)를 바로 호출할 것. 무엇의 몇 번이냐고 되묻지 말 것]\n` +
+          pend.map((x) => `${x.id}. [${x.kind}] ${x.rule}`).join("\n");
+      }
+    }
+  } catch (e) { console.error("[distill] 후보 주입 실패:", e?.message ?? e); }
   console.log(`[handle] 수신 (ch=${channel}, inThread=${inThread}, 첨부=${attFiles.length}): ${String(text || "").slice(0, 80).replace(/\n/g, " ")}`);
   try { appendFileSync("logs/review-debug.log", `${new Date().toISOString()} [handle] pid=${process.pid} ch=${channel}: ${String(text || "").slice(0, 80).replace(/\n/g, " ")}\n`); } catch {}
   // 대화 원장 — 하루 1회 '증류'가 여기서 재상 님이 결국 원했던 것을 뽑는다(distill.js). 기록만, 판단 없음.
