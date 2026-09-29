@@ -5308,11 +5308,21 @@ app.action("price_edit_confirm", async ({ ack, body, client }) => {
     for (const c of chg)
       for (const w of (Array.isArray(c?.경고) ? c.경고 : c?.경고 ? [c.경고] : []))
         warnList.push(`${c.회차 ?? "?"}화: ${typeof w === "string" ? w : JSON.stringify(w)}`);
-    // 버전이 바뀐다 = 기준금액이 갈아끼워진다는 뜻. 회차가 물고 있는 version을 그대로 보내므로
-    // 평시엔 안 뜨고, 뜨면 단가표 행이 사라졌다는 신호다 — 적용 전에 멈춘다.
-    const verWarn = warnList.filter((w) => /버전|version|기준금액/i.test(w));
-    if (verWarn.length)
-      return reply(`⛔ 중단했어요 — 사전 검증에서 *단가표 버전이 바뀐다* 경고가 떴어요. 그대로 진행하면 기준금액이 갈려서 의도한 금액이 안 나와요.\n⚠️ ${verWarn.join("\n⚠️ ")}\n어드민에서 직접 확인해줘.`);
+    // ★게이트 — 경고가 하나라도 있으면 멈춘다(개발팀 권고 2026-09-29). 단가표 버전이 바뀌는 경우가 여기서 걸린다.
+    // 예외 하나 — '기존 조정액이 지워집니다'는 기준가로 되돌릴 때 반드시 뜨는 경고다(조정액 null). 그건 의도한 동작이라 통과시키되 결과에 남긴다.
+    const clearing = new Set(mods.filter((m) => m.unitPriceAdjustment == null).map((m) => m.jobProcessUuid));
+    const blockers = [];
+    for (const c of chg)
+      for (const w of (Array.isArray(c?.경고) ? c.경고 : c?.경고 ? [c.경고] : [])) {
+        const t = typeof w === "string" ? w : JSON.stringify(w);
+        if (/지워집니다/.test(t) && clearing.has(c.jobProcessUuid)) continue;
+        blockers.push(`${c.회차 ?? "?"}화: ${t}`);
+      }
+    const warnCnt = Number(dry?.meta?.경고건수 ?? dry?.data?.meta?.경고건수 ?? warnList.length) || 0;
+    if (blockers.length)
+      return reply(`⛔ 중단했어요 — 사전 검증에서 경고 ${blockers.length}건이 떴어요. 그대로 진행하면 의도한 금액이 안 들어갈 수 있어요.\n⚠️ ${blockers.join("\n⚠️ ")}\n어드민에서 직접 확인해줘.`);
+    if (warnCnt > 0 && !warnList.length)
+      return reply(`⛔ 중단했어요 — 사전 검증에서 경고 ${warnCnt}건이 떴는데 내용을 못 읽었어요. 어드민에서 직접 확인해줘.`);
     // dryRun이 예측한 회차별 최종금액이 요청값과 다르면 실행 전에 멈춘다.
     const preMism = [];
     for (const c of chg) {
@@ -5328,10 +5338,33 @@ app.action("price_edit_confirm", async ({ ack, body, client }) => {
     if (res?.success && !failed.length) {
       // ★적용 후 실제 값을 다시 읽어서 보고한다 — 잘못 조정돼도 눈으로 바로 잡히게(재상 님 지시 2026-09-29).
       let after = "";
-      try {
+      // ★실행 응답의 변경내역[].적용후.최종금액이 곧 다시 읽은 값이다(개발팀 확인 2026-09-29).
+      // meta.적용불일치는 의도와 다르게 들어간 회차 수. 응답에 없으면 job-processes를 직접 되읽는다.
+      const applied = Array.isArray(res?.data?.변경내역) ? res.data.변경내역 : [];
+      const metaMism = Number(res?.meta?.적용불일치 ?? res?.data?.meta?.적용불일치 ?? 0) || 0;
+      const fmt = (g) => [...g.values()].sort((x, y) => Math.min(...x.eps) - Math.min(...y.eps)).map(({ m, eps }) => {
+        const c = m.통화 || CUR_KO[m.통화코드] || m.통화코드;
+        const adjTxt = m.단가조정액 == null ? "" : ` (기준 ${Number(m.기준금액).toLocaleString()} ${m.단가조정액 >= 0 ? "+" : "−"} ${Math.abs(Number(m.단가조정액)).toLocaleString()})`;
+        return `• ${compactRanges(eps.sort((x, y) => x - y))}화 → *${Number(m.최종금액).toLocaleString()} ${c}*${adjTxt} [v${m.version}]`;
+      });
+      if (applied.some((c) => c?.적용후?.최종금액 != null)) {
+        const g = new Map();
+        for (const c of applied) {
+          const m = c.적용후; if (!m || m.최종금액 == null) continue;
+          const k = `${m.최종금액}|${m.기준금액}|${m.version}`;
+          if (!g.has(k)) g.set(k, { m, eps: [] });
+          g.get(k).eps.push(Number(c.회차));
+        }
+        const mism = applied.filter((c) => {
+          const it = p.items.find((y) => y.jobProcessUuid === c.jobProcessUuid);
+          return it && c?.적용후?.최종금액 != null && Number(c.적용후.최종금액) !== it.newFinal;
+        }).map((c) => Number(c.회차));
+        const n = mism.length || metaMism;
+        after = "\n" + fmt(g).join("\n") + (n ? "\n⚠️ 요청값과 다른 회차 " + n + "건" + (mism.length ? " — " + compactRanges(mism.sort((x, y) => x - y)) + "화" : "") + ". 확인 필요." : "");
+      } else try {
         const jp = await jobProcesses(p.projectUuid);
         const all = (jp?.data || []).flatMap((o) => o.JOB목록 || []);
-        const want = new Set(p.items.map((i) => i.jobProcessUuid));
+        const want = new Set(p.items.map((i2) => i2.jobProcessUuid));
         const g = new Map();
         for (const x of all) {
           if (!want.has(x.jobProcessUuid)) continue;
@@ -5340,13 +5373,8 @@ app.action("price_edit_confirm", async ({ ack, body, client }) => {
           if (!g.has(k)) g.set(k, { m, eps: [] });
           g.get(k).eps.push(Number(x.작업단위번호));
         }
-        const rows = [...g.values()].sort((a, b) => Math.min(...a.eps) - Math.min(...b.eps)).map(({ m, eps }) => {
-          const c = m.통화 || CUR_KO[m.통화코드] || m.통화코드;
-          const adjTxt = m.단가조정액 == null ? "" : ` (기준 ${Number(m.기준금액).toLocaleString()} ${m.단가조정액 >= 0 ? "+" : "−"} ${Math.abs(Number(m.단가조정액)).toLocaleString()})`;
-          return `• ${compactRanges(eps.sort((x, y) => x - y))}화 → *${Number(m.최종금액).toLocaleString()} ${c}*${adjTxt} [v${m.version}]`;
-        });
         const mism = p.items.filter((it) => { const x = all.find((y) => y.jobProcessUuid === it.jobProcessUuid); return x?.매출단가 && Number(x.매출단가.최종금액) !== it.newFinal; });
-        after = "\n" + rows.join("\n") + (mism.length ? "\n⚠️ 요청값과 다른 회차 " + mism.length + "건 — " + compactRanges(mism.map((m2) => m2.episode)) + "화. 확인 필요." : "");
+        after = "\n" + fmt(g).join("\n") + (mism.length ? "\n⚠️ 요청값과 다른 회차 " + mism.length + "건 — " + compactRanges(mism.map((m2) => m2.episode)) + "화. 확인 필요." : "");
       } catch (e) { after = "\n(적용 후 재조회 실패: " + (e?.message ?? e) + " — 어드민에서 직접 확인해줘)"; }
       const warnTxt = warnList.length ? "\n⚠️ " + warnList.join("\n⚠️ ") : "";
       await reply(`✅ 매출 단가 변경 완료 — ${p.work} ${compactRanges(eps)}화 (${p.items.length}건)${warnTxt}${after}`);
