@@ -7267,8 +7267,16 @@ async function _handleResupplyAutoTransfer({ message, client }) {
     }
 
     // 7. 완료
-    const warnNote = [...allWarns, preprocessWarn.trim(), sgWarn.trim()].filter(Boolean).join("\n");
-    await finalize(`✅ 원본 이관 완료 — *${workName}* ${epSummary} → PIVO ${entry.pivo}${warnNote ? "\n" + warnNote : ""}`);
+    // 경고·사유는 스레드에 쌓지 않고 DM으로 보낸다(2026-09-29 지시).
+    const autoWarns = [...allWarns, preprocessWarn.trim(), sgWarn.trim()].filter(Boolean);
+    await finalize(`✅ 원본 이관 완료 — *${workName}* ${epSummary} → PIVO ${entry.pivo}`
+      + (autoWarns.length ? `\n⚠️ 확인할 게 ${autoWarns.length}건 있어요 — DM으로 보냈어요.` : ""));
+    await dmTransferReason(client, {
+      title: `⚠️ *${workName}* ${epSummary} 자동 이관 중 확인할 것 ${autoWarns.length}건 (PIVO ${entry.pivo})`,
+      lines: autoWarns,
+      link: await client.chat.getPermalink({ channel: message.channel, message_ts: replyTs })
+        .then((r) => (r?.permalink ? `<${stripPermalinkQuery(r.permalink)}|해당 스레드>` : null)).catch(() => null),
+    });
     if (originalChannelId && originalTs) {
       const mention = apmUserId ? `<@${apmUserId}> ` : ownerUserId ? `<@${ownerUserId}> ` : "";
       await client.chat.postMessage({
@@ -7279,8 +7287,28 @@ async function _handleResupplyAutoTransfer({ message, client }) {
       }).catch(() => {});
     }
   } catch (e) {
-    await finalize(`❌ 자동 이관 실패 — *${workName}*: ${e.message}`);
+    await finalize(`❌ 자동 이관 실패 — *${workName}*. 사유는 DM으로 보냈어요.`);
+    await dmTransferReason(client, {
+      title: `❌ *${workName}* 자동 이관 실패`,
+      lines: [e.message],
+      link: await client.chat.getPermalink({ channel: message.channel, message_ts: replyTs })
+        .then((r) => (r?.permalink ? `<${stripPermalinkQuery(r.permalink)}|해당 스레드>` : null)).catch(() => null),
+    });
   }
+}
+
+// 이관이 막히거나 경고가 붙었을 때 사유를 재상 님 DM으로 보낸다(2026-09-29 지시).
+// 스레드에는 결과 한 줄만 남기고 상세는 여기로 — 작업 스레드가 경고로 번잡해지지 않게.
+async function dmTransferReason(client, { title, lines, link }) {
+  if (!client || !lines?.length) return;
+  try {
+    await client.chat.postMessage({
+      channel: OWNER_ID,
+      text: `${title}\n${lines.join("\n")}${link ? `\n${link}` : ""}`,
+      unfurl_links: false,
+      ...SENDER,
+    });
+  } catch (e) { console.error("[transfer] 사유 DM 실패:", e?.message ?? e); }
 }
 
 // ── 수동 이관 명령어 ──────────────────────────────────────────────────────────
@@ -7752,10 +7780,33 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
       channel, threadTs: replyTs,
     });
     const summary = completedItems.map(i => i.ok ? `✅ \`${i.name}\`` : `❌ \`${i.name}\``).join("\n");
-    const warnNote = allWarns.join("\n");
-    await finalize(`✅ *${displayName}* ${epSummary} 이관 완료\n${summary}${warnNote ? "\n\n" + warnNote : ""}`);
+    const threadLink = await client.chat.getPermalink({ channel, message_ts: replyTs })
+      .then((r) => (r?.permalink ? `<${stripPermalinkQuery(r.permalink)}|해당 스레드>` : null)).catch(() => null);
+    // ★올린 파일이 하나도 없으면 "완료"가 아니다 — 중단으로 알리고 사유는 DM으로(2026-09-29 지시).
+    if (!allFileIds.length) {
+      await finalize(`⛔ *${displayName}* ${epSummary} 이관 중단 — 올린 파일이 없어요. 사유는 DM으로 보냈어요.`);
+      await dmTransferReason(client, {
+        title: `⛔ *${displayName}* ${epSummary} 이관 중단 — 올린 파일 0개`,
+        lines: allWarns.length ? allWarns : ["(경고 없이 0개 — 대상 회차에서 올릴 파일을 못 찾았어요)"],
+        link: threadLink,
+      });
+      return;
+    }
+    await finalize(`✅ *${displayName}* ${epSummary} 이관 완료 (파일 ${allFileIds.length}개)\n${summary}`
+      + (allWarns.length ? `\n⚠️ 확인할 게 ${allWarns.length}건 있어요 — DM으로 보냈어요.` : ""));
+    await dmTransferReason(client, {
+      title: `⚠️ *${displayName}* ${epSummary} 이관 중 확인할 것 ${allWarns.length}건`,
+      lines: allWarns, link: threadLink,
+    });
   } catch (e) {
-    await finalize(`❌ *${displayName}* 이관 실패: ${e.message}`);
+    await finalize(`❌ *${displayName}* 이관 실패 — 사유는 DM으로 보냈어요.`);
+    const link = await client.chat.getPermalink({ channel, message_ts: replyTs })
+      .then((r) => (r?.permalink ? `<${stripPermalinkQuery(r.permalink)}|해당 스레드>` : null)).catch(() => null);
+    await dmTransferReason(client, {
+      title: `❌ *${displayName}* ${epSummary || ""} 이관 실패`,
+      lines: [e.message, ...(allWarns || [])].filter(Boolean),
+      link,
+    });
   }
 }
 
