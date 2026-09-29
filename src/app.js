@@ -136,7 +136,7 @@ const {
   BOT_DISPLAY_NAME,   // 설정 시 chat.postMessage username 으로 표시명 강제 (chat:write.customize 스코프 필요)
   BOT_ICON_EMOJI,     // 선택: 표시 아이콘 (예: ":robot_face:")
   BOT_NAG_HOURS = "12,17", // 재촉 리마인더 발송 시각들(콤마, 시·로컬). 12·17시 하루 2회(문의봇 시트 리마인드 과다 알림 완화, 2026-07-16)
-  APM_USER_IDS = "", // 조회·검수만 허용할 APM Slack ID(콤마 구분). 변경·발송·리마인더는 재상(DISPATCHER_USER_ID)만.
+  APM_USER_IDS = "", // 허용 APM Slack ID(콤마 구분). 기본은 조회·검수만이고, 발송·리마인더는 재상(DISPATCHER_USER_ID)만. ★매출 단가 변경은 APM에게도 열려 있다(2026-09-29 재상 님 지시).
   REMINDER_CHANNEL = "C0B73GL3WAJ", // 리마인더(재촉·예약·미해결 문의/재수급) 발송 채널. 봇이 이 채널 멤버여야 함.
   INQUIRY_OVERDUE_DAYS = "2", // 문의/재수급 인입일로부터 이 일수 이상 완료 미체크면 미해결로 재촉
 } = process.env;
@@ -178,6 +178,10 @@ const CHANNEL_POLICY = (() => {
 // 재상 전용(변경·발송·리마인더) 가드: APM이 호출하면 거부 content 반환, 재상이면 null
 const ownerOnly = () => (currentUser && currentUser !== OWNER_ID)
   ? { content: [{ type: "text", text: JSON.stringify({ denied: true, error: "이 기능(납품예정일·시트 변경/삭제, 슬랙 발송, 리마인더)은 재상 님만 쓸 수 있어요. 조회·검수·링크·원본파일은 도와드릴 수 있어요." }) }] }
+  : null;
+// 재상 + 허용 APM. 매출 단가 변경처럼 APM에게도 연 기능에 쓴다(2026-09-29).
+const allowedOnly = () => (currentUser && !ALLOWED_USERS.has(currentUser))
+  ? { content: [{ type: "text", text: JSON.stringify({ denied: true, error: "이 기능은 재상 님과 담당 APM만 쓸 수 있어요." }) }] }
   : null;
 
 // "5" / "1-20" / "1,2,3" / "1-5,9,12-14" → 정렬·중복제거된 회차 배열. 최대 100건.
@@ -2579,7 +2583,7 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "propose_totus_price_edit",
-      "TOTUS에서 특정 회차(들)의 **매출 단가**를 바꾸도록 제안한다(게이트형: 미리보기+✅버튼). 고객사 청구 단가이고 작업자 지급 단가가 아니다. ★말투로 인자를 구분해라 — (A) '21,000으로 바꿔줘/맞춰줘/설정해' = 목표 최종금액 → **target_price**. (B) '기존 단가에서 3,000 추가해/올려줘/인상/깎아줘' = 지금 금액 대비 증감 → **delta**(음수면 인하). (C) '조정액을 3,000으로' 처럼 조정액 자체를 지정할 때만 **adjustment**. ★adjustment는 누적이 아니라 절대값이다 — 이미 +3,000이 걸린 회차에 adjustment:3000을 주면 금액이 그대로다. '추가/더'라는 말이 나오면 adjustment가 아니라 delta다. 헷갈리면 되묻지 말고 delta를 써라(미리보기에 이전→이후가 다 찍히니 재상 님이 보고 판단한다). 기준 단가(단가표 행)는 그대로 두고 조정액을 붙여 목표 금액을 맞춘다. 통화는 기준 단가와 같은 통화(보통 엔). 여러 회차는 episode에 범위('15-20')·목록('1,3,5')으로 **한 번에** 담아라. ★기준 단가는 각 회차가 실제로 물고 있는 단가표 행(uuid·version)을 그대로 유지한다 — 버전을 갈아끼우지 않으므로 구 단가표를 물고 있는 회차도 기준금액이 흔들리지 않는다. 실행 전 dryRun으로 검증하고(경고 있으면 중단), 적용 뒤에는 실제 최종금액을 다시 읽어 보고한다. 절대 '바꿨다'고 단정하지 말 것(버튼 눌러야 실행).",
+      "TOTUS에서 특정 회차(들)의 **매출 단가**를 바꾸도록 제안한다(게이트형: 미리보기+✅버튼). 고객사 청구 단가이고 작업자 지급 단가가 아니다. ★말투로 인자를 구분해라 — (A) '21,000으로 바꿔줘/맞춰줘/설정해' = 목표 최종금액 → **target_price**. (B) '기존 단가에서 3,000 추가해/올려줘/인상/깎아줘' = 지금 금액 대비 증감 → **delta**(음수면 인하). (C) '조정액을 3,000으로' 처럼 조정액 자체를 지정할 때만 **adjustment**. ★adjustment는 누적이 아니라 절대값이다 — 이미 +3,000이 걸린 회차에 adjustment:3000을 주면 금액이 그대로다. '추가/더'라는 말이 나오면 adjustment가 아니라 delta다. 헷갈리면 되묻지 말고 delta를 써라(미리보기에 이전→이후가 다 찍히니 요청한 사람이 보고 판단한다). 기준 단가(단가표 행)는 그대로 두고 조정액을 붙여 목표 금액을 맞춘다. 통화는 기준 단가와 같은 통화(보통 엔). 여러 회차는 episode에 범위('15-20')·목록('1,3,5')으로 **한 번에** 담아라. ★기준 단가는 각 회차가 실제로 물고 있는 단가표 행(uuid·version)을 그대로 유지한다 — 버전을 갈아끼우지 않으므로 구 단가표를 물고 있는 회차도 기준금액이 흔들리지 않는다. 실행 전 dryRun으로 검증하고(경고 있으면 중단), 적용 뒤에는 실제 최종금액을 다시 읽어 보고한다. 절대 '바꿨다'고 단정하지 말 것(버튼 눌러야 실행).",
       {
         work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
         episode: z.string().describe("회차. 단일('5'), 범위('15-20'), 목록('1,3,5')"),
@@ -2590,7 +2594,7 @@ const apmTools = createSdkMcpServer({
       },
       async ({ work, episode, target_price, adjustment, delta, reason }) => {
         try {
-          const _d = ownerOnly(); if (_d) return _d;
+          const _d = allowedOnly(); if (_d) return _d;
           const uiCtx = currentCtx;
           if (target_price == null && adjustment == null && delta == null)
             return { content: [{ type: "text", text: JSON.stringify({ error: "target_price(목표 단가)·delta(증감액)·adjustment(조정액 절대값) 중 하나는 필요하다." }) }] };
@@ -5285,7 +5289,7 @@ app.action("price_edit_confirm", async ({ ack, body, client }) => {
   const id = body.actions?.[0]?.value;
   const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
-  if (body.user?.id !== OWNER_ID) return reply("매출 단가는 재상 님만 변경할 수 있어요.");
+  if (!ALLOWED_USERS.has(body.user?.id)) return reply("권한 없는 사용자예요.");
   const p = pendingPriceEdit.getFresh(id);
   if (!p) return reply("⌛ 만료됐거나 이미 처리된 요청이에요.");
   pendingPriceEdit.delete(id);
