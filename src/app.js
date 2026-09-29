@@ -5302,7 +5302,26 @@ app.action("price_edit_confirm", async ({ ack, body, client }) => {
     let dry = null;
     try { dry = await setJobProductPrices(mods, true); } catch (e) { dry = { success: false, error: String(e?.message ?? e) }; }
     if (dry && dry.success === false) return reply(`❌ 사전 검증(dryRun)에서 막혔어요 — ${dry.error || JSON.stringify(dry?.data || dry).slice(0, 300)}`);
-    const dryWarn = dry?.data?.경고 || dry?.data?.warnings;
+    // ★경고는 data.경고가 아니라 data.변경내역[].경고에 회차별로 들어있다(2026-09-29 실측).
+    const chg = Array.isArray(dry?.data?.변경내역) ? dry.data.변경내역 : [];
+    const warnList = [];
+    for (const c of chg)
+      for (const w of (Array.isArray(c?.경고) ? c.경고 : c?.경고 ? [c.경고] : []))
+        warnList.push(`${c.회차 ?? "?"}화: ${typeof w === "string" ? w : JSON.stringify(w)}`);
+    // 버전이 바뀐다 = 기준금액이 갈아끼워진다는 뜻. 회차가 물고 있는 version을 그대로 보내므로
+    // 평시엔 안 뜨고, 뜨면 단가표 행이 사라졌다는 신호다 — 적용 전에 멈춘다.
+    const verWarn = warnList.filter((w) => /버전|version|기준금액/i.test(w));
+    if (verWarn.length)
+      return reply(`⛔ 중단했어요 — 사전 검증에서 *단가표 버전이 바뀐다* 경고가 떴어요. 그대로 진행하면 기준금액이 갈려서 의도한 금액이 안 나와요.\n⚠️ ${verWarn.join("\n⚠️ ")}\n어드민에서 직접 확인해줘.`);
+    // dryRun이 예측한 회차별 최종금액이 요청값과 다르면 실행 전에 멈춘다.
+    const preMism = [];
+    for (const c of chg) {
+      const it = p.items.find((y) => y.jobProcessUuid === c.jobProcessUuid);
+      const f = c?.변경?.최종금액;
+      if (it && f != null && Number(f) !== it.newFinal) preMism.push(`${c.회차 ?? it.episode}화 ${Number(f).toLocaleString()} (요청 ${it.newFinal.toLocaleString()})`);
+    }
+    if (preMism.length)
+      return reply(`⛔ 중단했어요 — 사전 검증 결과가 요청한 금액과 달라요.\n${preMism.join("\n")}\n어드민에서 직접 확인해줘.`);
     const res = await setJobProductPrices(mods);
     appendFileSync("logs/totus-prices.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, work: p.work, episodes: eps, base: p.base.amount, adjustment: p.adjustment, finalPrice: p.finalPrice, currency: p.base.currency, reason: p.reason, ok: res?.success, resp: res?.data }) + "\n");
     const failed = res?.data?.failedJobProcessUuids || [];
@@ -5329,7 +5348,7 @@ app.action("price_edit_confirm", async ({ ack, body, client }) => {
         const mism = p.items.filter((it) => { const x = all.find((y) => y.jobProcessUuid === it.jobProcessUuid); return x?.매출단가 && Number(x.매출단가.최종금액) !== it.newFinal; });
         after = "\n" + rows.join("\n") + (mism.length ? "\n⚠️ 요청값과 다른 회차 " + mism.length + "건 — " + compactRanges(mism.map((m2) => m2.episode)) + "화. 확인 필요." : "");
       } catch (e) { after = "\n(적용 후 재조회 실패: " + (e?.message ?? e) + " — 어드민에서 직접 확인해줘)"; }
-      const warnTxt = Array.isArray(dryWarn) && dryWarn.length ? "\n⚠️ " + dryWarn.join(" / ") : "";
+      const warnTxt = warnList.length ? "\n⚠️ " + warnList.join("\n⚠️ ") : "";
       await reply(`✅ 매출 단가 변경 완료 — ${p.work} ${compactRanges(eps)}화 (${p.items.length}건)${warnTxt}${after}`);
     }
     else if (res?.success)
