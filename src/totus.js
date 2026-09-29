@@ -130,8 +130,9 @@ export const confirmedPrice = (projectUuid) => getJSON(`/projects/${projectUuid}
 // #33 JOB(회차) 매출 단가 일괄 설정. mods=[{jobProcessUuid, productPriceUuid, productPriceVersion, unitPriceAdjustment?, priceAdjustmentReason?}]
 // unitPriceAdjustment: 양수=추가, 음수=할인, null=조정없음(기준 단가 그대로). 최종 단가 = 단가표 금액 + unitPriceAdjustment.
 // 응답 data: {성공,실패,succeededJobProcessUuids,failedJobProcessUuids}.
-export const setJobProductPrices = (mods) =>
-  sendJSON("PATCH", `/jobs/product-prices`, { modifications: mods }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
+// dryRun:true면 토투스를 건드리지 않고 이전→변경 계획·경고·검증만 돌려준다(2026-09-28 게이트웨이 추가).
+export const setJobProductPrices = (mods, dryRun = false) =>
+  sendJSON("PATCH", `/jobs/product-prices`, dryRun ? { modifications: mods, dryRun: true } : { modifications: mods }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
 // 프로젝트 설정 변경(한 번에 하나, 우선순위 action>managerAuthUuid>name>genre).
 // body 예: { name: "새 프로젝트명" } / { action: "hold"|"unhold"|"process"|"pause"|"complete"|"cancel" } / { managerAuthUuid } / { genreCode }
 export const setProjectSettings = (projectUuid, body) =>

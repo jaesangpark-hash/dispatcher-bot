@@ -271,7 +271,7 @@ const DISPATCHER_PROMPT = [
   "- 완결 작품 처리('○○ 완결 작품 처리해줘/완결처리'): propose_totus_complete(work나 pivo). 프로젝트명 뒤 '(완)' + 상태 완료를 한 번에(게이트). 이미 (완) 있으면 상태만. '처리했다' 단정 금지.",
   "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
   "- 1차 납품 고객검수: first_delivery_qa — 스케쥴 시트 1차 납품 행 × TOTUS 고객검수(OTC0025) 대조. '고객검수 끝난 거 있어?'·'1차 납품 확인할 거' 류. 매일 오전 10시에도 자동으로 DM이 간다. ★코멘트 본문은 API가 없어 못 읽으니 '무슨 코멘트인지' 물으면 에디터 링크를 주고 직접 보시라고 해라(지어내지 말 것).",
-  "- TOTUS 매출 단가: 조회는 totus_product_price(work), 변경은 propose_totus_price_edit(work, episode, target_price) — 게이트형(버튼). **고객사에 청구하는 매출 단가**이고 작업자 지급 단가(원가)와는 다르니 헷갈리지 말 것. 원하는 금액이 단가표에 없는 게 보통이라, 주문의 기준 단가는 두고 조정액(추가 단가)을 붙여 목표 금액을 맞춘다 — target_price만 주면 조정액은 자동 계산. 통화는 기준 단가 통화(중일은 보통 엔). 여러 회차는 episode에 범위·목록으로 한 번에. '바꿨다' 단정 금지.",
+  "- TOTUS 매출 단가: 조회는 totus_product_price(work), 변경은 propose_totus_price_edit(work, episode, target_price) — 게이트형(버튼). **고객사에 청구하는 매출 단가**이고 작업자 지급 단가(원가)와는 다르니 헷갈리지 말 것. 원하는 금액이 단가표에 없는 게 보통이라, 주문의 기준 단가는 두고 조정액(추가 단가)을 붙여 목표 금액을 맞춘다 — target_price만 주면 조정액은 자동 계산. 통화는 기준 단가 통화(중일은 보통 엔). 여러 회차는 episode에 범위·목록으로 한 번에. ★2026-09-28부터 회차별 실제 단가를 읽을 수 있고(기준금액+조정액=최종금액), 변경 후에는 회차를 다시 읽어 실제 적용값을 보고한다. '바꿨다' 단정 금지.",
   "- TOTUS 태스크 리테이크(연결 태스크 생성, '○○ N화 [오퍼레이션] task 열어줘/리테이크해줘'): propose_task_retake(work, episode, operation, [startDate], [endDate]). 대상은 COMPLETED 태스크만 가능하고, 실행하면 그 태스크+하위 오퍼레이션이 전부 새로 생성됨(진행중 하위는 닫힘, 완료된 하위는 유지)+새 태스크들에 일정도 같이 입력됨. ★일정 기본값=오늘 하루(시작·마감 둘 다 오늘, KST) — 사용자가 날짜/기간을 말하면 그걸로(예 '4/15~4/20으로 잡아줘'는 startDate=4/15,endDate=4/20; '4/20까지'처럼 하나만 말하면 그 문맥에 맞게). 여러 회차가 **같은 오퍼레이션·같은 일정**이면 episode에 범위/목록으로 한 번에 담아라(회차마다 도구 나눠 부르지 말 것) — 단 **회차 그룹마다 일정이 다르면** 그건 그룹별로 도구를 따로 호출하는 게 맞다(예 '1-10화는 4/15~4/17, 11-20화는 4/18~4/20'이면 2번 호출, 확인 버튼도 그룹마다 따로 뜸). COMPLETED 아닌 회차는 자동 제외되고 미리보기에 표시됨. 게이트형(버튼)—'열었다/리테이크했다/일정 잡았다' 단정 금지.",
   "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, [apm], [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 번역/식자/APM은 사용자가 이 대화에서 이미 줬으면 반영하고 없으면 전부 생략. 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. ★APM을 몰라도 절대 되묻지 말고 그냥 apm 생략하고 호출할 것 — 미리보기 메시지에 'APM 멘션 없음' 경고가 자동으로 뜨고, 재상 님이 그 자리에서 ✏️수정 모달로 직접 입력한다(이게 원래 설계된 입력 경로). 게이트(버튼)—'게시했다' 단정 금지. 게시하면 그 스레드에 '🔍 설정집 검수' 버튼도 자동으로 붙는다(신규 요청만 — 이 기능 이전에 만든 옛 요청 스레드엔 버튼이 없음).",
   "- 설정집 검수 실행('이 설정집 검수 실행해줘/검수 돌려줘/검수해줘', 특히 버튼이 없는 옛 설정집 작성 요청 스레드에서): run_setjip_review([thread]). 그 스레드 안에서 부르면 thread 생략. 실제 검수 버튼 클릭과 동일하게 n8n을 직접 트리거하고, 동시에 그 시점 최신 설정집 xlsx도 같은 자리에 바로 첨부한다(file.shared:true). ★검수 판정 결과(문제점 리스트) 자체는 안 준다 — n8n이 잠시 후 개인채널에 직접 올린다. '검수를 요청했다 + 파일 보냈다'까지만 말하고 '검수했다/판정 결과 나왔다'고 단정하지 말 것.",
@@ -2111,7 +2111,20 @@ async function resolveJobProcesses(projectUuid, episodes) {
     const m = all.filter((x) => Number(x.작업단위번호) === ep);
     if (!m.length) missing.push(ep);
     else if (m.length > 1) ambiguous.push(ep);
-    else items.push({ episode: ep, jobProcessUuid: m[0].jobProcessUuid, taskState: m[0].태스크상태 || "" });
+    else {
+      // ★2026-09-28 게이트웨이 확장: job-processes 응답에 회차별 매출단가가 붙는다(기준금액·version·조정액·최종금액).
+      // 조정액 계산의 기준은 "주문 확정가"가 아니라 "그 회차가 실제로 물고 있는 기준금액"이어야 한다.
+      const mp = m[0].매출단가 || null;
+      items.push({
+        episode: ep, jobProcessUuid: m[0].jobProcessUuid, taskState: m[0].태스크상태 || "",
+        price: mp && mp.productPriceUuid ? {
+          productPriceUuid: mp.productPriceUuid, version: Number(mp.version),
+          base: Number(mp.기준금액), adjustment: mp.단가조정액 == null ? null : Number(mp.단가조정액),
+          reason: mp.단가조정사유 || "", final: Number(mp.최종금액),
+          currency: mp.통화 || CUR_KO[mp.통화코드] || mp.통화코드, unit: mp.단위 || "화",
+        } : null,
+      });
+    }
   }
   return { items, missing, ambiguous, total: all.length };
 }
@@ -2514,7 +2527,7 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "totus_product_price",
-      "TOTUS 매출 단가(JOB product price)를 조회한다. '○○ 매출 단가 얼마야/단가 확인' 류에 쓴다. 고객사 청구 단가이고 작업자 지급 단가(원가)와는 다르다. ★읽히는 건 **주문 단위 기준가**뿐이다 — 회차별로 따로 걸린 조정액은 게이트웨이에 읽는 API가 없어 조회 자체가 불가능하다(실측 확인). 그러니 절대 '현재 단가는 N원입니다'라고 단정하지 말고, 주문 기준가라는 것과 회차별 조정액이 따로 있을 수 있다는 걸 같이 말해라. 정확한 회차 단가는 어드민 작업진행관리에서만 보인다. 변경은 propose_totus_price_edit.",
+      "TOTUS 매출 단가(JOB product price)를 조회한다. '○○ 매출 단가 얼마야/단가 확인' 류에 쓴다. 고객사 청구 단가이고 작업자 지급 단가(원가)와는 다르다. ★2026-09-28부터 **회차별 실제 단가를 읽을 수 있다**(기준금액+조정액=최종금액). 회차마다 다르면 구간별로 나눠서 답하고, 금액은 최종금액 기준으로 말해라. 변경은 propose_totus_price_edit.",
       {
         work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
         show_table: z.boolean().optional().describe("true면 적용 가능한 단가표 후보 목록도 같이 보여준다(팩터·금액별 행)"),
@@ -2529,12 +2542,31 @@ const apmTools = createSdkMcpServer({
             주문기준가: `${ctx.orderAmount.toLocaleString()} ${cur}/${ctx.base.unit} (v${ctx.orderVersion})`,
             주문조정액: ctx.currentAdjustment == null ? "없음" : `${ctx.currentAdjustment > 0 ? "+" : ""}${ctx.currentAdjustment.toLocaleString()} ${cur}`,
             조정사유: ctx.currentReason || undefined,
-            회차별_실제단가: "조회 불가 — 게이트웨이에 회차별 매출 단가 읽기 API가 없다(라우트 전수 확인). 어드민 작업진행관리에서만 보인다. ★'현재 단가는 N원'이라고 단정하지 말고, 위 값은 주문 기준가일 뿐이며 회차별로 조정액이 따로 걸려 있을 수 있다고 반드시 덧붙여라.",
             변경시_기준단가: `${ctx.base.amount.toLocaleString()} ${cur} (단가표 현재 v${ctx.base.version})`,
             견적확정단가: ctx.quotationAmount == null ? undefined : `${ctx.quotationAmount.toLocaleString()} ${cur}`,
             버전드리프트: ctx.versionDrift ? `주문은 v${ctx.orderVersion}(${ctx.orderAmount.toLocaleString()})에 고정, 단가표 현재는 v${ctx.base.version}(${ctx.base.amount.toLocaleString()}) — 단가 변경 시 기준이 바뀌니 사용자에게 반드시 알려라.` : undefined,
             note: "실측 확인(2026-09-23): 회차별 조정액은 주문 단위 조회에 전혀 반영되지 않는다. 두 층이 별개다.",
           };
+          // ★회차별 실제 단가(2026-09-28 게이트웨이 확장) — 같은 금액끼리 묶어서 보여준다.
+          try {
+            const jp = await jobProcesses(ctx.projectUuid);
+            const all = (jp?.data || []).flatMap((o) => o.JOB목록 || []);
+            const groups = new Map();
+            for (const x of all) {
+              const m = x.매출단가; if (!m?.productPriceUuid) continue;
+              const key = `${m.최종금액}|${m.기준금액}|${m.version}|${m.단가조정액 ?? ""}`;
+              if (!groups.has(key)) groups.set(key, { m, eps: [] });
+              groups.get(key).eps.push(Number(x.작업단위번호));
+            }
+            out.회차별_실제단가 = [...groups.values()]
+              .sort((a, b) => Math.min(...a.eps) - Math.min(...b.eps))
+              .map((g) => {
+                const m = g.m, c = m.통화 || CUR_KO[m.통화코드] || m.통화코드;
+                const adjTxt = m.단가조정액 == null ? "" : ` (기준 ${Number(m.기준금액).toLocaleString()} ${m.단가조정액 >= 0 ? "+" : "−"} ${Math.abs(Number(m.단가조정액)).toLocaleString()})`;
+                return `${compactRanges(g.eps.sort((x, y) => x - y))}화: ${Number(m.최종금액).toLocaleString()} ${c}${adjTxt} [단가표 v${m.version}]`;
+              });
+            out.회차수 = all.length;
+          } catch (e) { out.회차별_실제단가 = `조회 실패: ${e?.message ?? e}`; }
           if (show_table) {
             const pp = (await productPrices(ctx.projectUuid, ctx.orderUuid))?.data || [];
             out.단가표 = pp.map((r) => ({ 금액: `${Number(r.금액).toLocaleString()} ${CUR_KO[r.통화id] || r.통화id}`, 번역난이도: r.팩터?.번역난이도, 식자난이도: r.팩터?.식자난이도, 수량난이도: r.팩터?.수량난이도, version: r.version }));
@@ -2547,7 +2579,7 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "propose_totus_price_edit",
-      "TOTUS에서 특정 회차(들)의 **매출 단가**를 바꾸도록 제안한다(게이트형: 미리보기+✅버튼). 고객사 청구 단가이고 작업자 지급 단가가 아니다. ★원하는 금액이 단가표에 없는 경우가 많으므로, 주문의 기준 단가(단가표 행)는 그대로 두고 **조정액(추가 단가)** 을 붙여 목표 금액을 맞추는 방식으로 동작한다 — target_price(목표 최종 단가)만 주면 조정액은 자동 계산된다. 통화는 기준 단가와 같은 통화(보통 엔)로 해석한다. 여러 회차는 episode에 범위('15-20')·목록('1,3,5')으로 **한 번에** 담아라. 절대 '바꿨다'고 단정하지 말 것(버튼 눌러야 실행).",
+      "TOTUS에서 특정 회차(들)의 **매출 단가**를 바꾸도록 제안한다(게이트형: 미리보기+✅버튼). 고객사 청구 단가이고 작업자 지급 단가가 아니다. ★원하는 금액이 단가표에 없는 경우가 많으므로, 주문의 기준 단가(단가표 행)는 그대로 두고 **조정액(추가 단가)** 을 붙여 목표 금액을 맞추는 방식으로 동작한다 — target_price(목표 최종 단가)만 주면 조정액은 자동 계산된다. 통화는 기준 단가와 같은 통화(보통 엔)로 해석한다. 여러 회차는 episode에 범위('15-20')·목록('1,3,5')으로 **한 번에** 담아라. ★기준 단가는 각 회차가 실제로 물고 있는 단가표 행(uuid·version)을 그대로 유지한다 — 버전을 갈아끼우지 않으므로 구 단가표를 물고 있는 회차도 기준금액이 흘들리지 않는다. 실행 전 dryRun으로 검증하고, 적용 뒤에는 회차를 다시 읽어 실제 최종금액을 보고한다. 절대 '바꿨다'고 단정하지 말 것(버튼 눌러야 실행).",
       {
         work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
         episode: z.string().describe("회차. 단일('5'), 범위('15-20'), 목록('1,3,5')"),
@@ -2565,11 +2597,21 @@ const apmTools = createSdkMcpServer({
           if (ctx.error) return { content: [{ type: "text", text: JSON.stringify(ctx) }] };
           const episodes = parseEpisodeSpec(episode);
           if (!episodes.length) return { content: [{ type: "text", text: JSON.stringify({ error: `회차 해석 실패: '${episode}'` }) }] };
-          const adj = adjustment != null ? Number(adjustment) : Number(target_price) - ctx.base.amount;
-          const final = ctx.base.amount + adj;
-          if (final < 0) return { content: [{ type: "text", text: JSON.stringify({ error: `최종 단가가 음수(${final}). 기준단가 ${ctx.base.amount} + 조정액 ${adj}.` }) }] };
           const { items, missing, ambiguous, total } = await resolveJobProcesses(ctx.projectUuid, episodes);
           if (!items.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: ctx.projName, msg: `대상 회차를 못 찾음(전체 JOB ${total}건).`, missing, ambiguous }) }] };
+          // ★기준은 "그 회차가 실제로 물고 있는 단가표 행"이다(2026-09-28). 주문 확정가로 역산하면 안 된다 —
+          // 회차가 구 버전을 물고 있으면(예: v1 19,000 vs 표 v3 15,000) 최신 버전을 보내는 순간 기준금액이 갈아끼워져
+          // 목표가가 그만큼 어긋난다. uuid·version을 그대로 유지하면 기준금액이 흔들리지 않는다.
+          for (const it of items) {
+            const b = it.price || { productPriceUuid: ctx.base.productPriceUuid, version: ctx.base.version, base: ctx.base.amount, adjustment: null, reason: "", final: ctx.base.amount, currency: ctx.base.currency, unit: ctx.base.unit };
+            it.base = b;
+            it.newAdjustment = adjustment != null ? Number(adjustment) : Number(target_price) - b.base;
+            it.newFinal = b.base + it.newAdjustment;
+          }
+          const bad = items.filter((it) => it.newFinal < 0);
+          if (bad.length) return { content: [{ type: "text", text: JSON.stringify({ error: `최종 단가가 음수인 회차가 있다: ${bad.map((b) => `${b.episode}화 ${b.newFinal}`).join(", ")}` }) }] };
+          const adj = items[0].newAdjustment, final = items[0].newFinal;
+          const mixed = new Set(items.map((it) => `${it.base.base}|${it.base.version}`)).size > 1;
 
           const peId = `pe_${++priceEditSeq}`;
           const cur = ctx.base.currency;
@@ -2579,9 +2621,25 @@ const apmTools = createSdkMcpServer({
             const lines = [
               `💰 *TOTUS 매출 단가 변경 제안* — ${ctx.projName}`,
               `대상 ${items.length}건 (회차: ${compactRanges(items.map((i) => i.episode))})`,
-              `기준 단가 ${ctx.base.amount.toLocaleString()} ${cur} (단가표 v${ctx.base.version}) ${adj >= 0 ? "+" : "−"} 조정액 ${Math.abs(adj).toLocaleString()} ${cur} → *최종 ${final.toLocaleString()} ${cur}/${ctx.base.unit}*`,
-              `주문 기준가: ${ctx.orderAmount.toLocaleString()} ${cur}${ctx.currentAdjustment ? ` (주문 조정액 ${ctx.currentAdjustment > 0 ? "+" : "−"}${Math.abs(ctx.currentAdjustment).toLocaleString()}${ctx.currentReason ? `, ${ctx.currentReason}` : ""})` : ""} — ⓘ 회차별로 이미 걸린 조정액은 API로 읽을 수 없습니다(어드민에서 확인). 실행하면 그 값을 덮어씁니다.`,
-              ctx.versionDrift ? `⚠️ 주문은 단가표 v${ctx.orderVersion}(${ctx.orderAmount.toLocaleString()} ${cur})에 고정돼 있는데 현재 단가표는 v${ctx.base.version}(${ctx.base.amount.toLocaleString()} ${cur})입니다. 변경하면 기준이 v${ctx.base.version}으로 바뀝니다 — 최종 금액은 위 값이 맞지만 기준선이 달라지는 점 확인 필요.` : "",
+              // 회차별 현재값 → 변경 후. 같은 값끼리 묶어서 보여준다.
+              ...(() => {
+                const g = new Map();
+                for (const it of items) {
+                  const k = `${it.base.final}|${it.base.base}|${it.base.version}|${it.newFinal}`;
+                  if (!g.has(k)) g.set(k, { it, eps: [] });
+                  g.get(k).eps.push(it.episode);
+                }
+                return [...g.values()].sort((a, b) => Math.min(...a.eps) - Math.min(...b.eps)).map(({ it, eps }) => {
+                  const b = it.base;
+                  const beforeAdj = b.adjustment == null ? "" : ` (기준 ${b.base.toLocaleString()} ${b.adjustment >= 0 ? "+" : "−"} ${Math.abs(b.adjustment).toLocaleString()})`;
+                  const afterAdj = ` (기준 ${b.base.toLocaleString()} ${it.newAdjustment >= 0 ? "+" : "−"} ${Math.abs(it.newAdjustment).toLocaleString()})`;
+                  const same = b.final === it.newFinal ? "  ⓘ 변화 없음" : "";
+                  return `• ${compactRanges(eps.sort((x, y) => x - y))}화 — ${b.final.toLocaleString()}${beforeAdj} → *${it.newFinal.toLocaleString()} ${cur}*${afterAdj} [v${b.version}]${same}`;
+                });
+              })(),
+              mixed ? "⚠️ 대상 회차의 기준 단가가 서로 다릅니다. 회차마다 기준금액에서 역산해 목표가를 맞춥니다." : "",
+              `기준 단가는 각 회차가 물고 있는 단가표 행(v·금액)을 그대로 유지합니다 — 버전을 갈아끼우지 않으므로 기준금액이 바뀌지 않습니다.`,
+              items.some((it) => it.base.adjustment != null) ? `⚠️ 이미 조정액이 걸린 회차가 있습니다. 실행하면 기존 조정액·사유를 덮어씁니다${items.find((it) => it.base.reason)?.base?.reason ? ` (기존 사유 예: ${items.find((it) => it.base.reason).base.reason})` : ""}.` : "",
               reason ? `사유: ${reason}` : "",
               missing.length ? `⚠️ 못 찾은 회차: ${compactRanges(missing)}` : "",
               ambiguous.length ? `⚠️ 후보 복수라 제외: ${compactRanges(ambiguous)}` : "",
@@ -5228,18 +5286,52 @@ app.action("price_edit_confirm", async ({ ack, body, client }) => {
   if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
   const eps = p.items.map((it) => it.episode);
   try {
-    const mods = p.items.map((it) => ({
-      jobProcessUuid: it.jobProcessUuid,
-      productPriceUuid: p.base.productPriceUuid,
-      productPriceVersion: p.base.version,
-      unitPriceAdjustment: p.adjustment === 0 ? null : p.adjustment,
-      priceAdjustmentReason: p.reason || null,
-    }));
+    // ★회차마다 자기가 물고 있는 단가표 행(uuid·version)을 그대로 보낸다 — 기준금액이 갈아끼워지지 않게.
+    const mods = p.items.map((it) => {
+      const b = it.base || p.base;
+      const a = it.newAdjustment != null ? it.newAdjustment : p.adjustment;
+      return {
+        jobProcessUuid: it.jobProcessUuid,
+        productPriceUuid: b.productPriceUuid ?? p.base.productPriceUuid,
+        productPriceVersion: b.version ?? p.base.version,
+        unitPriceAdjustment: a === 0 ? null : a,
+        priceAdjustmentReason: p.reason || null,
+      };
+    });
+    // 실행 전 dryRun으로 게이트웨이 검증·경고를 먼저 받는다(2026-09-28 추가). 실패하면 실제 실행을 막는다.
+    let dry = null;
+    try { dry = await setJobProductPrices(mods, true); } catch (e) { dry = { success: false, error: String(e?.message ?? e) }; }
+    if (dry && dry.success === false) return reply(`❌ 사전 검증(dryRun)에서 막혔어요 — ${dry.error || JSON.stringify(dry?.data || dry).slice(0, 300)}`);
+    const dryWarn = dry?.data?.경고 || dry?.data?.warnings;
     const res = await setJobProductPrices(mods);
     appendFileSync("logs/totus-prices.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, work: p.work, episodes: eps, base: p.base.amount, adjustment: p.adjustment, finalPrice: p.finalPrice, currency: p.base.currency, reason: p.reason, ok: res?.success, resp: res?.data }) + "\n");
     const failed = res?.data?.failedJobProcessUuids || [];
-    if (res?.success && !failed.length)
-      await reply(`✅ 매출 단가 변경 완료 — ${p.work} ${compactRanges(eps)}화 (${p.items.length}건) → ${p.finalPrice.toLocaleString()} ${p.base.currency}/${p.base.unit} (기준 ${p.base.amount.toLocaleString()} ${p.adjustment >= 0 ? "+" : "−"} ${Math.abs(p.adjustment).toLocaleString()})`);
+    if (res?.success && !failed.length) {
+      // ★적용 후 실제 값을 다시 읽어서 보고한다 — 잘못 조정돼도 눈으로 바로 잡히게(재상 님 지시 2026-09-29).
+      let after = "";
+      try {
+        const jp = await jobProcesses(p.projectUuid);
+        const all = (jp?.data || []).flatMap((o) => o.JOB목록 || []);
+        const want = new Set(p.items.map((i) => i.jobProcessUuid));
+        const g = new Map();
+        for (const x of all) {
+          if (!want.has(x.jobProcessUuid)) continue;
+          const m = x.매출단가; if (!m) continue;
+          const k = `${m.최종금액}|${m.기준금액}|${m.version}`;
+          if (!g.has(k)) g.set(k, { m, eps: [] });
+          g.get(k).eps.push(Number(x.작업단위번호));
+        }
+        const rows = [...g.values()].sort((a, b) => Math.min(...a.eps) - Math.min(...b.eps)).map(({ m, eps }) => {
+          const c = m.통화 || CUR_KO[m.통화코드] || m.통화코드;
+          const adjTxt = m.단가조정액 == null ? "" : ` (기준 ${Number(m.기준금액).toLocaleString()} ${m.단가조정액 >= 0 ? "+" : "−"} ${Math.abs(Number(m.단가조정액)).toLocaleString()})`;
+          return `• ${compactRanges(eps.sort((x, y) => x - y))}화 → *${Number(m.최종금액).toLocaleString()} ${c}*${adjTxt} [v${m.version}]`;
+        });
+        const mism = p.items.filter((it) => { const x = all.find((y) => y.jobProcessUuid === it.jobProcessUuid); return x?.매출단가 && Number(x.매출단가.최종금액) !== it.newFinal; });
+        after = "\n" + rows.join("\n") + (mism.length ? "\n⚠️ 요청값과 다른 회차 " + mism.length + "건 — " + compactRanges(mism.map((m2) => m2.episode)) + "화. 확인 필요." : "");
+      } catch (e) { after = "\n(적용 후 재조회 실패: " + (e?.message ?? e) + " — 어드민에서 직접 확인해줘)"; }
+      const warnTxt = Array.isArray(dryWarn) && dryWarn.length ? "\n⚠️ " + dryWarn.join(" / ") : "";
+      await reply(`✅ 매출 단가 변경 완료 — ${p.work} ${compactRanges(eps)}화 (${p.items.length}건)${warnTxt}${after}`);
+    }
     else if (res?.success)
       await reply(`⚠️ 일부만 변경됨 — ${p.work}: 성공 ${res?.data?.성공 ?? (p.items.length - failed.length)}건 / 실패 ${failed.length}건. 실패 회차 확인 필요.`);
     else
