@@ -2664,7 +2664,11 @@ const apmTools = createSdkMcpServer({
               // 단가표에서 확정단가 행이 사라진 프로젝트 — 회차가 물고 있는 값으로 계산하므로 진행은 되지만 근거를 밝혀둔다.
               ctx.baseNote ? `ⓘ ${ctx.baseNote}` : "",
               `기준 단가는 각 회차가 물고 있는 단가표 행(v·금액)을 그대로 유지합니다 — 버전을 갈아끼우지 않으므로 기준금액이 바뀌지 않습니다.`,
-              items.some((it) => it.base.adjustment != null) ? `⚠️ 이미 조정액이 걸린 회차가 있습니다. 실행하면 기존 조정액·사유를 덮어씁니다${items.find((it) => it.base.reason)?.base?.reason ? ` (기존 사유 예: ${items.find((it) => it.base.reason).base.reason})` : ""}.` : "",
+              items.some((it) => it.base.adjustment != null)
+                ? `⚠️ 이미 조정액이 걸린 회차가 있습니다. 실행하면 조정액을 위 값으로 덮어씁니다.` +
+                  (reason ? ` 사유도 "${reason}"로 바뀝니다.`
+                    : items.find((it) => it.base.reason)?.base?.reason ? ` 사유는 기존 그대로 둡니다 (예: ${items.find((it) => it.base.reason).base.reason}).` : "")
+                : "",
               reason ? `사유: ${reason}` : "",
               missing.length ? `⚠️ 못 찾은 회차: ${compactRanges(missing)}` : "",
               ambiguous.length ? `⚠️ 후보 복수라 제외: ${compactRanges(ambiguous)}` : "",
@@ -5320,7 +5324,9 @@ app.action("price_edit_confirm", async ({ ack, body, client }) => {
         productPriceUuid: b.productPriceUuid ?? p.base.productPriceUuid,
         productPriceVersion: b.version ?? p.base.version,
         unitPriceAdjustment: a === 0 ? null : a,
-        priceAdjustmentReason: p.reason || null,
+        // ★사유를 따로 안 줬으면 그 회차에 이미 적힌 사유를 그대로 돌려보낸다(2026-09-29).
+        // null로 보내면 남이 적어둔 사유가 조용히 지워진다(실사고: "완전판 추가작업으로 인한 차감").
+        priceAdjustmentReason: p.reason || b.reason || null,
       };
     });
     // 실행 전 dryRun으로 게이트웨이 검증·경고를 먼저 받는다(2026-09-28 추가). 실패하면 실제 실행을 막는다.
@@ -5341,6 +5347,8 @@ app.action("price_edit_confirm", async ({ ack, body, client }) => {
       for (const w of (Array.isArray(c?.경고) ? c.경고 : c?.경고 ? [c.경고] : [])) {
         const t = typeof w === "string" ? w : JSON.stringify(w);
         if (/지워집니다/.test(t) && clearing.has(c.jobProcessUuid)) continue;
+        // 사유 문구만 바뀌는 건 돈이 틀어지는 일이 아니다 — 미리보기에 이미 나오니 막지 않고 결과에만 남긴다(2026-09-29).
+        if (/사유/.test(t) && !/금액|버전|version/i.test(t)) continue;
         blockers.push(`${c.회차 ?? "?"}화: ${t}`);
       }
     const warnCnt = Number(dry?.meta?.경고건수 ?? dry?.data?.meta?.경고건수 ?? warnList.length) || 0;
