@@ -2069,7 +2069,11 @@ function pickPivoTagged(candidates) {
 // ★기준 단가는 "단가표 행(productPrice)"이고, 원하는 금액이 단가표에 없으면 조정액(unitPriceAdjustment)으로 맞춘다.
 const CUR_KO = { CRC0001: "원", CRC0002: "달러", CRC0003: "엔" };
 async function resolvePriceContext(work) {
-  const fp = await findProject(work);
+  // 'PV-146958' / '146958' 처럼 PIVO만 오면 이름 검색(부분일치) 대신 pivoId 필터로 정확히 잡는다(2026-09-29).
+  // 이름에 PIVO가 안 박힌 구표기 프로젝트도 있고, 남의 제목에 그 숫자가 섞여 오탐이 날 수도 있어서다. 비면 이름 검색으로 폴백.
+  const pivoNum = (String(work).trim().match(/^(?:PV-)?(\d{4,})$/) || [])[1];
+  let fp = pivoNum ? await projectByPivo(pivoNum) : null;
+  if (!fp?.data?.length) fp = await findProject(work);
   const candidates = fp?.data || [];
   if (!candidates.length) return { error: `'${work}' 프로젝트를 TOTUS에서 못 찾음.` };
   const proj = pickPivoTagged(candidates);
