@@ -271,7 +271,7 @@ const DISPATCHER_PROMPT = [
   "- 완결 작품 처리('○○ 완결 작품 처리해줘/완결처리'): propose_totus_complete(work나 pivo). 프로젝트명 뒤 '(완)' + 상태 완료를 한 번에(게이트). 이미 (완) 있으면 상태만. '처리했다' 단정 금지.",
   "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
   "- 1차 납품 고객검수: first_delivery_qa — 스케쥴 시트 1차 납품 행 × TOTUS 고객검수(OTC0025) 대조. '고객검수 끝난 거 있어?'·'1차 납품 확인할 거' 류. 매일 오전 10시에도 자동으로 DM이 간다. ★코멘트 본문은 API가 없어 못 읽으니 '무슨 코멘트인지' 물으면 에디터 링크를 주고 직접 보시라고 해라(지어내지 말 것).",
-  "- TOTUS 매출 단가: 조회는 totus_product_price(work), 변경은 propose_totus_price_edit(work, episode, target_price) — 게이트형(버튼). **고객사에 청구하는 매출 단가**이고 작업자 지급 단가(원가)와는 다르니 헷갈리지 말 것. 원하는 금액이 단가표에 없는 게 보통이라, 주문의 기준 단가는 두고 조정액(추가 단가)을 붙여 목표 금액을 맞춘다 — target_price만 주면 조정액은 자동 계산. 통화는 기준 단가 통화(중일은 보통 엔). 여러 회차는 episode에 범위·목록으로 한 번에. ★2026-09-28부터 회차별 실제 단가를 읽을 수 있고(기준금액+조정액=최종금액), 변경 후에는 회차를 다시 읽어 실제 적용값을 보고한다. '바꿨다' 단정 금지.",
+  "- TOTUS 매출 단가: 조회는 totus_product_price(work), 변경은 propose_totus_price_edit(work, episode, target_price) — 게이트형(버튼). **고객사에 청구하는 매출 단가**이고 작업자 지급 단가(원가)와는 다르니 헷갈리지 말 것. 목표 금액이면 target_price, '지금보다 3,000 더'면 delta, 조정액 자체를 지정할 때만 adjustment(★절대값이라 누적 아님). 기준 단가(단가표 행)는 그대로 두고 조정액으로 목표를 맞춘다. 통화는 기준 단가 통화(중일은 보통 엔). 여러 회차는 episode에 범위·목록으로 한 번에. ★2026-09-28부터 회차별 실제 단가를 읽을 수 있고(기준금액+조정액=최종금액), 변경 후에는 회차를 다시 읽어 실제 적용값을 보고한다. '바꿨다' 단정 금지.",
   "- TOTUS 태스크 리테이크(연결 태스크 생성, '○○ N화 [오퍼레이션] task 열어줘/리테이크해줘'): propose_task_retake(work, episode, operation, [startDate], [endDate]). 대상은 COMPLETED 태스크만 가능하고, 실행하면 그 태스크+하위 오퍼레이션이 전부 새로 생성됨(진행중 하위는 닫힘, 완료된 하위는 유지)+새 태스크들에 일정도 같이 입력됨. ★일정 기본값=오늘 하루(시작·마감 둘 다 오늘, KST) — 사용자가 날짜/기간을 말하면 그걸로(예 '4/15~4/20으로 잡아줘'는 startDate=4/15,endDate=4/20; '4/20까지'처럼 하나만 말하면 그 문맥에 맞게). 여러 회차가 **같은 오퍼레이션·같은 일정**이면 episode에 범위/목록으로 한 번에 담아라(회차마다 도구 나눠 부르지 말 것) — 단 **회차 그룹마다 일정이 다르면** 그건 그룹별로 도구를 따로 호출하는 게 맞다(예 '1-10화는 4/15~4/17, 11-20화는 4/18~4/20'이면 2번 호출, 확인 버튼도 그룹마다 따로 뜸). COMPLETED 아닌 회차는 자동 제외되고 미리보기에 표시됨. 게이트형(버튼)—'열었다/리테이크했다/일정 잡았다' 단정 금지.",
   "- 설정집 작성 요청 생성('수주 확정됐어 설정집 요청해줘', 견적요청 스레드에서 호출): propose_setjip_request(pivo, [apm], [translator], [typesetter]). 스레드 본문의 [PV-xxxxxx]에서 PIVO를 읽고(여러 작품이면 각 PIVO마다 한 번씩), 번역/식자/APM은 사용자가 이 대화에서 이미 줬으면 반영하고 없으면 전부 생략. 작품명·원제·제출일·초도정보·국가/기대치/특이사항은 견적+내부시트에서 자동. ★APM을 몰라도 절대 되묻지 말고 그냥 apm 생략하고 호출할 것 — 미리보기 메시지에 'APM 멘션 없음' 경고가 자동으로 뜨고, 재상 님이 그 자리에서 ✏️수정 모달로 직접 입력한다(이게 원래 설계된 입력 경로). 게이트(버튼)—'게시했다' 단정 금지. 게시하면 그 스레드에 '🔍 설정집 검수' 버튼도 자동으로 붙는다(신규 요청만 — 이 기능 이전에 만든 옛 요청 스레드엔 버튼이 없음).",
   "- 설정집 검수 실행('이 설정집 검수 실행해줘/검수 돌려줘/검수해줘', 특히 버튼이 없는 옛 설정집 작성 요청 스레드에서): run_setjip_review([thread]). 그 스레드 안에서 부르면 thread 생략. 실제 검수 버튼 클릭과 동일하게 n8n을 직접 트리거하고, 동시에 그 시점 최신 설정집 xlsx도 같은 자리에 바로 첨부한다(file.shared:true). ★검수 판정 결과(문제점 리스트) 자체는 안 준다 — n8n이 잠시 후 개인채널에 직접 올린다. '검수를 요청했다 + 파일 보냈다'까지만 말하고 '검수했다/판정 결과 나왔다'고 단정하지 말 것.",
@@ -2579,20 +2579,21 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "propose_totus_price_edit",
-      "TOTUS에서 특정 회차(들)의 **매출 단가**를 바꾸도록 제안한다(게이트형: 미리보기+✅버튼). 고객사 청구 단가이고 작업자 지급 단가가 아니다. ★원하는 금액이 단가표에 없는 경우가 많으므로, 주문의 기준 단가(단가표 행)는 그대로 두고 **조정액(추가 단가)** 을 붙여 목표 금액을 맞추는 방식으로 동작한다 — target_price(목표 최종 단가)만 주면 조정액은 자동 계산된다. 통화는 기준 단가와 같은 통화(보통 엔)로 해석한다. 여러 회차는 episode에 범위('15-20')·목록('1,3,5')으로 **한 번에** 담아라. ★기준 단가는 각 회차가 실제로 물고 있는 단가표 행(uuid·version)을 그대로 유지한다 — 버전을 갈아끼우지 않으므로 구 단가표를 물고 있는 회차도 기준금액이 흔들리지 않는다. 실행 전 dryRun으로 검증하고, 적용 뒤에는 회차를 다시 읽어 실제 최종금액을 보고한다. 절대 '바꿨다'고 단정하지 말 것(버튼 눌러야 실행).",
+      "TOTUS에서 특정 회차(들)의 **매출 단가**를 바꾸도록 제안한다(게이트형: 미리보기+✅버튼). 고객사 청구 단가이고 작업자 지급 단가가 아니다. ★말투로 인자를 구분해라 — (A) '21,000으로 바꿔줘/맞춰줘/설정해' = 목표 최종금액 → **target_price**. (B) '기존 단가에서 3,000 추가해/올려줘/인상/깎아줘' = 지금 금액 대비 증감 → **delta**(음수면 인하). (C) '조정액을 3,000으로' 처럼 조정액 자체를 지정할 때만 **adjustment**. ★adjustment는 누적이 아니라 절대값이다 — 이미 +3,000이 걸린 회차에 adjustment:3000을 주면 금액이 그대로다. '추가/더'라는 말이 나오면 adjustment가 아니라 delta다. 헷갈리면 되묻지 말고 delta를 써라(미리보기에 이전→이후가 다 찍히니 재상 님이 보고 판단한다). 기준 단가(단가표 행)는 그대로 두고 조정액을 붙여 목표 금액을 맞춘다. 통화는 기준 단가와 같은 통화(보통 엔). 여러 회차는 episode에 범위('15-20')·목록('1,3,5')으로 **한 번에** 담아라. ★기준 단가는 각 회차가 실제로 물고 있는 단가표 행(uuid·version)을 그대로 유지한다 — 버전을 갈아끼우지 않으므로 구 단가표를 물고 있는 회차도 기준금액이 흔들리지 않는다. 실행 전 dryRun으로 검증하고(경고 있으면 중단), 적용 뒤에는 실제 최종금액을 다시 읽어 보고한다. 절대 '바꿨다'고 단정하지 말 것(버튼 눌러야 실행).",
       {
         work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
         episode: z.string().describe("회차. 단일('5'), 범위('15-20'), 목록('1,3,5')"),
         target_price: z.number().optional().describe("목표 최종 단가(기준 단가와 같은 통화). 예: 16000. 조정액 = target_price - 기준단가로 자동 계산"),
-        adjustment: z.number().optional().describe("조정액을 직접 지정할 때만(양수=추가, 음수=할인). target_price를 쓰면 생략"),
+        adjustment: z.number().optional().describe("조정액 자체를 절대값으로 지정할 때만(양수=추가, 음수=할인). ★누적이 아니다 — 기존 조정액을 이 값으로 덮어쓴다. 이미 +3,000이 걸린 회차에 3000을 주면 금액이 그대로다. '현재보다 얼마 더'는 delta를 쓸 것"),
+        delta: z.number().optional().describe("★현재 최종금액에서 증감시킬 액수(양수=인상, 음수=인하). '기존 단가에서 3000 추가해' 류는 반드시 이것. 회차마다 현재 금액이 달라도 각자 자기 금액에서 더한다"),
         reason: z.string().optional().describe("조정 사유(TOTUS에 같이 기록됨)"),
       },
-      async ({ work, episode, target_price, adjustment, reason }) => {
+      async ({ work, episode, target_price, adjustment, delta, reason }) => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
           const uiCtx = currentCtx;
-          if (target_price == null && adjustment == null)
-            return { content: [{ type: "text", text: JSON.stringify({ error: "target_price(목표 단가) 또는 adjustment(조정액) 중 하나는 필요하다." }) }] };
+          if (target_price == null && adjustment == null && delta == null)
+            return { content: [{ type: "text", text: JSON.stringify({ error: "target_price(목표 단가)·delta(증감액)·adjustment(조정액 절대값) 중 하나는 필요하다." }) }] };
           const ctx = await resolvePriceContext(work);
           if (ctx.error) return { content: [{ type: "text", text: JSON.stringify(ctx) }] };
           const episodes = parseEpisodeSpec(episode);
@@ -2605,8 +2606,9 @@ const apmTools = createSdkMcpServer({
           for (const it of items) {
             const b = it.price || { productPriceUuid: ctx.base.productPriceUuid, version: ctx.base.version, base: ctx.base.amount, adjustment: null, reason: "", final: ctx.base.amount, currency: ctx.base.currency, unit: ctx.base.unit };
             it.base = b;
-            it.newAdjustment = adjustment != null ? Number(adjustment) : Number(target_price) - b.base;
-            it.newFinal = b.base + it.newAdjustment;
+            // delta는 '지금 금액에서 얼마 더'라서 회차마다 자기 최종금액을 기준으로 삼는다(2026-09-29).
+            it.newFinal = delta != null ? b.final + Number(delta) : adjustment != null ? b.base + Number(adjustment) : Number(target_price);
+            it.newAdjustment = it.newFinal - b.base;
           }
           const bad = items.filter((it) => it.newFinal < 0);
           if (bad.length) return { content: [{ type: "text", text: JSON.stringify({ error: `최종 단가가 음수인 회차가 있다: ${bad.map((b) => `${b.episode}화 ${b.newFinal}`).join(", ")}` }) }] };
@@ -2621,6 +2623,10 @@ const apmTools = createSdkMcpServer({
             const lines = [
               `💰 *TOTUS 매출 단가 변경 제안* — ${ctx.projName}`,
               `대상 ${items.length}건 (회차: ${compactRanges(items.map((i) => i.episode))})`,
+              // 말을 어떻게 알아들었는지 한 줄로 밝힌다 — 잘못 잡았으면 재상 님이 여기서 바로 잡을 수 있게(2026-09-29).
+              delta != null ? `해석: 지금 금액에서 ${Number(delta) >= 0 ? "+" : "−"}${Math.abs(Number(delta)).toLocaleString()} ${cur}`
+                : adjustment != null ? `해석: 조정액을 ${Number(adjustment).toLocaleString()} ${cur}로 설정(기존 조정액 덮어씀)`
+                : `해석: 최종 ${Number(target_price).toLocaleString()} ${cur}로 맞춤`,
               // 회차별 현재값 → 변경 후. 같은 값끼리 묶어서 보여준다.
               ...(() => {
                 const g = new Map();
