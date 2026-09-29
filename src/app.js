@@ -2482,18 +2482,32 @@ const apmTools = createSdkMcpServer({
       { work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"), episode: z.string().describe("회차 숫자"), operation: z.string().describe("오퍼레이션명(번역·식자·식자검수 등) 또는 OTC코드") },
       async ({ work, episode, operation }) => {
         try {
-          const fp = await findProject(work);
+          // PIVO만 왔으면 이름 검색(부분일치)보다 pivoId 필터가 빠르고 정확하다(419ms → 159ms).
+          const pivoNum = (String(work).trim().match(/^(?:PV-)?(\d{4,})$/) || [])[1];
+          let fp = pivoNum ? await projectByPivo(pivoNum) : null;
+          if (!fp?.data?.length) fp = await findProject(work);
           const candidates = fp?.data || [];
           if (!candidates.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음.` }) }] };
           const proj = pickPivoTagged(candidates);
           if (!proj) return { content: [{ type: "text", text: JSON.stringify({ ambiguous: true, msg: `'${work}'로 동일/유사 이름 프로젝트가 ${candidates.length}건 검색되고 [PV-정식표기]로도 하나로 안 좁혀짐. 후보 중 골라달라고 하라.`, candidates: candidates.map((p) => ({ name: p.프로젝트, uuid: p.uuid })) }) }] };
           const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
-          let jobs = (await projectJobs(proj.uuid, episode))?.data || [];
-          if (!jobs.length) {   // episode 필터 0건(구작) → JOB명 회차 매칭 폴백 (review.js와 동일)
-            const n = parseInt(episode, 10); const re = new RegExp(`(?:第|-)0*${n}(?:\\D|$)`);
-            jobs = ((await projectJobs(proj.uuid))?.data || []).filter((x) => re.test((x.JOB명 || "").trim()));
+          // ★빠른 경로(2026-09-29): job-processes로 회차→JOB uuid를 잡고 그 JOB의 task만 가져온다.
+          // 기존엔 jobs?episode=가 0건이면(구작) JOB 전체를 받아왔는데, 506화짜리는 2MB·8.6초가 걸렸다.
+          // 이 경로는 같은 작품이 1.1초다. 회차를 못 잡으면 아래 기존 경로로 떨어진다.
+          let tasks = [];
+          try {
+            const jpAll = ((await jobProcesses(proj.uuid))?.data || []).flatMap((o) => o.JOB목록 || []);
+            const hit = jpAll.find((x) => Number(x.작업단위번호) === parseInt(episode, 10));
+            if (hit?.JOB?.uuid) tasks = (await taskList({ jobUuids: hit.JOB.uuid, size: 50 }))?.data || [];
+          } catch (e) { console.error("[get_editor_url] 빠른 경로 실패, 폴백:", e?.message ?? e); }
+          if (!tasks.length) {
+            let jobs = (await projectJobs(proj.uuid, episode))?.data || [];
+            if (!jobs.length) {   // episode 필터 0건(구작) → JOB명 회차 매칭 폴백 (review.js와 동일)
+              const n = parseInt(episode, 10); const re = new RegExp(`(?:第|-)0*${n}(?:\\D|$)`);
+              jobs = ((await projectJobs(proj.uuid))?.data || []).filter((x) => re.test((x.JOB명 || "").trim()));
+            }
+            tasks = jobs.flatMap((j) => (j.오퍼레이션 || []).flatMap((op) => op.태스크 || []));
           }
-          const tasks = jobs.flatMap((j) => (j.오퍼레이션 || []).flatMap((op) => op.태스크 || []));
           const qn = String(operation).replace(/\s/g, ""); const qc = qn.toUpperCase();
           const nmOf = (t) => String(t.오퍼레이션유형명 || "").replace(/\s/g, "");
           const cdOf = (t) => String(t.오퍼레이션유형 || "").toUpperCase();
@@ -2721,13 +2735,25 @@ const apmTools = createSdkMcpServer({
 
           const items = [];
           const notFound = [];
+          // ★job-processes는 회차마다 다시 부를 필요가 없다 — 한 번 받아 회차→JOB uuid 맵으로 쓴다(2026-09-29).
+          // 전에는 회차마다 jobs?episode=를 부르고 0건이면 JOB 전체(506화짜리는 2MB·8.6초)를 또 받아왔다.
+          let jobUuidByEp = new Map();
+          try {
+            for (const x of ((await jobProcesses(proj.uuid))?.data || []).flatMap((o) => o.JOB목록 || []))
+              if (x?.JOB?.uuid) jobUuidByEp.set(Number(x.작업단위번호), x.JOB.uuid);
+          } catch (e) { console.error("[propose_task_retake] job-processes 실패, 회차별 폴백:", e?.message ?? e); }
           for (const ep of episodes) {
-            let jobs = (await projectJobs(proj.uuid, ep))?.data || [];
-            if (!jobs.length) {
-              const re = new RegExp(`(?:第|-)0*${ep}(?:\\D|$)`);
-              jobs = ((await projectJobs(proj.uuid))?.data || []).filter((x) => re.test((x.JOB명 || "").trim()));
+            let tasks = [];
+            const ju = jobUuidByEp.get(Number(ep));
+            if (ju) tasks = (await taskList({ jobUuids: ju, size: 50 }))?.data || [];
+            if (!tasks.length) {
+              let jobs = (await projectJobs(proj.uuid, ep))?.data || [];
+              if (!jobs.length) {
+                const re = new RegExp(`(?:第|-)0*${ep}(?:\\D|$)`);
+                jobs = ((await projectJobs(proj.uuid))?.data || []).filter((x) => re.test((x.JOB명 || "").trim()));
+              }
+              tasks = jobs.flatMap((j) => (j.오퍼레이션 || []).flatMap((op) => op.태스크 || []));
             }
-            const tasks = jobs.flatMap((j) => (j.오퍼레이션 || []).flatMap((op) => op.태스크 || []));
             let match = tasks.filter((t) => nmOf(t) === qn || cdOf(t) === qc);
             if (!match.length) match = tasks.filter((t) => { const nm = nmOf(t); return (nm && (nm.includes(qn) || qn.includes(nm))) || cdOf(t).includes(qc); });
             if (!match.length) { notFound.push(ep); continue; }
