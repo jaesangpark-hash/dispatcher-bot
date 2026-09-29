@@ -123,7 +123,9 @@ export const setDeliveryDate = (jps, dryRun = false) =>
   sendJSON("POST", `/job-processes/dates`, { jobProcesses: jps, dryRun }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
 // #32 프로젝트 조건(고객사·콘텐츠유형·언어쌍)에 맞는 "적용 가능 단가표" 후보 목록.
 // 팩터(수량난이도·번역난이도·식자난이도) 조합별 행이 나오며, 여기서 productPriceUuid/version을 얻는다.
-export const productPrices = (projectUuid, orderUuid) => getJSON(`/projects/${projectUuid}/product-prices`, { orderUuid });
+// ★size를 안 주면 100행에서 잘린다(2026-09-29 실측). 한일 프로젝트는 단가표가 126행이라
+// 주문 확정단가 행이 100행 밖으로 밀려 "단가표에서 사라진 행"으로 오판했다. 넉넉히 받아온다.
+export const productPrices = (projectUuid, orderUuid, size = 500) => getJSON(`/projects/${projectUuid}/product-prices`, { orderUuid, size });
 // 주문(ProjectOrder)에 "실제 적용된" 매출 단가 — 주문별 1건. 후보 목록(#32)과 달리 현재값이다.
 // 반환: 주문목록[].확정단가{productPriceUuid,version,금액,통화코드,단위코드,팩터} · 단가조정액 · 단가조정사유 · 견적확정단가.
 export const confirmedPrice = (projectUuid) => getJSON(`/projects/${projectUuid}/confirmed-price`);

@@ -2091,17 +2091,25 @@ async function resolvePriceContext(work) {
   // uuid는 같은데 버전마다 금액이 다르므로 uuid·version·금액을 반드시 같은 행에서 가져와야 조정액이 안 틀어진다.
   const table = (await productPrices(proj.uuid, o.orderUuid))?.data || [];
   let row = table.find((r) => r.productPriceUuid === c.productPriceUuid);
+  let baseNote = "";
   if (!row) {  // 단가표에서 사라진 행이면 같은 난이도 팩터 조합으로 폴백
     const f = c.팩터 || {};
     const same = table.filter((r) => r.팩터?.번역난이도 === f.번역난이도 && r.팩터?.식자난이도 === f.식자난이도 && r.팩터?.수량난이도 === f.수량난이도);
-    if (same.length !== 1) return { error: `${projName}: 확정단가 행(${c.productPriceUuid})이 현재 단가표에 없고 팩터 일치 행도 ${same.length}건이라 기준을 못 잡음. 수동 확인 필요.` };
-    row = same[0];
+    if (same.length === 1) { row = same[0]; baseNote = `확정단가 행이 현재 단가표에 없어 팩터가 같은 행(v${same[0].version} ${Number(same[0].금액).toLocaleString()})으로 대체함.`; }
+    else {
+      // ★여기서 막으면 안 된다(2026-09-29 실사고). 2026-09-28부터 회차가 자기 단가표 행(uuid·version·기준금액)을
+      // 직접 물고 있어서, 단가표에서 행이 사라져도 회차별로는 정확히 조정할 수 있다. 주문 확정단가를 기준으로 삼되
+      // 실제 계산은 회차가 물고 있는 값으로 한다(propose_totus_price_edit이 it.price를 우선 쓴다).
+      // 안전장치는 dryRun 게이트가 따로 잡는다 — 여기서 미리 막을 이유가 없다.
+      row = { productPriceUuid: c.productPriceUuid, version: Number(c.version), 금액: Number(c.금액) };
+      baseNote = `확정단가 행(${c.productPriceUuid})이 현재 단가표에 없고 팩터 일치 후보도 ${same.length}건이라, 주문 확정단가(v${c.version} ${Number(c.금액).toLocaleString()})를 기준으로 잡음. 회차별 단가가 따로 있으면 그쪽이 우선이라 조정에는 지장 없음.`;
+    }
   }
   const cur = c.통화 || CUR_KO[c.통화코드] || c.통화코드;
   const orderAmount = Number(c.금액);
   const base = { productPriceUuid: row.productPriceUuid, version: Number(row.version), amount: Number(row.금액), currencyCode: c.통화코드, currency: cur, unit: c.단위 || "화" };
   return {
-    projectUuid: proj.uuid, projName, orderUuid: o.orderUuid, base,
+    projectUuid: proj.uuid, projName, orderUuid: o.orderUuid, base, baseNote,
     // 주문에 고정된 값(현재 적용가 표시용). base와 다르면 버전 드리프트이므로 미리보기에 경고를 띄운다.
     orderAmount, orderVersion: Number(c.version),
     versionDrift: Number(c.version) !== base.version || orderAmount !== base.amount,
@@ -2553,6 +2561,7 @@ const apmTools = createSdkMcpServer({
             변경시_기준단가: `${ctx.base.amount.toLocaleString()} ${cur} (단가표 현재 v${ctx.base.version})`,
             견적확정단가: ctx.quotationAmount == null ? undefined : `${ctx.quotationAmount.toLocaleString()} ${cur}`,
             버전드리프트: ctx.versionDrift ? `주문은 v${ctx.orderVersion}(${ctx.orderAmount.toLocaleString()})에 고정, 단가표 현재는 v${ctx.base.version}(${ctx.base.amount.toLocaleString()}) — 단가 변경 시 기준이 바뀌니 사용자에게 반드시 알려라.` : undefined,
+            기준단가_주의: ctx.baseNote || undefined,
             note: "실측 확인(2026-09-23): 회차별 조정액은 주문 단위 조회에 전혀 반영되지 않는다. 두 층이 별개다.",
           };
           // ★회차별 실제 단가(2026-09-28 게이트웨이 확장) — 같은 금액끼리 묶어서 보여준다.
@@ -2652,6 +2661,8 @@ const apmTools = createSdkMcpServer({
                 });
               })(),
               mixed ? "⚠️ 대상 회차의 기준 단가가 서로 다릅니다. 회차마다 기준금액에서 역산해 목표가를 맞춥니다." : "",
+              // 단가표에서 확정단가 행이 사라진 프로젝트 — 회차가 물고 있는 값으로 계산하므로 진행은 되지만 근거를 밝혀둔다.
+              ctx.baseNote ? `ⓘ ${ctx.baseNote}` : "",
               `기준 단가는 각 회차가 물고 있는 단가표 행(v·금액)을 그대로 유지합니다 — 버전을 갈아끼우지 않으므로 기준금액이 바뀌지 않습니다.`,
               items.some((it) => it.base.adjustment != null) ? `⚠️ 이미 조정액이 걸린 회차가 있습니다. 실행하면 기존 조정액·사유를 덮어씁니다${items.find((it) => it.base.reason)?.base?.reason ? ` (기존 사유 예: ${items.find((it) => it.base.reason).base.reason})` : ""}.` : "",
               reason ? `사유: ${reason}` : "",
