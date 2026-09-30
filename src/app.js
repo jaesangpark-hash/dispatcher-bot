@@ -4916,14 +4916,28 @@ async function handleRetakeWatch({ message, client }) {
 // ── 수급 안내(설정집/타이틀 로고) 자동 감지 → 배정 작업자 + 채널 링크(+설정집이면 프로젝트 링크) 스레드 답글 ──
 const SUPPLY_NOTICE_CHANNEL = process.env.SUPPLY_NOTICE_CHANNEL || "C09B8QLR5FG";
 // 재팬_납품전-체크 채널 — "납품 일주일전 체크 리스트" 봇이 매일 밤 사람별 섹션('*박재상 N건*' 등)으로
-// 묶어 PIVO 납품 리스트를 올린다. 그 안의 '박재상' 섹션만 잘라 자동 검수 큐잉(2026-09-30, 재상 님 지정
-// — 채널 C0ARUR4MHHN). 사람 섹션 파싱 규칙은 review_queue 시스템프롬프트의 '★works 파싱 범위'와 동일:
-// 그 이름 헤더 바로 아래 줄들만, 다른 섹션은 절대 안 건드림.
+// 묶어 +7일 납품 예정 리스트를 올린다(채널 C0ARUR4MHHN, 2026-09-30 재상 님 지정).
+// ★당일 바로 검수하면 안 됨(재상 님 지적, 2026-09-30) — +7일 후 납품 예정이라는 건 지금 시점엔 아직
+//   작업(번역·식자 등)이 안 끝났을 가능성이 높아 검수할 데이터가 없다. 그래서 이 핸들러는 즉시 검수하지
+//   않고 '박재상' 섹션만 잘라 날짜와 함께 큐(data/delivery-check-queue.json)에 저장만 해두고,
+//   별도 일일 체크(checkDeliveryCheckReviewDue)가 납품일 D-3~D-4가 된 항목만 그때 실제로 검수를 건다.
+// 사람 섹션 파싱 규칙은 review_queue 시스템프롬프트의 '★works 파싱 범위'와 동일: 그 이름 헤더 바로
+// 아래 줄들만, 다른 섹션은 절대 안 건드림.
 const DELIVERY_CHECK_CHANNEL = process.env.DELIVERY_CHECK_CHANNEL || "C0ARUR4MHHN";
 const DELIVERY_CHECK_MY_NAME = process.env.DELIVERY_CHECK_MY_NAME || "박재상";
+const DELIVERY_CHECK_QUEUE_PATH = "data/delivery-check-queue.json";
+function loadDeliveryCheckQueue() {
+  try { return JSON.parse(readFileSync(DELIVERY_CHECK_QUEUE_PATH, "utf8")); } catch { return []; }
+}
+function saveDeliveryCheckQueue(items) {
+  try { writeFileSync(DELIVERY_CHECK_QUEUE_PATH, JSON.stringify(items)); } catch (e) { console.error("[delivery-check-watch] 큐 저장 실패:", e?.message ?? e); }
+}
 async function handleDeliveryCheckList({ message, client }) {
   try {
     const text = message.text || "";
+    const dateM = text.match(/(\d{4}-\d{2}-\d{2})\s*납품\s*예정\s*리스트/);
+    const deliveryDate = dateM?.[1];
+    if (!deliveryDate) { console.log("[delivery-check-watch] 헤더에서 납품일을 못 찾음 — 스킵"); return; }
     // '*이름 N건*' 섹션 헤더들의 위치를 전부 찾아, 내 이름 섹션의 시작~다음 헤더(또는 끝)까지만 자른다.
     const headerRe = /\*([^\n*]+?)\s*\d+건\*/g;
     const headers = [];
@@ -4939,12 +4953,55 @@ async function handleDeliveryCheckList({ message, client }) {
     let lm;
     while ((lm = lineRe.exec(section))) works.push({ pivo: lm[1], episode: lm[2] });
     if (!works.length) { console.log(`[delivery-check-watch] '${DELIVERY_CHECK_MY_NAME}' 섹션 파싱됐지만 항목 0건`); return; }
-    ensureWorkers();
-    const jobCtx = { client, channel: message.channel, threadTs: message.ts };
-    works.forEach((w) => enqueueJob(makeReviewJob({ pivo: w.pivo, episode: w.episode, lang: "zh-ja", label: `PV-${w.pivo}`, ctx: jobCtx })));
-    await client.chat.postMessage({ channel: message.channel, thread_ts: message.ts, text: `🔁 *${DELIVERY_CHECK_MY_NAME}* 담당 ${works.length}건 자동 검수 시작했어요 — 병렬로 돌려서 끝나는 대로 여기에 결과 올릴게요.`, ...SENDER });
-    console.log(`[delivery-check-watch] ${DELIVERY_CHECK_MY_NAME} ${works.length}건 자동 큐잉`);
+    const queue = loadDeliveryCheckQueue();
+    const seen = new Set(queue.map((x) => `${x.pivo}|${x.episode}|${x.deliveryDate}`));
+    let added = 0;
+    for (const w of works) {
+      const key = `${w.pivo}|${w.episode}|${deliveryDate}`;
+      if (seen.has(key)) continue;
+      queue.push({ pivo: w.pivo, episode: w.episode, deliveryDate, addedAt: new Date().toISOString(), reviewed: false });
+      seen.add(key); added++;
+    }
+    saveDeliveryCheckQueue(queue);
+    console.log(`[delivery-check-watch] ${DELIVERY_CHECK_MY_NAME} ${works.length}건 감지, 신규 저장 ${added}건 (납품일 ${deliveryDate}) — 검수는 D-3~4일에 자동 실행`);
   } catch (e) { console.error("[delivery-check-watch] 실패:", e?.message ?? e); }
+}
+
+// ── 재팬_납품전-체크 저장 큐 — D-3~D-4 도달분만 실제 검수 큐잉(2026-09-30) ──────────
+const DELIVERY_CHECK_REVIEW_HOUR = Number(process.env.DELIVERY_CHECK_REVIEW_HOUR ?? 9);   // 오전 9시(KST)
+async function checkDeliveryCheckReviewDue() {
+  try {
+    if (!BRAIN_ON) return;
+    if (kstHourNow() < DELIVERY_CHECK_REVIEW_HOUR) return;
+    const today = kstDateOf();
+    let state = {};
+    try { state = JSON.parse(readFileSync("data/delivery-check-review-run.json", "utf8")); } catch { /* 첫 실행 */ }
+    if (state.lastDate === today) return;
+    state.lastDate = today; try { writeFileSync("data/delivery-check-review-run.json", JSON.stringify(state)); } catch {}
+
+    const queue = loadDeliveryCheckQueue();
+    const todayMs = new Date(`${today}T00:00:00+09:00`).getTime();
+    const due = [];
+    for (const item of queue) {
+      if (item.reviewed) continue;
+      const dMs = new Date(`${item.deliveryDate}T00:00:00+09:00`).getTime();
+      const daysUntil = Math.round((dMs - todayMs) / 86400000);
+      if (daysUntil === 3 || daysUntil === 4) due.push(item);
+    }
+    const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID });
+    if (!due.length) {
+      if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: `📋 *재팬_납품전-체크 자동검수* — ${today} 기준 D-3~4일 도달 항목 없음(검수 대상 없음)`, ...SENDER });
+      console.log(`[delivery-check-review] ${today} — 대상 없음`);
+      return;
+    }
+    ensureWorkers();
+    const jobCtx = { client: app.client, channel: dm.channel?.id, threadTs: null };
+    due.forEach((w) => enqueueJob(makeReviewJob({ pivo: w.pivo, episode: w.episode, lang: "zh-ja", label: `PV-${w.pivo}`, ctx: jobCtx })));
+    for (const w of due) w.reviewed = true;
+    saveDeliveryCheckQueue(queue);
+    if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: `🔁 *재팬_납품전-체크 자동검수* — 납품 D-3~4일 도달 ${due.length}건 검수 시작(${due.map((w) => `PV-${w.pivo} ${w.episode}화`).join(", ")}) — 끝나는 대로 여기 결과 올릴게요.`, ...SENDER });
+    console.log(`[delivery-check-review] ${today} — ${due.length}건 큐잉`);
+  } catch (e) { console.error("[delivery-check-review] 실패:", e?.message ?? e); }
 }
 const SUPPLY_BOTS = { "B0B77NK250T": "FIX 설정집", "B0B103Z57T9": "타이틀 로고" };   // 도착 안내를 보내는 봇 목록(게이트용) — 종류 판별엔 안 씀, 같은 봇이 여러 종류를 보낼 수 있어 본문 내용으로 판별(아래 kind)
 const WORKER_DB_SHEET = "1lvHDrNCiBplWlfIdAgI2iYNPAFWGrHYlqxjjebnFpE8";              // 작업자 DB!A:F (A이름 C slack D channel)
@@ -8074,7 +8131,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
