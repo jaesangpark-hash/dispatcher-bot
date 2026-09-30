@@ -270,7 +270,7 @@ const DISPATCHER_PROMPT = [
   "- 리테이크 집계·현황은 retake_query로(시트 통째 읽기 금지·빠름): '기간 리테이크 개수/많이 나온 작품 TOP'=mode:agg(from,to,top) 즉시. '○○ 리테이크 현황/오탈자 개수' 및 유형(번역/식자/애매) 분류=mode:list로 그 기간 행을 받아 *comment를 읽고* 분류(tag는 참고만, 결과 많으면 기간/작품 좁혀 재요청), 카운트는 compute.",
   "- 납품예정일 '변경/삭제(비우기)' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영, 변경 전용) / ②내부 납품관리시트 G열 = propose_delivery_edit(변경+삭제 둘 다). 둘 다 게이트형(버튼 확인). ★'납품일 지워/삭제/비워줘'(특히 재수급·문의로 고객사 확인 필요해 일정을 비워둘 때) → 내부 시트면 propose_delivery_edit에 new_date='삭제'(또는 빈 문자열)로 호출하면 G열을 비운다. 확인 끝나 다시 잡을 땐 같은 도구에 날짜를 준다. 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고(삭제는 보통 내부 시트), 절대 '변경/삭제했다'고 단정하지 말 것(버튼 눌러야 반영).",
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
-  "★납품일 변경 요청에는 **회차 수와 무관하게**(1화짜리든 그룹 목록이든) 이후 회차까지 같이 본다. 예: '3화 납품일 10/5로 바꿔줘', '납품일 아래와 같이 변경\n1-3화 ~로\n4-6화 ~로', 공휴일·명절 충돌 확인 후 특정 그룹만 옮기는 경우 전부 해당. 절차: ①요청받은 회차 변경을 먼저 미리보기로 만든다. ②**원본이 수급된 마지막 회차**를 알려준다(totus_delivery_date의 원본수급_마지막회차 — 회차별로 따로 조회하지 말 것). ③이어서 **묶음 크기를 되묻는다** — '이후 회차는 몇 화를 그룹으로 묶을지 알려주시면 1주일 간격으로 납품일·납품예정일 재설정해드릴게요'처럼. ★묶음 크기는 절대 임의로 정하지 말고 사용자에게 받아라(작품마다 다르다). 간격은 1주일이 기본. 재설정 대상은 **내부 시트 납품일과 TOTUS 납품예정일 둘 다**다. (과거 실제 대화에서 이 확인이 반복됐음 — '319~321 변경하면서 322~324 그리고 그 이후 그룹들도 전체적으로 1주일 미루는거 맞지?', 추석 연휴 때도 '해당 회차만 변경하는게 아니라 이후 회차도 전부 싹다' 후속 요청, 2026-09-30 학습). 답을 받으면 그 묶음으로 이후 회차 전체 미리보기를 만든다. 실제 반영은 여전히 확인 버튼을 거친다.",
+  "★납품일 변경 요청에는 **회차 수와 무관하게**(1화짜리든 그룹 목록이든) 이후 회차까지 같이 본다. 예: '3화 납품일 10/5로 바꿔줘', '납품일 아래와 같이 변경\n1-3화 ~로\n4-6화 ~로', 공휴일·명절 충돌 확인 후 특정 그룹만 옮기는 경우 전부 해당. ★순서가 중요하다 — **미리보기를 만들기 전에 먼저 묻는다.** ①원본이 수급된 마지막 회차를 알려준다(totus_delivery_date의 원본수급_마지막회차 — 회차별로 따로 조회하지 말 것). ②이후 회차를 몇 화씩 묶을지 되묻는다. ★묶음 크기는 절대 임의로 정하지 말고 사용자에게 받아라(작품마다 다르다). 간격은 1주일이 기본. ③답을 받은 뒤에야 요청 회차+이후 회차 전체를 담은 미리보기를 만든다. 재설정 대상은 **내부 시트 납품일과 TOTUS 납품예정일 둘 다**. 문구는 이 틀을 따른다(말투는 밝게, 과하지 않게) — '<{작품}> {N}화 납품일을 *{날짜}*로 변경하기 전에 하나만 여쭤볼게요! 🙌\n\n📦 원본은 *{M}화까지* 수급돼 있어요 ({M+1}화부터는 아직이에요).\n\n이후 회차는 몇 화씩 묶을지만 알려주시면, *1주일 간격*으로 납품일·납품예정일 쫙 맞춰둘게요!' (과거 실제 대화에서 이 확인이 반복됐음 — '319~321 변경하면서 322~324 그리고 그 이후 그룹들도 전체적으로 1주일 미루는거 맞지?', 추석 연휴 때도 '해당 회차만 변경하는게 아니라 이후 회차도 전부 싹다' 후속 요청, 2026-09-30 학습). 실제 반영은 여전히 확인 버튼을 거친다.",
   "★작품 리스트를 보여줄 때(납품 대상, 특정 날짜 조회 결과 등) 기본값으로 **한국어 타이틀 + FIX 일본어 타이틀을 같이** 준다(과거 실제 대화에서 한국어만 준 직후 '일본어 타이틀도 뽑아줘'가 반복 요청됐음, 2026-09-30 학습) — 되물을 필요 없이 처음부터 병기.",
   "★'납품일 확인해주세요' 요청 뒤에 담당 APM이 특정 날짜로 납품 가능하다고 답하는 흐름(예 '○월○일 납품 가능합니다!')을 스레드에서 보면, 그 자리에서 곧바로 **그 작품의 원본 수급 현황**을 같이 알려줘라 — query_schedule로 그 작품의 납품 시트(스케줄 시트)를 조회해 **원본이 수급된 것으로 표시된 회차 중 가장 마지막(가장 큰 번호) 화**를 찾아 '현재 납품 시트 기준 ○화까지 원본 수급되었어요!'처럼 알린다(재상 님이 그 날짜가 실제로 맞출 수 있는 일정인지 바로 판단할 수 있게, 되묻지 않고 선제로). 2026-09-30 학습.",
   "★'피드백' 라우팅(자주 헷갈림): propose_retake=클라이언트 수정요청(리테이크)을 번역가에게 일본어로 전달 / share_feedback=검수 퀄리티 등급(총평·번역가·LG 등급+코멘트) 공유. 맥락에 리테이크 BOT 메시지(작품·리테이크화수·수정내용·프로젝트URL)가 있거나 '번역가에게/리테이크/수정 전달'이면 → propose_retake. 명시적 '검수 등급/퀄리티/총평 공유'만 → share_feedback. 애매하면 리테이크 BOT 메시지 유무로 판단(있으면 propose_retake). 한일은 KP평가 없어 share_feedback 불가→propose_retake.",
@@ -395,6 +395,7 @@ const pendingRetakes = new PersistMap("retakes", { ttlMs: DRAFT_TTL_MS });    //
 const pendingTransStart = new PersistMap("transstart", { ttlMs: DRAFT_TTL_MS }); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
 const pendingSetjip = new PersistMap("setjip", { ttlMs: DRAFT_TTL_MS });      // sjId → { channel, text, work, createdAt } 설정집 작성 요청 게시
 const pendingReuploads = new Map();                  // ruId → { pivo, episode, items:[{fileName,buffer,size,sourceName,page}], createdAt } — 바이너리 포함이라 비영속(재기동 시 소멸, TTL도 짧으니 재요청하면 됨)
+const reuploadRunning = new Map();                   // ruId → startedAt. 실행 중인 업로드 — 버튼을 두 번 눌렀을 때 "만료" 대신 "진행 중"으로 답하려고 둔다(2026-09-30)
 let reuploadSeq = 0;
 const pendingTaskRetake = new PersistMap("taskretake", { ttlMs: DRAFT_TTL_MS }); // trId → { work, operation, items[{episode,taskUuid,status}], createdAt } TOTUS 태스크 리테이크(연결 태스크 생성)
 const pendingFileOrderBatch = new PersistMap("fileorderbatch", { ttlMs: DRAFT_TTL_MS }); // fobId → { work, projectUuid, episodes[{episode,status,sourceGroupId,groupName,files,fileMap,suggested,simpleGroups,resolvedByStartIndex,complexNote,error}], channel, ts, createdAt }
@@ -6635,9 +6636,23 @@ app.action("reupload_confirm", async ({ ack, body, client }) => {
   const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
   if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
   const p = pendingReuploads.get(id);
-  if (!p) return reply("⌛ 만료됐거나 이미 처리된 업로드예요. 다시 요청해줘.");
+  if (!p) {
+    // ★두 번 눌렀을 때 "만료"로 답하면 안 된다(2026-09-30 실사고). 첫 클릭이 460MB를 올리는 80초 동안
+    // 아무 반응이 없어 다시 눌렀고, 두 번째가 빈 값을 만나 "다시 요청해줘"로 떨어졌다 — 그대로 다시
+    // 요청하면 같은 파일을 두 번 올리게 된다. 방금 시작된 건이면 진행 중이라고 알린다.
+    const startedAt = reuploadRunning.get(id);
+    // 10분이 넘었으면 어딘가에서 끊긴 것 — 진행 중이라고 우기지 말고 기록을 지우고 만료로 답한다.
+    if (startedAt && Date.now() - startedAt < 10 * 60 * 1000)
+      return reply(`⏳ 이미 업로드 중이에요 (${Math.round((Date.now() - startedAt) / 1000)}초 경과). 결과가 나올 때까지 기다려주세요 — 다시 누르지 않아도 돼요.`);
+    if (startedAt) reuploadRunning.delete(id);
+    return reply("⌛ 만료됐거나 이미 처리된 업로드예요. 다시 요청해줘.");
+  }
   pendingReuploads.delete(id);
   if (Date.now() - p.createdAt > REUPLOAD_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요(드라이브 링크도 만료됐을 수 있음) — 다시 요청해줘.");
+  reuploadRunning.set(id, Date.now());
+  // 큰 파일은 수십 초 걸린다 — 누른 즉시 반응을 줘서 두 번 누르지 않게 한다.
+  const totalMb = (p.items.reduce((a, it) => a + (it.size || 0), 0) / (1024 * 1024)).toFixed(1);
+  await reply(`⏳ 업로드 시작했어요 — PIVO ${p.pivo} ${p.episode}화 (${p.items.length}개, ${totalMb}MB). 용량이 크면 1~2분 걸려요.`);
   const ok = [], failed = [];
   for (const it of p.items) {
     try {
@@ -6648,6 +6663,7 @@ app.action("reupload_confirm", async ({ ack, body, client }) => {
       failed.push({ ...it, error: String(e?.message ?? e) });
     }
   }
+  reuploadRunning.delete(id);
   const okLines = ok.map((it) => `✅ \`${it.fileName}\` (${(it.size / (1024 * 1024)).toFixed(1)}MB)`);
   const failLines = failed.map((it) => `❌ \`${it.fileName}\`: ${it.error}`);
   await reply(`원본 재업로드 결과 — PIVO ${p.pivo} ${p.episode}화 (${ok.length}/${p.items.length}개 성공)\n${[...okLines, ...failLines].join("\n")}`);
