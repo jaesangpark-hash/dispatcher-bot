@@ -4915,6 +4915,37 @@ async function handleRetakeWatch({ message, client }) {
 
 // ── 수급 안내(설정집/타이틀 로고) 자동 감지 → 배정 작업자 + 채널 링크(+설정집이면 프로젝트 링크) 스레드 답글 ──
 const SUPPLY_NOTICE_CHANNEL = process.env.SUPPLY_NOTICE_CHANNEL || "C09B8QLR5FG";
+// 재팬_납품전-체크 채널 — "납품 일주일전 체크 리스트" 봇이 매일 밤 사람별 섹션('*박재상 N건*' 등)으로
+// 묶어 PIVO 납품 리스트를 올린다. 그 안의 '박재상' 섹션만 잘라 자동 검수 큐잉(2026-09-30, 재상 님 지정
+// — 채널 C0ARUR4MHHN). 사람 섹션 파싱 규칙은 review_queue 시스템프롬프트의 '★works 파싱 범위'와 동일:
+// 그 이름 헤더 바로 아래 줄들만, 다른 섹션은 절대 안 건드림.
+const DELIVERY_CHECK_CHANNEL = process.env.DELIVERY_CHECK_CHANNEL || "C0ARUR4MHHN";
+const DELIVERY_CHECK_MY_NAME = process.env.DELIVERY_CHECK_MY_NAME || "박재상";
+async function handleDeliveryCheckList({ message, client }) {
+  try {
+    const text = message.text || "";
+    // '*이름 N건*' 섹션 헤더들의 위치를 전부 찾아, 내 이름 섹션의 시작~다음 헤더(또는 끝)까지만 자른다.
+    const headerRe = /\*([^\n*]+?)\s*\d+건\*/g;
+    const headers = [];
+    let hm;
+    while ((hm = headerRe.exec(text))) headers.push({ name: hm[1].trim(), idx: hm.index, end: hm.index + hm[0].length });
+    const mine = headers.find((h) => h.name === DELIVERY_CHECK_MY_NAME);
+    if (!mine) { console.log(`[delivery-check-watch] '${DELIVERY_CHECK_MY_NAME}' 섹션 없음(오늘은 배정 없음) — 스킵`); return; }
+    const nextIdx = headers.find((h) => h.idx > mine.idx)?.idx;
+    const section = text.slice(mine.end, nextIdx ?? text.length);
+    // 줄 형식: "- NNNNNN | [출판사] 작품명 / 회차[+부가텍스트] PIVO 납품"
+    const lineRe = /^-\s*(\d{4,})\s*\|[^\n]*?\/\s*(\d+)[^\n]*PIVO\s*납품/gm;
+    const works = [];
+    let lm;
+    while ((lm = lineRe.exec(section))) works.push({ pivo: lm[1], episode: lm[2] });
+    if (!works.length) { console.log(`[delivery-check-watch] '${DELIVERY_CHECK_MY_NAME}' 섹션 파싱됐지만 항목 0건`); return; }
+    ensureWorkers();
+    const jobCtx = { client, channel: message.channel, threadTs: message.ts };
+    works.forEach((w) => enqueueJob(makeReviewJob({ pivo: w.pivo, episode: w.episode, lang: "zh-ja", label: `PV-${w.pivo}`, ctx: jobCtx })));
+    await client.chat.postMessage({ channel: message.channel, thread_ts: message.ts, text: `🔁 *${DELIVERY_CHECK_MY_NAME}* 담당 ${works.length}건 자동 검수 시작했어요 — 병렬로 돌려서 끝나는 대로 여기에 결과 올릴게요.`, ...SENDER });
+    console.log(`[delivery-check-watch] ${DELIVERY_CHECK_MY_NAME} ${works.length}건 자동 큐잉`);
+  } catch (e) { console.error("[delivery-check-watch] 실패:", e?.message ?? e); }
+}
 const SUPPLY_BOTS = { "B0B77NK250T": "FIX 설정집", "B0B103Z57T9": "타이틀 로고" };   // 도착 안내를 보내는 봇 목록(게이트용) — 종류 판별엔 안 씀, 같은 봇이 여러 종류를 보낼 수 있어 본문 내용으로 판별(아래 kind)
 const WORKER_DB_SHEET = "1lvHDrNCiBplWlfIdAgI2iYNPAFWGrHYlqxjjebnFpE8";              // 작업자 DB!A:F (A이름 C slack D channel)
 const SUPPLY_ROLES = [["번역", "번역 skip"], ["번역검수", "번역검수 skip"], ["식자", "식자 skip"], ["식번검", "식번검 skip"], ["식자검수", "식자검수 skip"]];
@@ -5106,6 +5137,11 @@ app.message(async ({ message, say, client }) => {
   // 수급 안내 채널 — 설정집/타이틀 로고 도착 안내면 배정 작업자+채널 링크 답글
   if (message.channel === SUPPLY_NOTICE_CHANNEL && (SUPPLY_BOTS[message.bot_id] || /도착\s*안내/.test(message.text || ""))) {
     await handleSupplyNotice({ message, client });
+    return;
+  }
+  // 재팬_납품전-체크 채널 — "납품 일주일전 체크 리스트" 봇의 사람별 섹션에서 내 섹션만 잘라 자동 검수
+  if (message.channel === DELIVERY_CHECK_CHANNEL && message.bot_id && message.text?.includes("납품 예정 리스트")) {
+    await handleDeliveryCheckList({ message, client });
     return;
   }
   // 리테이크 채널 자동 감지 — 자동 봇 메시지에서 중일·번역 이슈면 번역가 발송 초안을 박재상 DM으로
