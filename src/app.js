@@ -386,6 +386,9 @@ const pendingTotusDates = new PersistMap("totus", { ttlMs: DRAFT_TTL_MS });   //
 const pendingTotusProj = new PersistMap("totusproj", { ttlMs: DRAFT_TTL_MS }); // id → { projectUuid, projectName, change, label, createdAt }
 const pendingSends = new PersistMap("sends", { ttlMs: DRAFT_TTL_MS });        // sendId → { target, text, createdAt }
 const pendingFeedback = new PersistMap("feedback", { ttlMs: DRAFT_TTL_MS });  // fbId → { channel, text, koTitle, episode, rowsToMark, ... }
+// 툰식이가 먼저 답글을 단 스레드 — 이후 그 스레드의 후속 댓글은 멘션 없이도 브레인이 받는다(2026-09-30,
+// 재상 님 지정). 키 "channel|thread_ts". 3일 지나면 자동 정리(오래된 스레드까지 계속 감시하지 않게).
+const botThreadWatch = new PersistMap("thread-watch", { ttlMs: 3 * 86400000 });
 const pendingRetakes = new PersistMap("retakes", { ttlMs: DRAFT_TTL_MS });    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
 const pendingTransStart = new PersistMap("transstart", { ttlMs: DRAFT_TTL_MS }); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
 const pendingSetjip = new PersistMap("setjip", { ttlMs: DRAFT_TTL_MS });      // sjId → { channel, text, work, createdAt } 설정집 작성 요청 게시
@@ -4601,7 +4604,7 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
 // ── 워치 채널 자동 링크 ──────────────────────────────────────────
 // 박재상/문의봇이 워치 채널에 남긴 메시지에 '한국어 타이틀 정확일치'가 있으면 프로젝트 링크를 자동 답글.
 // 메시지에 '재수급' 언급이 있으면 원본 링크(driveLink)도 함께. 작품명 없으면 침묵. (읽기 전용·선제 액션)
-const WORK_LINK_WATCH = new Set((process.env.WORK_LINK_WATCH_CHANNELS || "C09B8QHP7D4,C06SUD5AFE1").split(",").map((s) => s.trim()).filter(Boolean));
+const WORK_LINK_WATCH = new Set((process.env.WORK_LINK_WATCH_CHANNELS || "C09B8QHP7D4,C06SUD5AFE1,C0A5V9H2G3G").split(",").map((s) => s.trim()).filter(Boolean));   // C0A5V9H2G3G 추가(2026-09-30, 재상 님 지정 — 시뮬레이션/테스트 채널)
 const INQUIRY_BOT_ID = process.env.INQUIRY_BOT_ID || "B0AL3E0RNCW";   // 문의봇(inquirybot)
 const RESUPPLY_RE = /재수급|재\s*수급|원본\s*다시|원고\s*다시|다시\s*수급/;
 // ★2026-07-13 고객사(Kuaikan/Shenzhen Yuerong 공동제작) 합의: 이 두 출판사 작품은 원본 관련 이슈(작화 실수·
@@ -4635,6 +4638,7 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
       lines.push(`⚠️ *${hit.publisher}* 소속 — 원본 관련 이슈는 내부에서 조용히 처리해도 고객사에 개별 보고 대상이에요(재수급까지 안 가는 사소한 작화/스토리 건도 포함). 잊지 말고 공유하세요.`);
     }
     await client.chat.postMessage({ channel, thread_ts: threadTs || ts, text: lines.join("\n"), ...SENDER, unfurl_links: false });
+    botThreadWatch.set(`${channel}|${threadTs || ts}`, { createdAt: Date.now(), koTitle: hit.koTitle });
     console.log(`[worklink] ${hit.koTitle} → 프로젝트${wantSrc ? "+원본" : ""} (ch=${channel})`);
     // 문의봇 구조화 재수급 요청이면 → 고객사 보낼 일본어 재수급 초안(복붙용)도 자동 첨부
     if (/재수급\s*사유\s*[:：]/.test(text)) {
@@ -5230,6 +5234,18 @@ app.message(async ({ message, say, client }) => {
     if (!edited && fromInquiry && process.env.RESUPPLY_AUTO_TRANSFER === "1") {
       const hasResupplyBtn = message.blocks?.some(b => b.type === "actions" && b.elements?.some(e => e.action_id === "resupply_upload_file"));
       if (hasResupplyBtn) _handleResupplyAutoTransfer({ message, client }).catch(e => console.error("[resupply-auto] 오류:", e?.message ?? e));
+    }
+    // ★툰식이가 먼저 답글을 단 스레드의 후속 댓글은, 멘션 없이도 브레인이 받는다(2026-09-30, 재상 님
+    //   지정) — 사람이 쓴 진짜 대화 댓글만(봇 메시지·수정 이벤트 제외), 스레드 답글(원글 자체는 제외)일 때만.
+    const threadKey = message.thread_ts ? `${message.channel}|${message.thread_ts}` : null;
+    const isReply = message.thread_ts && message.thread_ts !== message.ts;
+    if (!edited && !message.bot_id && isReply && threadKey && botThreadWatch.has(threadKey) && message.text) {
+      await handle({
+        text: message.text, channel: message.channel, ts: message.ts,
+        threadTs: message.thread_ts, inThread: true,
+        user: message.user, client, say, files: message.files,
+      });
+      return;
     }
     return;   // 워치 채널은 여기서 종료(멘션은 app_mention이 별도 처리)
   }
