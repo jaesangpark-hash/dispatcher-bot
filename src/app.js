@@ -7838,7 +7838,12 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
   const allWarns = [];
   const allFileIds = [];
   const displayName = workName || originalTitleCH || `PIVO ${pivoId}`;
-  const epSummary = episodeList.map(e => `${e.episode}화`).join(", ");
+  // ★페이지를 지정했으면 범위를 그대로 드러낸다(2026-09-30). "38화 1페이지"만 올렸는데 "38화 이관 완료"로
+  // 나가면 회차 전체를 갈아치운 것처럼 읽힌다(실사고).
+  const epSummary = episodeList.map((e) => {
+    const pg = e.page != null && e.page !== "" ? `${e.page}페이지` : (pageFrom !== null ? `${pageFrom}${pageTo !== null && pageTo !== pageFrom ? `~${pageTo}` : ""}페이지` : "");
+    return `${e.episode}화${pg ? ` ${pg}` : ""}`;
+  }).join(", ");
 
   const buildProgressText = (currentStatus) => {
     const lines = [`⏳ *${displayName}* ${epSummary} 이관 중`];
