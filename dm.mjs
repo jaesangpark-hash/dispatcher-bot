@@ -1,0 +1,15 @@
+const T=process.env.SLACK_BOT_TOKEN, ME="U04463JR4HH";
+const api=async(m,p={})=>{const u=new URL(`https://slack.com/api/${m}`);for(const[k,v]of Object.entries(p))u.searchParams.set(k,v);
+ return (await fetch(u,{headers:{Authorization:`Bearer ${T}`}})).json();};
+const o=await api("conversations.open",{users:ME});
+const ch=o.channel?.id; console.log("DM 채널:", ch, o.ok?"":o.error);
+const since=Math.floor((Date.now()-90*86400000)/1000);
+let cur,got=[]; do{ const r=await api("conversations.history",{channel:ch,limit:"200",oldest:String(since),...(cur?{cursor:cur}:{})});
+ if(!r.ok){console.error(r.error);break;} got=got.concat(r.messages||[]); cur=r.has_more?r.response_metadata?.next_cursor:null; }while(cur&&got.length<5000);
+console.log("DM 메시지 90일:", got.length);
+const mine=got.filter(m=>m.user===ME).length, bot=got.filter(m=>m.bot_id||m.user!==ME).length;
+console.log(`  재상 발신 ${mine} · 봇 발신 ${bot}`);
+got.sort((a,b)=>Number(a.ts)-Number(b.ts));
+import fs from "node:fs";
+fs.writeFileSync("dm.json", JSON.stringify(got.map(m=>({ts:m.ts,who:m.user===ME?"재상":"봇",text:String(m.text||"").replace(/\s+/g," ")})),null,1));
+console.log("→ dm.json 저장");

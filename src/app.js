@@ -2760,7 +2760,7 @@ const apmTools = createSdkMcpServer({
     ),
     tool(
       "propose_task_retake",
-      "TOTUS에서 회차(들)의 특정 오퍼레이션 태스크를 '리테이크'(연결 태스크 생성)하도록 제안한다(게이트형: 미리보기+✅버튼). 대상 태스크는 COMPLETED 상태여야 하며, 실행하면 그 태스크+하위(다음 단계) 오퍼레이션 태스크가 전부 새로 생성되고(작업자·타입은 원본 승계) 기존 READY/PROCESSING 하위 태스크는 닫힌다(COMPLETED 하위는 유지). 새로 생성된 태스크들에는 일정(시작일~마감일)도 같이 입력된다 — 지정 안 하면 기본값은 오늘 시작·오늘 마감(당일), 사용자가 날짜를 말하면 그 기간으로. '○○ 1-20화 [오퍼레이션] task 열어줘/리테이크해줘' 류. 여러 회차는 episode에 범위/목록으로 한 번에 담아라(회차마다 도구를 나눠 부르지 말 것). COMPLETED가 아닌 회차는 자동으로 제외되고 미리보기에 표시된다. 절대 '열었다/리테이크했다'고 단정하지 말 것(버튼 눌러야 실행).",
+      "TOTUS에서 회차(들)의 특정 오퍼레이션 태스크를 '리테이크'(연결 태스크 생성)하도록 제안한다(게이트형: 미리보기+✅버튼). 대상 태스크는 완료 상태(COMPLETED 또는 CONFIRMED — 제작형 오퍼레이션은 COMPLETED로, 식자검수·번역검수·최종검수 등 검수형 오퍼레이션은 제출·승인이 끝나면 CONFIRMED로 표기됨, 둘 다 '완료'라 동일하게 리테이크 가능)여야 하며, 실행하면 그 태스크+하위(다음 단계) 오퍼레이션 태스크가 전부 새로 생성되고(작업자·타입은 원본 승계) 기존 READY/PROCESSING 하위 태스크는 닫힌다(완료 상태 하위는 유지). 새로 생성된 태스크들에는 일정(시작일~마감일)도 같이 입력된다 — 지정 안 하면 기본값은 오늘 시작·오늘 마감(당일), 사용자가 날짜를 말하면 그 기간으로. '○○ 1-20화 [오퍼레이션] task 열어줘/리테이크해줘' 류. 여러 회차는 episode에 범위/목록으로 한 번에 담아라(회차마다 도구를 나눠 부르지 말 것). 완료 상태가 아닌 회차는 자동으로 제외되고 미리보기에 표시된다. 절대 '열었다/리테이크했다'고 단정하지 말 것(버튼 눌러야 실행).",
       {
         work: z.string().describe("작품명(한/일/중) 또는 PIVO ID"),
         episode: z.string().describe("회차. 단일('5'), 범위('1-20'), 목록('1,3,5') 가능 — 여러 회차는 반드시 이렇게 한 번에 담는다"),
@@ -2814,9 +2814,14 @@ const apmTools = createSdkMcpServer({
           }
           if (!items.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, work: projName, msg: `지정 회차 전부 '${operation}' 태스크를 못 찾음.`, notFound }) }] };
 
-          const ready = items.filter((it) => it.status === "COMPLETED");
-          const notCompleted = items.filter((it) => it.status !== "COMPLETED");
-          if (!ready.length) return { content: [{ type: "text", text: JSON.stringify({ found: true, work: projName, msg: "매칭된 태스크가 있지만 전부 COMPLETED가 아니라 리테이크 불가.", notCompleted, notFound }) }] };
+          // ★COMPLETED만 보면 안 됨(2026-09-30 발견) — 식자검수·번역검수·최종검수 등 검수형 오퍼레이션은
+          // 제출·승인이 끝나도 상태명이 COMPLETED가 아니라 CONFIRMED로 찍힌다(제작형 오퍼레이션=COMPLETED,
+          // 검수형=CONFIRMED로 "완료"를 다르게 표기하는 것일 뿐, botV2 쪽 EXCLUDE_TASK_STATES 주석에도
+          // "리테이크는 완료상태가 정상"이라며 COMPLETED/DELIVERED/CONFIRMED를 동일하게 완료 계열로 취급함).
+          const DONE_STATES = new Set(["COMPLETED", "CONFIRMED"]);
+          const ready = items.filter((it) => DONE_STATES.has(it.status));
+          const notCompleted = items.filter((it) => !DONE_STATES.has(it.status));
+          if (!ready.length) return { content: [{ type: "text", text: JSON.stringify({ found: true, work: projName, msg: "매칭된 태스크가 있지만 전부 완료(COMPLETED/CONFIRMED) 상태가 아니라 리테이크 불가.", notCompleted, notFound }) }] };
 
           const todayKST = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
           const sDate = (startDate || "").trim() || todayKST;
@@ -2830,7 +2835,7 @@ const apmTools = createSdkMcpServer({
               `🔁 *TOTUS 태스크 리테이크 제안* — ${projName} (${p.operation})`,
               `대상 ${ready.length}건(회차: ${compactRanges(ready.map((r) => r.episode))})`,
               `새 태스크 일정: ${sDate}${eDate !== sDate ? `~${eDate}` : "(당일)"}`,
-              notCompleted.length ? `⚠️ COMPLETED 아니라 제외됨(${notCompleted.length}건): ${notCompleted.map((n) => `${n.episode}화(${n.statusName})`).join(", ")}` : "",
+              notCompleted.length ? `⚠️ 완료 상태 아니라 제외됨(${notCompleted.length}건): ${notCompleted.map((n) => `${n.episode}화(${n.statusName})`).join(", ")}` : "",
               notFound.length ? `⚠️ 태스크 자체를 못 찾음: ${notFound.join(", ")}화` : "",
               "실행하면 각 태스크+하위 오퍼레이션이 새로 생성되고, 기존 진행중 하위 태스크는 닫힙니다(완료된 건 유지).",
             ].filter(Boolean).join("\n");
