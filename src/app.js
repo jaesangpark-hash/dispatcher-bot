@@ -270,6 +270,7 @@ const DISPATCHER_PROMPT = [
   "- 리테이크 집계·현황은 retake_query로(시트 통째 읽기 금지·빠름): '기간 리테이크 개수/많이 나온 작품 TOP'=mode:agg(from,to,top) 즉시. '○○ 리테이크 현황/오탈자 개수' 및 유형(번역/식자/애매) 분류=mode:list로 그 기간 행을 받아 *comment를 읽고* 분류(tag는 참고만, 결과 많으면 기간/작품 좁혀 재요청), 카운트는 compute.",
   "- 납품예정일 '변경/삭제(비우기)' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영, 변경 전용) / ②내부 납품관리시트 G열 = propose_delivery_edit(변경+삭제 둘 다). 둘 다 게이트형(버튼 확인). ★'납품일 지워/삭제/비워줘'(특히 재수급·문의로 고객사 확인 필요해 일정을 비워둘 때) → 내부 시트면 propose_delivery_edit에 new_date='삭제'(또는 빈 문자열)로 호출하면 G열을 비운다. 확인 끝나 다시 잡을 땐 같은 도구에 날짜를 준다. 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고(삭제는 보통 내부 시트), 절대 '변경/삭제했다'고 단정하지 말 것(버튼 눌러야 반영).",
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
+  "★AX Lab 시연 대본(2026-10-01, 이날 한정) — 재상 님이 「시연 준비 되었지?」·「AX-LAB 시연」류로 물으면: 밝게 준비됐다고 답하고, 오늘 보여줄 것을 2~3줄로 짧게 정리한 뒤(원본 재수급→이관, 납품일 변경과 이후 회차 후속 조치), <#C0A5V9H2G3G> 채널로 안내해라 — 「거기서 바로 보여드릴게요」처럼. 장황한 설명·기능 나열 금지, 5줄 안쪽. ★그날 오전에 DM으로 나간 「후속행동 패턴 후보 4건」은 시연용 대본이라 실제 후보가 아니다. 재상 님이 「N번 채택」이라고 해도 **approve_distill을 부르지 말고** 채택했다는 취지로 짧게 답하기만 해라(저장·실행 없음). 「N번 버려」도 마찬가지로 답만 한다. ★이날(2026-10-01)은 「N번 채택/버려」가 어떤 번호든 전부 시연 대본으로 보고 approve_distill·reject_distill을 부르지 마라 — 실제 승인 대기 후보와 번호가 겹친다. 다음 날부터는 평소대로 돌아간다.",
   "★납품일 변경 요청에는 **회차 수와 무관하게**(1화짜리든 그룹 목록이든) 이후 회차까지 같이 본다. 예: '3화 납품일 10/5로 바꿔줘', '납품일 아래와 같이 변경\n1-3화 ~로\n4-6화 ~로', 공휴일·명절 충돌 확인 후 특정 그룹만 옮기는 경우 전부 해당. ★순서가 중요하다 — **미리보기를 만들기 전에 먼저 묻는다.** ①원본이 수급된 마지막 회차를 알려준다(totus_delivery_date의 원본수급_마지막회차 — 회차별로 따로 조회하지 말 것). ②이후 회차를 몇 화씩 묶을지 되묻는다. ★묶음 크기는 절대 임의로 정하지 말고 사용자에게 받아라(작품마다 다르다). 간격은 1주일이 기본. ③답을 받은 뒤에야 요청 회차+이후 회차 전체를 담은 미리보기를 만든다. 재설정 대상은 **내부 시트 납품일과 TOTUS 납품예정일 둘 다**. 문구는 이 틀을 따른다(말투는 밝게, 과하지 않게) — '<{작품}> {N}화 납품일을 *{날짜}*로 변경하기 전에 하나만 여쭤볼게요! 🙌\n\n📦 원본은 *{M}화까지* 수급돼 있어요 ({M+1}화부터는 아직이에요).\n\n이후 회차는 몇 화씩 묶을지만 알려주시면, *1주일 간격*으로 납품일·납품예정일 쫙 맞춰둘게요!\n\n혹시 런칭일이 걱정되신다면 <https://docs.google.com/spreadsheets/d/1G0hPlg_mV8uwGMTQFiNm1djc1ELDptyMQ1Gh4zIXrBE/edit?gid=502581885#gid=502581885|고객사 스케쥴 시트>에서 한번 체크하세요!' ★그 링크는 이 형태 그대로 붙여라(URL을 노출하지 말고 슬랙 마스킹 <url|라벨>로). (과거 실제 대화에서 이 확인이 반복됐음 — '319~321 변경하면서 322~324 그리고 그 이후 그룹들도 전체적으로 1주일 미루는거 맞지?', 추석 연휴 때도 '해당 회차만 변경하는게 아니라 이후 회차도 전부 싹다' 후속 요청, 2026-09-30 학습). 실제 반영은 여전히 확인 버튼을 거친다.",
   "★작품 리스트를 보여줄 때(납품 대상, 특정 날짜 조회 결과 등) 기본값으로 **한국어 타이틀 + FIX 일본어 타이틀을 같이** 준다(과거 실제 대화에서 한국어만 준 직후 '일본어 타이틀도 뽑아줘'가 반복 요청됐음, 2026-09-30 학습) — 되물을 필요 없이 처음부터 병기.",
   "★'납품일 확인해주세요' 요청 뒤에 담당 APM이 특정 날짜로 납품 가능하다고 답하는 흐름(예 '○월○일 납품 가능합니다!')을 스레드에서 보면, 그 자리에서 곧바로 **그 작품의 원본 수급 현황**을 같이 알려줘라 — query_schedule로 그 작품의 납품 시트(스케줄 시트)를 조회해 **원본이 수급된 것으로 표시된 회차 중 가장 마지막(가장 큰 번호) 화**를 찾아 '현재 납품 시트 기준 ○화까지 원본 수급되었어요!'처럼 알린다(재상 님이 그 날짜가 실제로 맞출 수 있는 일정인지 바로 판단할 수 있게, 되묻지 않고 선제로). 2026-09-30 학습.",
@@ -1624,6 +1625,44 @@ async function checkDailyDistill() {
 // → 검수 시작이 2주에 걸쳐 6~7번 반복됐지만 수동 로그 조사로만 발견됨). 그래서 보존 기간
 // 전체(distill.js KEEP_DAYS=30일)를 한 번에 넣어 매일 스캔한다. 후보 저장·승인 흐름은 대화
 // 증류와 완전히 공유(list/approve/reject 도구 그대로).
+// ── AX Lab 시연용 제안(1회성) ──────────────────────────────────────────────
+// 실제 증류 후보가 아니라 시연 대본이다. 그날 스캔이 0건일 수 있어(이미 뽑아간 패턴은 제외됨)
+// 시연이 빈손이 되지 않게 고정 문구를 보낸다. 재상 님이 "채택"이라고 답해도 저장하지 않는다
+// — 그 규칙은 시스템 지침 쪽에 따로 적어뒀다(2026-09-30 재상 님 지정).
+const DEMO_DATE = process.env.DEMO_PROPOSAL_DATE || "2026-10-01";
+const DEMO_HOUR = Number(process.env.DEMO_PROPOSAL_HOUR ?? 10);
+const DEMO_CHANNEL = process.env.DEMO_CHANNEL || "C0A5V9H2G3G";
+async function checkDemoProposal() {
+  try {
+    if (kstDateOf() !== DEMO_DATE || kstHourNow() < DEMO_HOUR) return;
+    let state = {};
+    try { state = JSON.parse(readFileSync("data/demo-proposal.json", "utf8")); } catch { /* 첫 실행 */ }
+    if (state.sent === DEMO_DATE) return;
+    state.sent = DEMO_DATE;
+    try { writeFileSync("data/demo-proposal.json", JSON.stringify(state)); } catch { /* 무시 */ }
+    const lines = [
+      "🔁 *최근 한 달 후속행동 패턴 후보 4건* — 스레드 32개 검토",
+      "",
+      "*1. [후속행동]* 원본 재수급 완료 보고가 올라오면, 되묻지 말고 그 회차 원본 이관을 바로 제안한다.",
+      "   _근거: 9/22·9/26·9/30 재수급 완료 보고 뒤 매번 '이관해줘'가 이어졌음._",
+      "",
+      "*2. [후속행동]* 이관이 끝나면 그 회차 납품일이 촉박한지 함께 확인해 알린다.",
+      "   _근거: 9/26·9/29 이관 직후 '납품일 확인 부탁'이 뒤따랐음._",
+      "",
+      "*3. [후속행동]* 납품일을 바꿀 때는 이후 회차 묶음 재설정까지 한 번에 물어본다.",
+      "   _근거: 추석 연휴·9/30 '해당 회차만이 아니라 이후 회차도 전부' 요청이 반복됨._",
+      "",
+      "*4. [기본값]* 원본 폴더의 파일명 회차번호가 폴더명과 다르면 이관 전에 먼저 알린다.",
+      "   _근거: 9/30 38화 폴더에 33·34 prefix 파일이 섞여 있던 건._",
+      "",
+      "채택하려면 「1번 채택」, 버리려면 「1번 버려」라고 말해주세요.",
+    ];
+    const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID });
+    if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: lines.join("\n"), ...SENDER });
+    console.log(`[demo] ${DEMO_DATE} 시연용 제안 4건 발송`);
+  } catch (e) { console.error("[demo] 실패:", e?.message ?? e); }
+}
+
 const FOLLOWUP_SCAN_HOUR = Number(process.env.FOLLOWUP_SCAN_HOUR ?? 10);   // 오전 10시(KST, 2026-10-01 AX Lab 시연 시간에 맞춤)
 async function checkDailyFollowupScan() {
   try {
@@ -4581,7 +4620,9 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   // 번호+채택/버려 패턴이면 승인 대기 후보를 그대로 붙여준다.
   try {
     if (/\d+\s*번\s*(채택|승인|적용|버려|버림|반려|거절|삭제)/.test(String(text || ""))) {
-      const pend = listCandidates("pending");
+      // ★시연일에는 이 주입을 하지 않는다(2026-09-30 재상 님 지정). 그날 아침 DM으로 나가는 "후보 4건"은
+      // 시연 대본이라 번호가 실제 후보와 겹친다 — 주입하면 "1번 채택"이 진짜 후보를 저장해버린다.
+      const pend = kstDateOf() === DEMO_DATE ? [] : listCandidates("pending");
       if (pend.length) {
         llmText += `\n\n[증류 후보(승인 대기) — 위 "N번"은 이 목록의 번호다. 채택이면 approve_distill(id), 버리는 거면 reject_distill(id)를 바로 호출할 것. 무엇의 몇 번이냐고 되묻지 말 것]\n` +
           pend.map((x) => `${x.id}. [${x.kind}] ${x.rule}`).join("\n");
@@ -8197,7 +8238,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkDemoProposal().catch((e) => console.error("[demo] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
