@@ -389,6 +389,8 @@ const pendingFeedback = new PersistMap("feedback", { ttlMs: DRAFT_TTL_MS });  //
 // 툰식이가 먼저 답글을 단 스레드 — 이후 그 스레드의 후속 댓글은 멘션 없이도 브레인이 받는다(2026-09-30,
 // 재상 님 지정). 키 "channel|thread_ts". 3일 지나면 자동 정리(오래된 스레드까지 계속 감시하지 않게).
 const botThreadWatch = new PersistMap("thread-watch", { ttlMs: 3 * 86400000 });
+// 워치 채널에서 이미 링크를 붙인 스레드+작품 — 같은 스레드에 같은 링크를 반복해 붙이지 않게(2026-09-30).
+const workLinkPosted = new PersistMap("worklink-posted", { ttlMs: 3 * 86400000 });
 const pendingRetakes = new PersistMap("retakes", { ttlMs: DRAFT_TTL_MS });    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
 const pendingTransStart = new PersistMap("transstart", { ttlMs: DRAFT_TTL_MS }); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
 const pendingSetjip = new PersistMap("setjip", { ttlMs: DRAFT_TTL_MS });      // sjId → { channel, text, work, createdAt } 설정집 작성 요청 게시
@@ -4634,19 +4636,26 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
     if (!hits.length) return;                                 // 한국어 타이틀 정확일치 없으면 침묵
     hits.sort((a, b) => b.koNorm.length - a.koNorm.length);   // 가장 구체적인(긴) 제목
     const hit = hits[0];
+    const wantSrc = RESUPPLY_RE.test(text);
+    // ★한 스레드에 같은 작품 링크는 한 번만(2026-09-30). 중복 방지가 메시지 단위라, 스레드 안에서 작품명이
+    // 다시 나올 때마다 같은 링크를 또 붙이고 있었다(실사고: 재수급 스레드에서 2번 발송).
+    // 단 전에 원본 링크 없이 프로젝트만 붙였는데 이번엔 재수급 문의라면, 원본을 더해 한 번 더 보낸다.
+    const wlKey = `${channel}|${threadTs || ts}|${hit.koTitle}`;
+    const wlPrev = workLinkPosted.get(wlKey);
+    if (wlPrev && (!wantSrc || wlPrev.src)) return;
     let urlLine = "🔗 프로젝트: (TOTUS에서 못 찾음)";
     try {
       const fp = await findProject(hit.pivoId || hit.koTitle);
       const proj = (fp?.data || [])[0];
       if (proj?.uuid) urlLine = `🔗 프로젝트: https://admin.totus.pro/ko/workProgressManagementDetail/?id=${proj.uuid}`;
     } catch { /* 조회 실패 시 안내 유지 */ }
-    const wantSrc = RESUPPLY_RE.test(text);
     const lines = [`📁 *${hit.koTitle}*`, urlLine];
     if (wantSrc) lines.push(hit.driveLink ? `📦 원본: ${hit.driveLink}` : `📦 원본: 시트에 링크 없음 — ${hit.originSearchSite || hit.publisher || "출판사"}에서 원제 「${hit.zhTitle || "?"}」로 검색`);
     if (ORIGIN_ISSUE_RE.test(text) && REPORT_TO_CLIENT_PUBLISHERS.has(hit.publisher || "")) {
       lines.push(`⚠️ *${hit.publisher}* 소속 — 원본 관련 이슈는 내부에서 조용히 처리해도 고객사에 개별 보고 대상이에요(재수급까지 안 가는 사소한 작화/스토리 건도 포함). 잊지 말고 공유하세요.`);
     }
     await client.chat.postMessage({ channel, thread_ts: threadTs || ts, text: lines.join("\n"), ...SENDER, unfurl_links: false });
+    workLinkPosted.set(wlKey, { createdAt: Date.now(), src: Boolean(wlPrev?.src || wantSrc) });
     // ★여기서 스레드를 등록하지 않는다(2026-09-30 재상 님 지정). 이 답글은 대화가 아니라 선제 링크 투척이라,
     // 등록해버리면 사람이 툰식이를 부른 적도 없는 스레드의 작업자↔APM 대화에까지 끼어든다(실사고: 재수급
     // 완료 보고 "납품일 확인 부탁 드립니다"에 툰식이가 답해버림). 등록은 브레인이 실제로 사람에게 답했을 때만.
