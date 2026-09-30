@@ -19,7 +19,7 @@ const CAND = path.join(DIR, "distill-candidates.json"); // 규칙 후보
 const STATE = path.join(DIR, "distill-state.json");     // 하루 1회 게이트
 
 const MAX_TURN_CHARS = 700;     // 한 턴이 길어도 여기까지만 저장(첨부 덤프·긴 목록 방어)
-const KEEP_DAYS = 14;           // 원장 보존 기간
+const KEEP_DAYS = 30;           // 원장 보존 기간(2026-09-30: 14→30, 후속행동 스캔 커버리지 확대)
 
 function kst(d = new Date()) { return new Date(d.getTime() + 9 * 3600 * 1000); }
 export function kstDay(d = new Date()) {
@@ -164,9 +164,10 @@ function renderThreads(threads, maxThreads, maxChars) {
 //   패턴이 하루에 한두 번씩 띄엄띄엄(여러 날에 걸쳐) 나타나면 하루 배치 안에서는 반복이 안 잡혀서
 //   후보로 못 올라온다(예: 'PIVO 납품' 리스트 붙여넣기 → 검수 시작 — 2주에 걸쳐 6~7번 나왔지만
 //   하루엔 한 번뿐이었음, 수동 로그 조사로 발견). 그래서 '후속행동'류만 따로, 날짜 단위가 아니라
-//   보존 기간(KEEP_DAYS) 전체를 한 번에 넣어 주 1회(월요일 등) 스캔한다.
+//   보존 기간(KEEP_DAYS=30일) 전체를 한 번에 넣어 **매일** 스캔한다(재상 님 지정, 2026-09-30 —
+//   주 1회에서 매일로 변경, 보존기간도 2주→1달로 확대. 프롬프트 예산이 허락하는 한 넓게 본다).
 const FOLLOWUP_SYS = [
-  "너는 툰식이(중일 PM 보조 에이전트)의 '후속행동 패턴 스캐너'다. 최근 2주치 대화 전체를 읽고,",
+  "너는 툰식이(중일 PM 보조 에이전트)의 '후속행동 패턴 스캐너'다. 최근 한 달치 대화 전체를 읽고,",
   "**특정 형태·내용의 메시지가 오면 재상 님이 거의 항상 이어서 요구하는 것**만 찾는다.",
   "★너에겐 도구가 없다. 아무것도 실행·변경·발송할 수 없고 텍스트만 낸다. 규칙 채택은 재상 님이 한다.",
   "",
@@ -212,7 +213,9 @@ export function threadsOfWindow(keepDays = KEEP_DAYS) {
     if (!users.length) continue;
     out.push({ key, day: seq[0].day, channel: seq[0].channel, turns: seq, userTurns: users.length });
   }
-  out.sort((a, b) => a.day.localeCompare(b.day));
+  // 최신순(내림차순) — renderAllThreads가 maxChars 넘으면 뒤(과거)부터 잘라내도록. 예산이 부족해도
+  // 최근 데이터가 먼저 잘리는 일은 없게 한다(2026-09-30, 보존기간 30일로 늘리며 같이 정리).
+  out.sort((a, b) => b.day.localeCompare(a.day));
   return out;
 }
 
