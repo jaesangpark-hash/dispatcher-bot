@@ -195,11 +195,32 @@ async function _pivoUploadLarge(pid, episode, buffer, fileName, matchEpisode = t
   const { url, tok } = creds();
   const authHeaders = { Authorization: `Bearer ${tok}`, "X-Confirm-Mutation": "I-UNDERSTAND-PROD", "Content-Type": "application/json" };
   const base = `${url}/api/v1/pivo/${encodeURIComponent(pid)}/episodes/${encodeURIComponent(episode)}/source-files`;
+  // 게이트웨이 앞 Cloudflare가 간헐적으로 502/504를 뱉는다(2026-09-30 실사고: 460MB 파일을 다 받아놓고
+  // upload-init 502 하나로 통째로 날렸다). 5xx·타임아웃은 일시 장애로 보고 잠깐 쉬었다 다시 친다.
+  // 4xx(권한·검증 오류)는 다시 쳐도 같은 답이므로 즉시 던진다.
   const post = async (path, body, ms) => {
-    const r = await fetch(`${base}/${path}`, { method: "POST", headers: authHeaders, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
-    const text = await r.text();
-    if (!r.ok) throw new Error(`TOTUS ${path} ${r.status}: ${text.slice(0, 500)}`);
-    try { return JSON.parse(text); } catch { return text; }
+    let lastErr;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const r = await fetch(`${base}/${path}`, { method: "POST", headers: authHeaders, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
+        const text = await r.text();
+        if (!r.ok) {
+          const err = new Error(`TOTUS ${path} ${r.status}: ${text.slice(0, 500)}`);
+          if (r.status < 500) throw err;          // 4xx는 재시도 의미 없음
+          lastErr = err;
+        } else {
+          try { return JSON.parse(text); } catch { return text; }
+        }
+      } catch (e) {
+        if (/TOTUS .* [4]\d\d:/.test(String(e?.message))) throw e;
+        lastErr = e;
+      }
+      if (attempt < 3) {
+        console.warn(`[totus-upload] ${path} 실패(${attempt}/3) — ${String(lastErr?.message ?? lastErr).slice(0, 120)}`);
+        await new Promise((r) => setTimeout(r, attempt * 3000));
+      }
+    }
+    throw lastErr;
   };
 
   // 1. upload-init
