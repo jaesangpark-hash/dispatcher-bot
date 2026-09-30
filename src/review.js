@@ -71,6 +71,16 @@ async function tasksForEpisode(projectUuid, episode) {
 }
 
 // 파일내순서 0/감소 시 페이지++ (빈 박스로 0이 빠져도 견고). 텍박=파일내순서+1 (1-based, 빈박스 자리 보존)
+// ★번역문은 두 필드로 온다(2026-09-30 실측).
+//   번역문원본 — 에디터에 입력된 그대로. 대사박스 줄바꿈이 살아 있다.
+//   번역문     — 그 줄바꿈을 공백으로 바꿔놓은 값.
+// 추출물은 에디터와 같아야 하므로 원본을 쓰고, 빈 경우에만 번역문으로 떨어진다
+// (PV-206948 1화 151건 중 92건이 이 차이 — 예전엔 줄바꿈이 통째로 사라진 채 나갔다).
+export function targetText(x) {
+  const orig = String(x?.번역문원본 ?? "");
+  return (orig !== "" ? orig : String(x?.번역문 ?? "")).replace(/\r\n?/g, "\n");
+}
+
 function buildPairs(arr) {
   let page = 0, prev = null; const out = [];
   for (const x of arr) {
@@ -79,7 +89,7 @@ function buildPairs(arr) {
     out.push({
       pb: `${page}-${(x.파일내순서 ?? 0) + 1}`,
       src: String(x.원문 ?? ""),
-      tgt: String(x.번역문 ?? ""),
+      tgt: targetText(x),
     });
   }
   return out;
@@ -198,7 +208,7 @@ export async function extractEpisodeRange({ pivo = null, projectName = null, fro
     }
     if (!picked) { missing.push({ episode: ep, reason: "텍스트 있는 단계 없음" }); continue; }
     for (const x of picked.arr) {
-      rows.push([proj.uuid, proj.name, jobIndex ?? "", jobName ?? "", x.파일명 ?? "", x.파일내순서 ?? "", String(x.번역문 ?? "")]);
+      rows.push([proj.uuid, proj.name, jobIndex ?? "", jobName ?? "", x.파일명 ?? "", x.파일내순서 ?? "", targetText(x)]);
     }
     for (const p of buildPairs(picked.arr)) {
       const [page, tb] = p.pb.split("-");

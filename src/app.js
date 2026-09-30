@@ -2027,12 +2027,63 @@ function makeTextExportJob({ pivo, projectName, from, to, stage, label, ctx, acc
 // QA 대조(원문/번역문) 참조 시트 — 작품별 탭에 0~20화 초도 텍스트를 CSV와 같은 형태로 반영. 게이트 없이 바로 실행.
 const QA_REFERENCE_SHEET_ID = "1S-uVQHqkiXFT9QOq7GO8RJHrz1xqb7Fw22sJZwB0grk";
 const QA_REFERENCE_HEADER = ["project_uuid", "project_name", "화수", "JOB명", "페이지번호", "텍박번호", "원문", "번역문"];
+// 추출 텍스트를 xlsx로. 실패하면 null을 돌려주고 호출부가 CSV로 떨어진다.
+// 열: 화수 / JOB명 / 페이지 / 텍박 / 원문 / 번역문 (sheetRows에서 project_uuid·project_name 2열은 뺀다)
+async function buildTextXlsx(sheetRows) {
+  if (!Array.isArray(sheetRows) || !sheetRows.length) return null;
+  try {
+    const aoa = [["화수", "JOB명", "페이지", "텍박", "원문", "번역문"],
+      ...sheetRows.map((r) => [r[2], r[3], r[4], r[5], r[6], r[7]])];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = [{ wch: 6 }, { wch: 22 }, { wch: 7 }, { wch: 6 }, { wch: 46 }, { wch: 46 }];
+    ws["!freeze"] = { xSplit: 0, ySplit: 1 };
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "번역문");
+    const raw = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+    return { buf: await patchWrapText(raw), ext: "xlsx" };
+  } catch (e) {
+    console.error("[text-export] xlsx 생성 실패 — CSV로 대체:", e?.message ?? e);
+    return null;
+  }
+}
+
+// SheetJS 커뮤니티판은 스타일을 못 쓴다 — 쓰고 나서 ZIP 안 XML만 손봐 자동 줄바꿈을 켠다.
+// (xlsxRowHeight.js의 행 높이 패치와 같은 방식. 전체 재작성이 아니라 해당 태그만 건드린다.)
+async function patchWrapText(buffer) {
+  try {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(buffer);
+    const stylePath = "xl/styles.xml";
+    let styles = await zip.file(stylePath).async("string");
+    const m = styles.match(/<cellXfs count="(\d+)">/);
+    if (!m) return buffer;
+    const idx = Number(m[1]);                       // 새로 추가할 xf의 인덱스 = 기존 개수
+    styles = styles
+      .replace(/<cellXfs count="\d+">/, `<cellXfs count="${idx + 1}">`)
+      .replace("</cellXfs>", `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf></cellXfs>`);
+    zip.file(stylePath, styles);
+    for (const p of Object.keys(zip.files).filter((f) => /^xl\/worksheets\/sheet\d+\.xml$/.test(f))) {
+      let xml = await zip.file(p).async("string");
+      xml = xml.replace(/<c ([^>]*?)(\/?)>/g, (full, attrs, selfClose) =>
+        / s="/.test(attrs) ? full : `<c ${attrs.trim()} s="${idx}"${selfClose}>`);
+      zip.file(p, xml);
+    }
+    return await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  } catch (e) {
+    console.error("[text-export] wrapText 패치 실패 — 서식 없이 내보냄:", e?.message ?? e);
+    return buffer;
+  }
+}
+
 async function uploadTextCsv(ctx, { work, pivo, of, to, csv, missing, sheetRows = [] }) {
   const rows = Math.max(0, String(csv || "").split("\n").length - 1);
   if (!rows) { await workerPost(ctx, `⚠️ ${work} ${of}~${to}화: 추출된 텍스트가 없어요${missing.length ? ` (누락 ${missing.length}화)` : ""}`); return; }
   const title = `PIVO_${pivo || "?"}_${of}-${to}화_텍스트`.replace(/[\\/:*?"<>|]/g, "_");
   const missingNote = missing.length ? `\n누락 ${missing.length}화: ${missing.map((m) => `${m.episode}(${m.reason})`).join(", ")}` : "";
-  await ctx.client.files.uploadV2({ channel_id: ctx.channel, thread_ts: ctx.threadTs || ctx.ts, initial_comment: `📄 ${work} ${of}~${to}화 텍스트 (${rows}행)${missingNote}`, file_uploads: [{ file: Buffer.from(csv, "utf8"), filename: `${title}.csv` }] });
+  // ★CSV로 주면 셀 안 줄바꿈이 Excel에서 안 보인다(자동 줄바꿈이 꺼진 채 열림) — xlsx로 만들어 wrapText까지 켜서 준다.
+  // exceljs가 없는 환경(설치 누락)에서도 죽지 않게 동적 import + CSV 폴백.
+  const file = (await buildTextXlsx(sheetRows)) || { buf: Buffer.from(csv, "utf8"), ext: "csv" };
+  await ctx.client.files.uploadV2({ channel_id: ctx.channel, thread_ts: ctx.threadTs || ctx.ts, initial_comment: `📄 ${work} ${of}~${to}화 텍스트 (${rows}행)${missingNote}`, file_uploads: [{ file: file.buf, filename: `${title}.${file.ext}` }] });
   const ofN = parseInt(of, 10), toN = parseInt(to, 10);
   if ((ofN === 0 || ofN === 1) && toN === 20 && sheetRows.length) {
     try {
