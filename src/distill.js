@@ -159,6 +159,83 @@ function renderThreads(threads, maxThreads, maxChars) {
   return out.join("\n\n");
 }
 
+// ── 후속행동 패턴 스캔 — 하루가 아니라 최근 N일 전체를 훑는다 ──────────────
+// 배경(2026-09-30): 기존 runDistill은 '하루치'만 보므로, "이 포맷이 오면 항상 저걸 한다" 같은
+//   패턴이 하루에 한두 번씩 띄엄띄엄(여러 날에 걸쳐) 나타나면 하루 배치 안에서는 반복이 안 잡혀서
+//   후보로 못 올라온다(예: 'PIVO 납품' 리스트 붙여넣기 → 검수 시작 — 2주에 걸쳐 6~7번 나왔지만
+//   하루엔 한 번뿐이었음, 수동 로그 조사로 발견). 그래서 '후속행동'류만 따로, 날짜 단위가 아니라
+//   보존 기간(KEEP_DAYS) 전체를 한 번에 넣어 주 1회(월요일 등) 스캔한다.
+const FOLLOWUP_SYS = [
+  "너는 툰식이(중일 PM 보조 에이전트)의 '후속행동 패턴 스캐너'다. 최근 2주치 대화 전체를 읽고,",
+  "**특정 형태·내용의 메시지가 오면 재상 님이 거의 항상 이어서 요구하는 것**만 찾는다.",
+  "★너에겐 도구가 없다. 아무것도 실행·변경·발송할 수 없고 텍스트만 낸다. 규칙 채택은 재상 님이 한다.",
+  "",
+  "찾을 것: 서로 다른 날짜의 여러 스레드에 걸쳐 **같은 트리거 형태 → 같은 후속 요구**가 반복되는 패턴.",
+  "예: 'NNNNNN | [출판사] 작품 / 회차 PIVO 납품' 리스트가 올라오면 매번 그 작품들 검수로 이어짐.",
+  "한 스레드 안에서 한 번 정정된 것은 대상이 아니다(그건 매일 도는 대화 증류가 이미 처리) — 반드시",
+  "**여러 날에 걸쳐 최소 3번 이상** 같은 트리거→같은 요구가 나온 것만 후보로 올려라.",
+  "",
+  "규칙은 '트리거를 이렇게 인식하면, 되묻지 말고 이 행동을 하라'는 한 문장 명령형으로 쓴다.",
+  "확신이 없거나 반복 횟수가 부족하면 비운다 — 빈 배열이 정상이다.",
+  "",
+  '출력은 JSON만: {"candidates":[{"kind":"후속행동","rule":"<한 문장>","why":"<반복 확인된 스레드 요약, 며칠에 몇 번인지>"}]}',
+].join("\n");
+
+function renderAllThreads(threads, maxThreads, maxChars) {
+  const out = [];
+  let used = 0;
+  for (const t of threads.slice(0, maxThreads)) {
+    const body = t.turns.map((r) => `${r.role === "user" ? "재상" : "툰식이"}: ${r.text}`).join("\n");
+    const blk = `--- 대화 (${t.day} · 채널 ${t.channel} · 사용자 ${t.userTurns}턴) ---\n${body}`;
+    if (used + blk.length > maxChars) break;
+    out.push(blk); used += blk.length;
+  }
+  return out.join("\n\n");
+}
+
+// 보존 기간 전체(KEEP_DAYS)의 스레드를 모아 반환 — threadsOfDay와 동일 그룹핑을 날짜 무관하게.
+export function threadsOfWindow(keepDays = KEEP_DAYS) {
+  let lines = [];
+  try { lines = fs.readFileSync(TURNS, "utf8").split("\n"); } catch { return []; }
+  const cutoff = new Date(Date.now() - keepDays * 86400000).toISOString();
+  const rows = [];
+  for (const l of lines) { if (!l.trim()) continue; try { const r = JSON.parse(l); if (r.at >= cutoff) rows.push(r); } catch {} }
+  const by = new Map();
+  for (const r of rows) {
+    const key = `${r.day}|${r.channel}|${r.thread || "-"}`;
+    if (!by.has(key)) by.set(key, []);
+    by.get(key).push(r);
+  }
+  const out = [];
+  for (const [key, seq] of by) {
+    const users = seq.filter((r) => r.role === "user");
+    if (!users.length) continue;
+    out.push({ key, day: seq[0].day, channel: seq[0].channel, turns: seq, userTurns: users.length });
+  }
+  out.sort((a, b) => a.day.localeCompare(b.day));
+  return out;
+}
+
+export async function runFollowupScan({ model, maxThreads = 200, maxChars = 60000, known = [] }) {
+  const threads = threadsOfWindow(KEEP_DAYS);
+  if (!threads.length) return { skipped: "대화 없음", threads: 0 };
+  const body = renderAllThreads(threads, maxThreads, maxChars);
+  const knownBlk = known.length ? `\n\n[이미 학습된 규칙 — 같은 내용은 다시 올리지 마라]\n${known.map((k) => "- " + k).join("\n")}` : "";
+  const prompt = `[최근 ${KEEP_DAYS}일 대화 전체]\n${body}${knownBlk}\n\n위 기준으로 후속행동 패턴 후보를 JSON으로만 출력하라.`;
+  const q = query({ prompt, options: { model, systemPrompt: FOLLOWUP_SYS, strictMcpConfig: true, allowedTools: [] } });
+  let buf = "";
+  for await (const m of q) {
+    if (m.type === "assistant") { for (const b of m.message?.content || []) if (b.type === "text" && b.text) buf += b.text; }
+    else if (m.type === "result") { buf = (m.result || buf || "").trim(); break; }
+  }
+  let parsed = null;
+  const s = buf.replace(/```json|```/g, "").trim();
+  try { parsed = JSON.parse(s); } catch { const mm = s.match(/\{[\s\S]*\}/); if (mm) { try { parsed = JSON.parse(mm[0]); } catch {} } }
+  const cands = Array.isArray(parsed?.candidates) ? parsed.candidates : [];
+  const added = addCandidates(cands, kstDay());
+  return { threads: threads.length, proposed: cands.length, added: added.length, items: added };
+}
+
 export async function runDistill({ model, day, maxThreads = 12, maxChars = 24000, known = [] }) {
   const threads = threadsOfDay(day);
   if (!threads.length) return { skipped: "대화 없음", day, threads: 0 };

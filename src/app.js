@@ -36,7 +36,7 @@ import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot,
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock } from "./learned.js";
-import { recordTurn, recordReply, runDistill, dueDailyDistill, listCandidates, setCandidateStatus, pruneTurns, kstDay as distillDay } from "./distill.js";
+import { recordTurn, recordReply, runDistill, runFollowupScan, dueDailyDistill, listCandidates, setCandidateStatus, pruneTurns, kstDay as distillDay } from "./distill.js";
 import { scanFirstDeliveryQA, formatFirstDeliveryQA, customerQaStatus } from "./firstDeliveryQA.js";
 import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode, deliveryReconcile, dailyCheckList, koTitlesByCommonNo } from "./schedule.js";
 import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText, findUndelivered } from "./deliveryNotice.js";
@@ -1607,6 +1607,39 @@ async function checkDailyDistill() {
     if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: lines.join("\n"), ...SENDER });
     console.log(`[distill] ${day} 후보 ${r.added}건 발송 (스레드 ${r.threads}, 제안 ${r.proposed})`);
   } catch (e) { console.error("[distill] 실패:", e?.message ?? e); }
+}
+
+// ── 후속행동 패턴 주간 스캔(2026-09-30) ──────────────────────────
+// 대화 증류는 '하루치'만 보는데, "이 포맷이 오면 항상 저걸 한다" 같은 패턴은 하루에 한 번씩만
+// 띄엄띄엄 나타나 하루 배치 안에서는 반복이 안 잡힌다(★실제 사례: 'PIVO 납품' 리스트 붙여넣기
+// → 검수 시작이 2주에 걸쳐 6~7번 반복됐지만 수동 로그 조사로만 발견됨). 그래서 최근 2주 전체를
+// 한 번에 넣어 주 1회 스캔한다. 후보 저장·승인 흐름은 대화 증류와 완전히 공유(list/approve/reject
+// 도구 그대로).
+const FOLLOWUP_SCAN_HOUR = Number(process.env.FOLLOWUP_SCAN_HOUR ?? 11);   // 오전 11시(KST, KP FB 10시와 안 겹치게)
+const FOLLOWUP_SCAN_DOW = Number(process.env.FOLLOWUP_SCAN_DOW ?? 1);      // 1=월요일
+async function checkWeeklyFollowupScan() {
+  try {
+    if (!BRAIN_ON) return;
+    const kst = new Date(Date.now() + 9 * 3600 * 1000);
+    if (kst.getUTCDay() !== FOLLOWUP_SCAN_DOW) return;
+    if (kstHourNow() < FOLLOWUP_SCAN_HOUR) return;
+    const today = kstDateOf();
+    let state = {};
+    try { state = JSON.parse(readFileSync("data/followup-scan-run.json", "utf8")); } catch { /* 첫 실행 */ }
+    if (state.lastDate === today) return;
+    state.lastDate = today;
+    try { writeFileSync("data/followup-scan-run.json", JSON.stringify(state)); } catch { /* 무시 */ }
+
+    const known = listLearned().map((x) => x.text);
+    const r = await runFollowupScan({ model: DISPATCHER_MODEL, known });
+    if (r.skipped || !r.added) { console.log(`[followup-scan] ${today} — ${r.skipped || `제안 ${r.proposed || 0} / 신규 0`}`); return; }
+    const lines = [`🔁 *최근 2주 후속행동 패턴 후보 ${r.added}건* — 스레드 ${r.threads}개 검토`];
+    for (const it of r.items) lines.push(`\n*${it.id}. [${it.kind}]* ${it.rule}\n   _근거: ${it.why}_`);
+    lines.push(`\n채택하려면 「${r.items[0].id}번 채택」, 버리려면 「${r.items[0].id}번 버려」라고 말해주세요.`);
+    const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID });
+    if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: lines.join("\n"), ...SENDER });
+    console.log(`[followup-scan] ${today} 후보 ${r.added}건 발송 (스레드 ${r.threads}, 제안 ${r.proposed})`);
+  } catch (e) { console.error("[followup-scan] 실패:", e?.message ?? e); }
 }
 
 // 버튼 초안 저장소 만료분 정리 — 하루 1회. 로드 시점에도 한 번 돌지만, 봇이 며칠씩 안 꺼지면
@@ -8005,7 +8038,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkWeeklyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
