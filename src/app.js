@@ -4499,6 +4499,15 @@ function startSession() {
         } else if (ctx?.client) {
           const out = (m.is_error && isRateLimit(text)) ? "지금 사용량 한도라 처리를 못 했어요 😢 잠시(1~2분) 뒤 다시 보내주세요." : text;
           deliver(ctx, out).catch((e) => console.error("[brain] 응답 전송 실패:", e?.message));
+          // ★툰식이가 사람 말에 실제로 답한 채널 스레드만 등록한다 — 이후 그 스레드의 후속 댓글은 멘션 없이
+          // 받는다(2026-09-30). 자동 링크 같은 선제 발송으로는 등록하지 않는다(그 경로에서 오작동 있었음).
+          // DM(D…)은 원래 멘션 없이 받으므로 대상 아님. 에러 응답도 대화로 치지 않는다.
+          try {
+            const chId = String(ctx.channel || "");
+            if (!m.is_error && /^C/.test(chId) && (ctx.threadTs || ctx.ts)) {
+              botThreadWatch.set(`${chId}|${ctx.threadTs || ctx.ts}`, { createdAt: Date.now() });
+            }
+          } catch (e) { console.error("[thread-watch] 등록 실패:", e?.message ?? e); }
         }
         if (turnResolve) { const r = turnResolve; turnResolve = null; r(); }   // 다음 턴 진행 허용
       }
@@ -4638,7 +4647,9 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
       lines.push(`⚠️ *${hit.publisher}* 소속 — 원본 관련 이슈는 내부에서 조용히 처리해도 고객사에 개별 보고 대상이에요(재수급까지 안 가는 사소한 작화/스토리 건도 포함). 잊지 말고 공유하세요.`);
     }
     await client.chat.postMessage({ channel, thread_ts: threadTs || ts, text: lines.join("\n"), ...SENDER, unfurl_links: false });
-    botThreadWatch.set(`${channel}|${threadTs || ts}`, { createdAt: Date.now(), koTitle: hit.koTitle });
+    // ★여기서 스레드를 등록하지 않는다(2026-09-30 재상 님 지정). 이 답글은 대화가 아니라 선제 링크 투척이라,
+    // 등록해버리면 사람이 툰식이를 부른 적도 없는 스레드의 작업자↔APM 대화에까지 끼어든다(실사고: 재수급
+    // 완료 보고 "납품일 확인 부탁 드립니다"에 툰식이가 답해버림). 등록은 브레인이 실제로 사람에게 답했을 때만.
     console.log(`[worklink] ${hit.koTitle} → 프로젝트${wantSrc ? "+원본" : ""} (ch=${channel})`);
     // 문의봇 구조화 재수급 요청이면 → 고객사 보낼 일본어 재수급 초안(복붙용)도 자동 첨부
     if (/재수급\s*사유\s*[:：]/.test(text)) {
