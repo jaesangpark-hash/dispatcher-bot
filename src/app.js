@@ -3451,7 +3451,8 @@ const apmTools = createSdkMcpServer({
           if (useAttached) {
             // ① 이 메시지에 직접 첨부된 파일(들)을 그대로 소스로 사용 — 드라이브 탐색 생략.
             if (attachedList.length !== pages.length) return { content: [{ type: "text", text: JSON.stringify({ error: `첨부된 ${file_type || "psd"} 파일이 ${attachedList.length}개인데 page는 ${pages.length}개 줬어 — 개수를 맞춰서(첨부 순서대로 콤마 목록) 다시 호출해야 해. 몇 페이지인지 불확실하면 추측하지 말고 사용자에게 물어라.` }) }] };
-            for (const f of attachedList) {
+            for (const [fi, f] of attachedList.entries()) {
+              setPlaceholder(currentCtx, `⏳ 첨부 파일 받는 중… (${fi + 1}/${attachedList.length}) \`${f.name}\``);
               const dlRes = await fetch(f.url, { headers: { Authorization: `Bearer ${SLACK_BOT_TOKEN}` }, signal: AbortSignal.timeout(600000) });
               if (!dlRes.ok) return { content: [{ type: "text", text: JSON.stringify({ error: `첨부 파일(${f.name}) 다운로드 실패: HTTP ${dlRes.status} (files:read 스코프/봇 채널 멤버십 확인 필요할 수 있음)` }) }] };
               items.push({ name: f.name, buffer: Buffer.from(await dlRes.arrayBuffer()) });
@@ -3494,6 +3495,8 @@ const apmTools = createSdkMcpServer({
               return { content: [{ type: "text", text: JSON.stringify({ found: false, reason: found.reason, candidates: candidateNames, msg: "드라이브에서 자동으로 확정 못 했어. 후보 목록을 사용자에게 그대로 보여주고 확인받아야 해." }) }] };
             }
             // 실제 바이트 다운로드(서명URL은 20분 내외로 짧게 만료되니 바로 받는다)
+            // 수백MB면 몇 분 걸린다 — 그동안 "처리 중…"만 떠 있어 멈춘 줄 알았다는 피드백(2026-10-01).
+            setPlaceholder(currentCtx, `⏳ 드라이브에서 \`${found.name}\` 받는 중… 용량이 크면 1~2분 걸려요`);
             const dlRes = await fetch(found.url, { signal: AbortSignal.timeout(600000) });
             if (!dlRes.ok) return { content: [{ type: "text", text: JSON.stringify({ error: `드라이브 파일 다운로드 실패: HTTP ${dlRes.status}` }) }] };
             items.push({ name: found.name, buffer: Buffer.from(await dlRes.arrayBuffer()) });
@@ -4484,6 +4487,40 @@ async function toAttachmentBlocks(files, cap = 6) {
   return { blocks, texts };
 }
 
+
+// "처리 중…" 자리표시자를 '지금 무슨 일을 하는지 + 경과 시간'으로 갱신한다(2026-10-01).
+// 긴 작업에서 몇 분씩 "처리 중…"만 떠 있어 살아 있는지도 알 수 없었다.
+const TOOL_LABEL = {
+  transfer_kuaikan_files: "원본 이관", propose_original_reupload: "원본 재업로드 준비",
+  fetch_original_from_drive: "드라이브에서 원본 받는 중", check_original_source_files: "원본 파일 확인",
+  get_source_files: "원본 목록 조회", get_file_order: "파일 순서 확인", check_and_fix_file_order: "파일 순서 점검",
+  review_episode: "번역 검수", review_queue: "검수 큐에 등록", export_translation_text_range: "번역 텍스트 추출",
+  totus_delivery_date: "납품예정일 조회", propose_totus_delivery_edit: "납품예정일 변경 준비",
+  get_delivery_date: "납품일 조회", propose_delivery_edit: "납품일 변경 준비",
+  totus_product_price: "매출 단가 조회", propose_totus_price_edit: "매출 단가 변경 준비",
+  query_schedule: "스케줄 시트 조회", query_sheet: "시트 조회", read_tab: "시트 읽는 중",
+  get_work_info: "작품 정보 조회", get_project_url: "프로젝트 링크 조회", get_editor_url: "에디터 링크 조회",
+  send_message: "메시지 초안 준비", share_feedback: "피드백 공유 준비", propose_retake: "리테이크 초안 준비",
+  propose_setjip_request: "설정집 요청 준비", run_setjip_review: "설정집 검수", compute: "계산 중",
+  delegate_analysis: "분석 맡기는 중", find_thread: "스레드 찾는 중", read_thread: "스레드 읽는 중",
+};
+// 특정 상황을 직접 써넣을 때(다운로드처럼 몇 분 걸리는 구간). 쓰로틀 없이 바로 바꾼다.
+function setPlaceholder(ctx, text) {
+  try { if (ctx?.client && ctx.placeholderTs) ctx.client.chat.update({ channel: ctx.channel, ts: ctx.placeholderTs, text }).catch(() => {}); } catch { /* 무시 */ }
+}
+const _phLast = new WeakMap();   // ctx → 마지막 갱신 시각(슬랙 호출을 아끼려고 3초 쓰로틀)
+function touchPlaceholder(ctx, toolName) {
+  try {
+    if (!ctx?.client || !ctx.placeholderTs) return;
+    const now = Date.now();
+    if (now - (_phLast.get(ctx) || 0) < 3000) return;
+    _phLast.set(ctx, now);
+    const label = TOOL_LABEL[toolName] || "작업 중";
+    const sec = ctx.startedAt ? Math.round((now - ctx.startedAt) / 1000) : 0;
+    ctx.client.chat.update({ channel: ctx.channel, ts: ctx.placeholderTs, text: `⏳ ${label}… (${sec}초)` }).catch(() => {});
+  } catch { /* 자리표시자 갱신 실패는 본 작업과 무관 */ }
+}
+
 function startSession() {
   const learnedBlk = learnedPromptBlock();   // 재상 님이 가르친 규칙 — 부팅마다 시스템 프롬프트에 주입(재기동 유지)
   const sysPrompt = learnedBlk ? [...DISPATCHER_PROMPT, learnedBlk] : DISPATCHER_PROMPT;
@@ -4519,7 +4556,11 @@ function startSession() {
       if (m.type === "assistant") {
         for (const b of m.message?.content || []) {
           if (b.type === "text" && b.text) buf += b.text;
-          else if (b.type === "tool_use" && b.name) turnTools.add(String(b.name).replace(/^mcp__[^_]+__/, ""));
+          else if (b.type === "tool_use" && b.name) {
+            const tn = String(b.name).replace(/^mcp__[^_]+__/, "");
+            turnTools.add(tn);
+            touchPlaceholder(currentTurn?.ctx, tn);   // "처리 중…" → 지금 뭘 하는지로 바꿔준다
+          }
         }
       } else if (m.type === "result") {
         const ctx = currentTurn?.ctx;            // 지금 처리 중인 그 턴의 자리 (도착순 FIFO 추측 아님)
