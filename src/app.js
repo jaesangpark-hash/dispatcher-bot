@@ -7657,11 +7657,12 @@ async function checkPendingFinalize() {
 // 페이지를 일부만 올린 경우도 건너뛴다 — 회차 전체가 아닌데 순서를 확정하면 나머지를 올릴 때 꼬인다.
 async function _finalizeTransferEpisodes({ pivo, work, episodes, allFileIds, allWarns, partialUpload, channel, threadTs }) {
   if (!allFileIds.length) return;
-  if (partialUpload) {
-    allWarns.push("ℹ️ 페이지를 일부만 올려서 소스그룹 확정은 건너뛰었어요 — 회차를 다 올린 뒤 확정하세요");
-    return;
-  }
-  if (allWarns.some((w) => w.includes("전처리"))) {
+  // ★페이지를 일부만 올려도 전처리 추적·소스그룹 확정까지 간다(2026-10-01 재상 님 지정).
+  // 예전엔 여기서 건너뛰어, 1페이지만 올린 건은 전처리가 끝나도 아무 알림이 없고 확정도 사람 몫이었다.
+  // ★이 판정은 아래 안내문을 넣기 전에 해야 한다 — 안내문에 "전처리"가 들어가면 자기 자신에 걸린다.
+  const preprocPending = allWarns.some((w) => w.includes("전처리"));
+  if (partialUpload) allWarns.push("ℹ️ 페이지 일부만 올린 건이지만 소스그룹 확정까지 진행해요");
+  if (preprocPending) {
     if (queueFinalizeRetry({ pivo, work, episodes: [...new Set(episodes)], fileIds: allFileIds, channel, threadTs })) {
       allWarns.push(`ℹ️ 전처리가 끝나면 소스그룹을 확정할게요 — ${FINALIZE_FIRST_MS / 60000}분 뒤부터 ${FINALIZE_RETRY_MS / 60000}분 간격으로 최대 ${FINALIZE_MAX_TRIES}번 확인하고 결과를 이 스레드에 알려드릴게요`);
     } else {
