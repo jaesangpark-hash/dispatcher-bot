@@ -4505,6 +4505,18 @@ const TOOL_LABEL = {
   delegate_analysis: "분석 맡기는 중", find_thread: "스레드 찾는 중", read_thread: "스레드 읽는 중",
 };
 // 특정 상황을 직접 써넣을 때(다운로드처럼 몇 분 걸리는 구간). 쓰로틀 없이 바로 바꾼다.
+// 전처리 상태 응답 해석(2026-10-01). meta.전체파일수가 0이면 "진행 중"이 아니라 **기록 자체가 없음**이다.
+// 실측: 어떤 fileId를 넣어도 빈 배열이 오는데 TOTUS에선 전처리가 끝나 있다(PV-190819 38화).
+// 이걸 진행 중으로 보면 재시도만 15분 헛돌다 실패로 끝난다 → unknown으로 갈라 한 번만 알리고 멈춘다.
+function readPreprocess(s) {
+  const m = s?.meta;
+  if (!m) return { unknown: true };
+  if (Number(m.전체파일수) === 0 && Number(m.요청파일수) > 0) return { unknown: true };
+  if (m.오류있음) return { error: true };
+  if (m.전체완료) return { done: true };
+  return { pending: true };
+}
+
 function setPlaceholder(ctx, text) {
   try { if (ctx?.client && ctx.placeholderTs) ctx.client.chat.update({ channel: ctx.channel, ts: ctx.placeholderTs, text }).catch(() => {}); } catch { /* 무시 */ }
 }
@@ -7583,8 +7595,10 @@ async function _handleResupplyAutoTransfer({ message, client }) {
       while (Date.now() - start < maxWait) {
         await new Promise(r => setTimeout(r, 30000));
         const s = await getPreprocessingStatus(allFileIds).catch(() => null);
-        if (s?.meta?.오류있음) { preprocessWarn = "\n⚠️ 전처리 오류 발생 — 수동 확인 필요"; break; }
-        if (s?.meta?.전체완료) { ppDone = true; break; }
+        const pp = readPreprocess(s);
+        if (pp.unknown) { preprocessWarn = "\nℹ️ 전처리 상태를 조회할 수 없어요(게이트웨이가 기록을 안 줌) — TOTUS에서 직접 확인해주세요"; break; }
+        if (pp.error) { preprocessWarn = "\n⚠️ 전처리 오류 발생 — 수동 확인 필요"; break; }
+        if (pp.done) { ppDone = true; break; }
       }
       if (!ppDone && !preprocessWarn) preprocessWarn = "\n⚠️ 전처리 확인 시간 초과 — 수동 확인 필요";
     }
@@ -7682,11 +7696,13 @@ async function checkPendingFinalize() {
   for (const [key, j] of [...pendingFinalize.entries()]) {
     if (now < (j.nextAt || 0)) continue;
     const tries = (j.tries || 0) + 1;
-    let done = false, reason = "";
+    let done = false, reason = "", unknownStatus = false;
     try {
       const s = await getPreprocessingStatus(j.fileIds).catch(() => null);
-      if (s?.meta?.오류있음) reason = "전처리 오류";
-      else if (!s?.meta?.전체완료) reason = "전처리 진행 중";
+      const pp = readPreprocess(s);
+      if (pp.unknown) { unknownStatus = true; reason = "전처리 상태 조회 불가"; }
+      else if (pp.error) reason = "전처리 오류";
+      else if (!pp.done) reason = "전처리 진행 중";
       else {
         const warns = [];
         await _finalizeTransferEpisodes({ pivo: j.pivo, episodes: j.episodes, allFileIds: j.fileIds, allWarns: warns, partialUpload: false });
@@ -7699,6 +7715,13 @@ async function checkPendingFinalize() {
       pendingFinalize.delete(key);
       await app.client.chat.postMessage({ channel: j.channel, thread_ts: j.threadTs, ...SENDER,
         text: `✅ *${j.work}* ${_epText(j.episodes)} 전처리가 끝나 소스그룹 확정까지 마쳤어요.` }).catch(() => {});
+      continue;
+    }
+    // 상태 자체를 못 읽는 건 기다린다고 달라지지 않는다 — 재시도 없이 한 번만 알리고 큐에서 뺀다(2026-10-01).
+    if (unknownStatus) {
+      pendingFinalize.delete(key);
+      await app.client.chat.postMessage({ channel: j.channel, thread_ts: j.threadTs, ...SENDER,
+        text: `ℹ️ *${j.work}* ${_epText(j.episodes)} 전처리 상태를 조회할 수 없어 소스그룹 확정은 건너뛰었어요 — TOTUS에서 직접 확인해주세요.` }).catch(() => {});
       continue;
     }
     if (tries >= FINALIZE_MAX_TRIES) {
@@ -8116,8 +8139,10 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
     if (!skipPreprocessing && allFileIds.length) {
       const s = await getPreprocessingStatus(allFileIds).catch((e) => { console.error("[transfer] 전처리 상태 조회 실패:", e?.message); return null; });
       console.log("[transfer] 전처리 1차 확인:", JSON.stringify(s?.meta));
-      if (s?.meta?.오류있음) allWarns.push("⚠️ 전처리 오류 발생");
-      else if (!s?.meta?.전체완료) allWarns.push("⏳ 전처리 진행 중");
+      const pp = readPreprocess(s);
+      if (pp.unknown) allWarns.push("ℹ️ 전처리 상태를 조회할 수 없어요 — TOTUS에서 직접 확인해주세요");
+      else if (pp.error) allWarns.push("⚠️ 전처리 오류 발생");
+      else if (!pp.done) allWarns.push("⏳ 전처리 진행 중");
     } else {
       console.log(`[transfer] 전처리 스킵: skipPreprocessing=${skipPreprocessing}, allFileIds.length=${allFileIds.length}`);
     }
