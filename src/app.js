@@ -4523,7 +4523,10 @@ function startSession() {
         }
       } else if (m.type === "result") {
         const ctx = currentTurn?.ctx;            // 지금 처리 중인 그 턴의 자리 (도착순 FIFO 추측 아님)
-        const text = (m.result || buf || "(브레인이 빈 응답을 반환했어)").trim();
+        // ★빈 응답이 정상인 경우가 있다 — 이관·링크·검수큐 같은 도구는 자기가 직접 슬랙에 올리고
+        // 모델에겐 "별도 응답 텍스트를 생성하지 말 것"이라고 지시한다. 그걸 "(브레인이 빈 응답을
+        // 반환했어)"로 띄워 오류처럼 보였다(2026-10-01). 빈 응답은 아래에서 상황에 맞게 처리한다.
+        const text = String(m.result || buf || "").trim();
         buf = "";
         const elapsed = ctx?.startedAt ? ((Date.now() - ctx.startedAt) / 1000).toFixed(1) : "?";
         console.log(`[brain] 응답 완료 (${elapsed}s, ${text.length}자${m.is_error ? ", is_error" : ""})`);
@@ -4532,6 +4535,7 @@ function startSession() {
           ? currentTurn.content
           : (currentTurn?.content || []).find((b) => b?.type === "text")?.text || "";
         const toolList = turnTools.size ? [...turnTools] : null;
+        const turnToolsSnapshot = new Set(turnTools);   // 아래 빈 응답 판정용(turnTools는 곧 초기화됨)
         // 상담·조언 턴만 답변 본문을 남긴다(단순 조회·실행은 제외, 애매하면 제외 — shouldKeepAnswer 참고)
         const res = shouldKeepAnswer(toolList, text.length) ? text.replace(/\s+/g, " ").trim().slice(0, 500) : null;
         // th: 스레드 식별자 — 한 상담이 여러 턴으로 이어질 때 채널+th로 하나의 대화로 묶는다
@@ -4548,15 +4552,23 @@ function startSession() {
           if (ctx?.placeholderTs) ctx.client.chat.update({ channel: ctx.channel, ts: ctx.placeholderTs, text: `⏳ 사용량 한도예요. ${Math.round(delay / 1000)}초 후 자동으로 다시 시도할게요… (${n}/${RL_BACKOFF.length})` }).catch(() => {});
           setTimeout(() => { queue.unshift({ content: rlTurn.content, ctx, _retry: n }); if (wake) { const w = wake; wake = null; w(); } }, delay);
         } else if (ctx?.client) {
-          const out = (m.is_error && isRateLimit(text)) ? "지금 사용량 한도라 처리를 못 했어요 😢 잠시(1~2분) 뒤 다시 보내주세요." : text;
-          deliver(ctx, out).catch((e) => console.error("[brain] 응답 전송 실패:", e?.message));
+          // 도구가 자기 메시지를 직접 올리는 턴이면 브레인은 말이 없는 게 정상 — 아무것도 올리지 않는다.
+          const SELF_POSTING = new Set(["transfer_kuaikan_files", "get_project_url", "get_editor_url", "review_queue",
+            "export_translation_text_range", "export_csv", "delegate_analysis", "check_and_fix_file_order"]);
+          const selfPosted = [...turnToolsSnapshot].some((t) => SELF_POSTING.has(t));
+          const out = (m.is_error && isRateLimit(text)) ? "지금 사용량 한도라 처리를 못 했어요 😢 잠시(1~2분) 뒤 다시 보내주세요."
+            : text || (selfPosted ? "" : "응답을 만들지 못했어요 😢 다시 한 번 말씀해주세요.");
+          if (out) deliver(ctx, out).catch((e) => console.error("[brain] 응답 전송 실패:", e?.message));
+          else { console.log("[brain] 빈 응답 — 도구가 직접 게시한 턴이라 전송 생략"); if (ctx?.placeholderTs) ctx.client.chat.delete({ channel: ctx.channel, ts: ctx.placeholderTs }).catch(() => {}); }
           // ★툰식이가 사람 말에 실제로 답한 채널 스레드만 등록한다 — 이후 그 스레드의 후속 댓글은 멘션 없이
           // 받는다(2026-09-30). 자동 링크 같은 선제 발송으로는 등록하지 않는다(그 경로에서 오작동 있었음).
           // DM(D…)은 원래 멘션 없이 받으므로 대상 아님. 에러 응답도 대화로 치지 않는다.
           try {
             const chId = String(ctx.channel || "");
             if (!m.is_error && /^C/.test(chId) && (ctx.threadTs || ctx.ts)) {
-              botThreadWatch.set(`${chId}|${ctx.threadTs || ctx.ts}`, { createdAt: Date.now() });
+              // user를 같이 적어둔다 — 이후 후속 댓글은 이 사람 것만 받는다.
+              // currentTurn은 이 블록 직전에 null로 비워지므로 캡처본(rlTurn)에서 꺼낸다.
+              botThreadWatch.set(`${chId}|${ctx.threadTs || ctx.ts}`, { createdAt: Date.now(), user: rlTurn?.user || null });
             }
           } catch (e) { console.error("[thread-watch] 등록 실패:", e?.message ?? e); }
         }
@@ -5310,7 +5322,14 @@ app.message(async ({ message, say, client }) => {
     //   지정) — 사람이 쓴 진짜 대화 댓글만(봇 메시지·수정 이벤트 제외), 스레드 답글(원글 자체는 제외)일 때만.
     const threadKey = message.thread_ts ? `${message.channel}|${message.thread_ts}` : null;
     const isReply = message.thread_ts && message.thread_ts !== message.ts;
-    if (!edited && !message.bot_id && isReply && threadKey && botThreadWatch.has(threadKey) && message.text) {
+    // ★멘션 없는 후속 대화는 **툰식이를 부른 그 사람**의 말만 받는다(2026-10-01).
+    // 전엔 등록된 스레드의 모든 사람 말을 받아, 작업자↔APM끼리 주고받는 대화에 끼어들었다
+    // (실사고: 재수급 채널에서 "원본이 ZIP이라 이미지로 전달드립니다"에 "처리 중…"을 띄움).
+    // THREAD_FOLLOWUP=off 로 기능 전체를 즉시 끌 수 있다(재배포 없이 .env만).
+    const twOwner = threadKey ? botThreadWatch.get(threadKey)?.user : null;
+    const followupOn = String(process.env.THREAD_FOLLOWUP ?? "on").toLowerCase() !== "off";
+    if (followupOn && !edited && !message.bot_id && isReply && threadKey && botThreadWatch.has(threadKey)
+        && message.text && twOwner && twOwner === message.user) {   // user가 안 적힌 옛 등록은 받지 않는다(안전쪽)
       await handle({
         text: message.text, channel: message.channel, ts: message.ts,
         threadTs: message.thread_ts, inThread: true,
