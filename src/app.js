@@ -35,7 +35,8 @@ import { orderModalView as wfoOrderModal, moveItem as wfoMove, editableRecords a
 import { addReminder, addScheduled, listReminders, completeReminder, dueNagSlot, listNagItems, dueScheduled } from "./reminders.js";
 import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
-import { addLearned, removeLearned, listLearned, learnedPromptBlock } from "./learned.js";
+import { addLearned, removeLearned, listLearned, learnedPromptBlock, learnedSignature, findSimilar } from "./learned.js";
+import { runLearnedAudit, formatAudit } from "./learnedAudit.js";
 import { recordTurn, recordReply, runDistill, runFollowupScan, dueDailyDistill, listCandidates, setCandidateStatus, pruneTurns, kstDay as distillDay } from "./distill.js";
 import { scanFirstDeliveryQA, formatFirstDeliveryQA, customerQaStatus } from "./firstDeliveryQA.js";
 import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode, deliveryReconcile, dailyCheckList, koTitlesByCommonNo } from "./schedule.js";
@@ -1709,6 +1710,34 @@ async function checkPendingPrune() {
 // 검수가 끝난 건만 에디터 링크와 함께 올린다. 시트에 날짜가 채워지면 자동으로 조용해진다.
 // 3시간 간격(재상 님 지정, 2026-09-23). 새벽 DM을 막으려고 업무시간 안에서만 슬롯을 돈다 → 10·13·16·19시.
 // EC2가 UTC라 시각 게이트는 반드시 kstHourNow()로 잡는다(19시 알림이 새벽 4시에 간 전례).
+// ── 학습 규칙 자가 정리(주 1회, 2026-10-05 재상 님 지시) ──────────────────────
+// 채택만 계속하면 규칙이 늘기만 하고 서로 부딪힌다. 주에 한 번 스스로 훑어 중복·상충·
+// 사문화된 것을 골라 DM으로 제안한다(제안만 — 지우는 건 재상 님 승인 뒤).
+const LEARNED_AUDIT_DOW = Number(process.env.LEARNED_AUDIT_DOW ?? 5);    // 0=일 … 5=금
+const LEARNED_AUDIT_HOUR = Number(process.env.LEARNED_AUDIT_HOUR ?? 17);
+async function checkLearnedAudit() {
+  try {
+    const k = new Date(Date.now() + 9 * 3600 * 1000);                     // EC2는 UTC — KST로 환산해서 본다
+    if (k.getUTCDay() !== LEARNED_AUDIT_DOW || kstHourNow() < LEARNED_AUDIT_HOUR) return;
+    const today = kstDateOf();
+    let state = {};
+    try { state = JSON.parse(readFileSync("data/learned-audit.json", "utf8")); } catch { /* 첫 실행 */ }
+    if (state.lastDate === today) return;
+
+    const items = listLearned();
+    const res = await runLearnedAudit({ model: DISPATCHER_MODEL, items });
+    state.lastDate = today;
+    try { writeFileSync("data/learned-audit.json", JSON.stringify(state)); } catch { /* 무시 */ }
+
+    if (res.skipped) { console.log(`[learned-audit] 건너뜀 — ${res.skipped}`); return; }
+    if (res.error) { console.error(`[learned-audit] ${res.error}`); return; }
+    const text = formatAudit(res, items);
+    if (!text) { console.log(`[learned-audit] 규칙 ${res.total}건 — 정리할 것 없음`); return; }
+    await dmOwner(text);
+    console.log(`[learned-audit] 규칙 ${res.total}건 중 ${res.findings.length}건 제안 발송`);
+  } catch (e) { console.error("[learned-audit] 실패:", e?.message ?? e); }
+}
+
 const FIRST_DELIVERY_QA_HOUR = Number(process.env.FIRST_DELIVERY_QA_HOUR ?? 10);        // 첫 슬롯
 const FIRST_DELIVERY_QA_END_HOUR = Number(process.env.FIRST_DELIVERY_QA_END_HOUR ?? 19); // 마지막 슬롯 상한
 const FIRST_DELIVERY_QA_INTERVAL_H = Number(process.env.FIRST_DELIVERY_QA_INTERVAL_H ?? 3);
@@ -4241,13 +4270,21 @@ const apmTools = createSdkMcpServer({
       { annotations: { readOnlyHint: true } }),
     tool("approve_distill",
       "증류 후보를 학습 규칙으로 채택한다(= remember 와 같은 효과, 재기동 후에도 유지). 재상 님이 '1번 채택/그건 맞아, 규칙으로 해' 할 때. 문구를 다듬어 저장하려면 rule 로 덮어쓴다.",
-      { id: z.number().describe("후보 번호"), rule: z.string().optional().describe("저장할 문구(생략하면 후보 문구 그대로)") },
+      { id: z.number().describe("후보 번호"), rule: z.string().optional().describe("저장할 문구(생략하면 후보 문구 그대로)"),
+        replace: z.number().optional().describe("이 학습규칙 id를 지우고 대체한다(상충·중복 해소)"),
+        force: z.boolean().optional().describe("비슷한 규칙이 있어도 그냥 추가") },
       async (a) => { try { const _d = ownerOnly(); if (_d) return _d;
         const hit = listCandidates("all").find((x) => x.id === Number(a.id)) || listCandidates().find((x) => x.id === Number(a.id));
         if (!hit) return { content: [{ type: "text", text: JSON.stringify({ error: `후보 ${a.id} 없음` }) }] };
-        const r = addLearned(a.rule || hit.rule);
+        const text = a.rule || hit.rule;
+        const r = addLearned(text, { force: a.force, replace: a.replace });
+        // ★비슷한 규칙이 있으면 저장하지 않고 사람에게 되묻는다 — 같은 말이 다른 문구로 쌓이는 걸 막는다.
+        if (r.needsDecision) return { content: [{ type: "text", text: JSON.stringify({
+          saved: false, needsDecision: true, rule: text, similar: r.similar,
+          note: "비슷한 기존 규칙이 있다. 저장하지 않았다. 사용자에게 기존 것과 '겹치는지/어긋나는지'를 보여주고 셋 중 하나를 고르게 하라 — ①기존 것을 이 문구로 **대체**(approve_distill에 replace=<기존id>) ②따로 **둘 다 유지**(force=true) ③**취소**(reject_distill). 네가 임의로 고르지 마라.",
+        }) }] };
         setCandidateStatus(a.id, "approved");
-        return { content: [{ type: "text", text: JSON.stringify({ approved: a.id, saved: !r.error, dup: !!r.dup, total: r.total, rule: a.rule || hit.rule, note: "다음 재기동부터 시스템 지침에 포함된다." }) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ approved: a.id, saved: !r.error, dup: !!r.dup, total: r.total, rule: text, replaced: r.replaced || null, note: "지금 바로 적용된다(다음 턴부터 최신 규칙이 주입됨)." }) }] };
       } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; } },
       { annotations: { readOnlyHint: false } }),
     tool("reject_distill", "증류 후보를 버린다('그건 아니야/필요 없어'). 다시 제안되지 않는다.",
@@ -4329,6 +4366,7 @@ const queue = [];         // 처리 대기 턴: { content, ctx }
 let wake = null;          // 새 턴 도착 시 generator 깨우기
 let turnResolve = null;   // 현재 턴의 result 처리 완료 신호(다음 턴 진행 허용)
 let currentTurn = null;   // 지금 브레인이 처리 중인 턴
+let sessionLearnedSig = null;   // 세션이 시스템 프롬프트에 담고 시작한 학습 규칙 상태
 let currentAttachments = [];   // 이 턴에 첨부된 텍스트/CSV/엑셀 원문 [{name,text}] — compute 도구용
 let currentFileRefs = [];      // 이 턴에 업로드된 파일 refs [{url,name,mimetype,filetype}] — 번역개시 첨부 재발송용
 
@@ -4536,6 +4574,7 @@ function touchPlaceholder(ctx, toolName) {
 function startSession() {
   const learnedBlk = learnedPromptBlock();   // 재상 님이 가르친 규칙 — 부팅마다 시스템 프롬프트에 주입(재기동 유지)
   const sysPrompt = learnedBlk ? [...DISPATCHER_PROMPT, learnedBlk] : DISPATCHER_PROMPT;
+  sessionLearnedSig = learnedSignature();   // 이후 규칙이 바뀌면 턴마다 다시 주입(재기동 기다리지 않음)
   if (learnedBlk) console.log(`[learned] 학습 규칙 ${listLearned().length}개 주입`);
   const session = query({
     prompt: messageStream(),
@@ -4725,6 +4764,14 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   if (followup) llmText += "\n\n[이 메시지는 멘션 없이 들어온 스레드 후속 댓글이다. 너에게 시킨 일이 아닐 수 있다."
     + " 찾아 줄 데이터·링크·조회 결과가 분명히 있을 때만 그것만 전달하고, 제안·의견·요약·맞장구·되읊기는 절대 하지 마라."
     + " 할 일이 없으면 아무 말도 하지 말고 빈 응답으로 끝내라.]";
+  // ★세션 시작 뒤 학습 규칙이 바뀌었으면 이번 턴에 최신본을 얹는다 — 채택 즉시 먹게(2026-10-05).
+  try {
+    const sig = learnedSignature();
+    if (sessionLearnedSig && sig !== sessionLearnedSig) {
+      const blk = learnedPromptBlock();
+      if (blk) llmText += `\n\n[학습 규칙이 갱신됐다 — 아래가 최신본이고 시스템 지침보다 우선한다]\n${blk}`;
+    }
+  } catch (e) { console.error("[learned] 턴 주입 실패:", e?.message ?? e); }
   const content = att.blocks.length ? [{ type: "text", text: llmText }, ...att.blocks] : llmText;
 
   // 턴을 큐에 넣고 한 번에 하나씩 처리 — 완료 시 deliver()가 '처리 중'을 지우고 새 메시지로 답한다
@@ -8345,7 +8392,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkDemoProposal().catch((e) => console.error("[demo] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkDemoProposal().catch((e) => console.error("[demo] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkLearnedAudit().catch((e) => console.error("[learned-audit] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
