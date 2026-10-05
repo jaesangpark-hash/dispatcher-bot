@@ -6927,7 +6927,8 @@ app.action("reupload_cancel", async ({ ack, body, client }) => {
 // ★EC2에서는 갱신 스크립트를 돌릴 수 없다 — playwright를 headless:false로 띄워 캡차를
 //   사람이 풀어야 하는 구조라 헤드리스 서버에선 애초에 불가능하다. 종전엔 EC2에서 실행을
 //   시도해 「❌ 갱신 실패 (종료코드 1)」이 장애처럼 나갔다(2026-10-05). 이제 안내만 한다.
-const KUAIKAN_REFRESH_CMD = 'cd "C:\\Users\\P-205\\Desktop\\개인 자동화\\dispatcher-bot" && node tools/kuaikan-cookie-refresh/refresh-and-deploy.mjs';
+// ★재상 님 터미널은 Windows PowerShell 5.1 — `&&`는 파서 에러를 낸다. 구분자는 `;`(2026-10-05 실측).
+const KUAIKAN_REFRESH_CMD = 'cd "C:\\Users\\P-205\\Desktop\\개인 자동화\\dispatcher-bot"; node tools/kuaikan-cookie-refresh/refresh-and-deploy.mjs';
 app.action("kuaikan_refresh", async ({ ack, body, client }) => {
   await ack();
   const ch = body.channel?.id || await client.conversations.open({ users: DISPATCHER_USER_ID }).then((d) => d.channel?.id).catch(() => null);
