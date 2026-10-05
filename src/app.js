@@ -3578,18 +3578,13 @@ const apmTools = createSdkMcpServer({
       },
       { annotations: { readOnlyHint: false } }),
     tool("refresh_kuaikan_cookie",
-      "Kuaikan 세션 쿠키를 갱신한다. 재상 님이 '갱신해줘', '쿠키 살려줘', '콰이칸 다시 로그인해줘' 등 Kuaikan 쿠키 갱신 의사를 표할 때 호출. 브라우저가 로컬에서 열리므로 캡차는 재상 님이 직접 풀어야 한다 — 이 점을 먼저 안내하고 실행할 것.",
+      "Kuaikan 세션 쿠키 갱신 방법을 안내한다. 재상 님이 '갱신해줘', '쿠키 살려줘', '콰이칸 다시 로그인해줘' 등 Kuaikan 쿠키 갱신 의사를 표할 때 호출. ★봇은 EC2에서 돌아 이 스크립트를 실행할 수 없다(브라우저 캡차를 사람이 풀어야 함) — 실행했다고 말하지 말고, 돌려준 명령어를 재상 님 PC 터미널에서 실행하시라고 그대로 전할 것.",
       {},
-      async () => {
-        try {
-          const ctx = currentCtx;
-          const ch = ctx?.channel || await app.client.conversations.open({ users: DISPATCHER_USER_ID }).then((d) => d.channel?.id).catch(() => null);
-          if (ch) _runKuaikanRefresh(ctx?.client || app.client, ch);
-          return { content: [{ type: "text", text: JSON.stringify({ started: true, note: "갱신 스크립트 실행 시작. 브라우저 창이 열리면 캡차를 풀어달라고 재상 님에게 안내할 것." }) }] };
-        } catch (e) {
-          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] };
-        }
-      }),
+      async () => ({ content: [{ type: "text", text: JSON.stringify({
+        runnable: false,
+        command: KUAIKAN_REFRESH_CMD,
+        note: "봇은 EC2에 있어 실행할 수 없다. 위 command를 코드블록으로 보여주고 '재상 님 PC 터미널에서 실행해주세요, 창이 뜨면 캡차만 풀면 이후 쿠키 추출·EC2 반영·재기동까지 자동'이라고 안내하라. '실행했다/시작했다'고 말하지 말 것.",
+      }) }] })),
     tool("check_and_fix_file_order",
       "TOTUS 원본 파일 순서를 회차 범위 단위로 일괄 점검하고 고친다('1~20화 파일 순서 체크하고 고쳐줘'). 설정집 요청 스레드 등에서 APM이 직접 호출 가능. 파일명 규칙(주번호-부번호.서브페이지, 예: 36-9.2.psd)으로 올바른 순서를 판정해 TOTUS 파일순서(에디터 파일관리 탭)에 반영하고 회차를 확정 처리한다. 원칙: 확인 게이트 없이 즉시 실행하되, 애매한 회차가 하나라도 있으면 전체를 멈추고 그 회차만 버튼/모달로 확인받은 뒤 배치 전체를 한 번에 실행한다. 애매함은 두 종류 — ①단순 동률(같은 순번으로 해석되는 파일 2개 이상, 수정본 표시 없음): 순서 확인 버튼을 보내고, 확인되면 그 회차까지 포함해 실행. ②수정본/교체본 표시가 섞인 동률(예: 汉字3话1 / 汉字3话1_改): 순서 문제가 아니라 어느 파일을 지울지의 별개 판단이라 이 도구가 처리하지 않음 — 건너뛰고 보고만 함. 단순 동률이 하나도 없으면 곧바로 전체 실행하고 결과 요약을 스레드에 올린다. 있으면 미리보기+버튼만 보내고 아직 아무 것도 반영 안 됐다고 답해야 한다(반영했다고 단정 금지). ★순서와 별개로 회차 내 페이지 번호 누락(빠진 페이지)도 함께 탐지해 results/미리보기에 표시한다 — 이건 휴리스틱(파일명에서 페이지 카운터로 보이는 자리의 연속성만 확인)이라 확정이 아니니, 있으면 반드시 '~페이지가 빠진 것 같다, 직접 확인 필요'로만 전달하고 실제로 빠졌다고 단정하지 말 것.",
       {
@@ -6929,10 +6924,24 @@ app.action("reupload_cancel", async ({ ack, body, client }) => {
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
 
+// ★EC2에서는 갱신 스크립트를 돌릴 수 없다 — playwright를 headless:false로 띄워 캡차를
+//   사람이 풀어야 하는 구조라 헤드리스 서버에선 애초에 불가능하다. 종전엔 EC2에서 실행을
+//   시도해 「❌ 갱신 실패 (종료코드 1)」이 장애처럼 나갔다(2026-10-05). 이제 안내만 한다.
+const KUAIKAN_REFRESH_CMD = 'cd "C:\\Users\\P-205\\Desktop\\개인 자동화\\dispatcher-bot" && node tools/kuaikan-cookie-refresh/refresh-and-deploy.mjs';
 app.action("kuaikan_refresh", async ({ ack, body, client }) => {
   await ack();
   const ch = body.channel?.id || await client.conversations.open({ users: DISPATCHER_USER_ID }).then((d) => d.channel?.id).catch(() => null);
-  if (ch) _runKuaikanRefresh(client, ch);
+  if (!ch) return;
+  await client.chat.postMessage({
+    channel: ch, thread_ts: body.message?.thread_ts || body.message?.ts,
+    text: "쿠키 갱신은 재상 님 PC에서 실행해야 해요.",
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: "🔑 *쿠키 갱신은 재상 님 PC에서 실행해주세요*\n브라우저 캡차를 사람이 풀어야 해서 서버에서는 돌릴 수 없어요. 아래를 터미널에 붙여넣으면 돼요." } },
+      { type: "section", text: { type: "mrkdwn", text: "```" + KUAIKAN_REFRESH_CMD + "```" } },
+      { type: "context", elements: [{ type: "mrkdwn", text: "창이 뜨면 캡차만 풀어주세요. 쿠키 추출 → EC2 `.env` 갱신 → 재기동까지 자동이에요." }] },
+    ],
+    ...SENDER,
+  }).catch((e) => console.error("[kuaikan] 안내 실패:", e?.message ?? e));
 });
 
 // 리테이크 초안 수정 — 모달 열기(본문만 편집, 멘션 헤더는 고정)
@@ -7435,9 +7444,11 @@ async function _alertKuaikanExpired() {
     channel: ch,
     text: "⚠️ Kuaikan 세션 쿠키 만료 — 재수급 자동 이관이 중단됐어요. 갱신해주세요.",
     blocks: [
-      { type: "section", text: { type: "mrkdwn", text: "⚠️ *Kuaikan 세션 쿠키 만료*\nKuaikan 드라이브 접근이 안 되고 있어요 — 재수급 자동 이관이 중단된 상태예요.\n아래 버튼을 누르거나 *'갱신해줘'* 라고 말씀해주세요." } },
+      { type: "section", text: { type: "mrkdwn", text: "⚠️ *Kuaikan 세션 쿠키 만료*\nKuaikan 드라이브 접근이 안 되고 있어요 — 재수급 자동 이관이 중단된 상태예요.\n*재상 님 PC 터미널*에서 아래를 실행해주세요(캡차를 사람이 풀어야 해서 서버에선 못 돌려요)." } },
+      { type: "section", text: { type: "mrkdwn", text: "```" + KUAIKAN_REFRESH_CMD + "```" } },
+      { type: "context", elements: [{ type: "mrkdwn", text: "창이 뜨면 캡차만 풀어주세요. 이후 쿠키 추출 → EC2 `.env` 갱신 → 재기동까지 자동이에요." }] },
       { type: "actions", elements: [
-        { type: "button", style: "primary", text: { type: "plain_text", text: "🔑 쿠키 갱신" }, action_id: "kuaikan_refresh" },
+        { type: "button", text: { type: "plain_text", text: "🔑 명령어 다시 보기" }, action_id: "kuaikan_refresh" },
       ] },
     ],
     ...SENDER,
