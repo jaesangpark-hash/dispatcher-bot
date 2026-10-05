@@ -4609,7 +4609,13 @@ function startSession() {
           const SELF_POSTING = new Set(["transfer_kuaikan_files", "get_project_url", "get_editor_url", "review_queue",
             "export_translation_text_range", "export_csv", "delegate_analysis", "check_and_fix_file_order"]);
           const selfPosted = [...turnToolsSnapshot].some((t) => SELF_POSTING.has(t));
+          // ★입력을 그대로 되읊는 응답은 내보내지 않는다(2026-10-05 실사고: 공개 채널에서
+          //   재상 님이 남에게 한 말을 툰식이가 복창했다). 공백·문장부호만 빼고 같으면 에코로 본다.
+          const _norm = (v) => String(v || "").replace(/\s+/g, "").replace(/[.,!?~…·"'`]/g, "");
+          const echoed = Boolean(rlTurn?.rawText) && _norm(text) === _norm(rlTurn.rawText);
+          if (echoed) console.log("[brain] 에코 응답 차단 —", String(text).slice(0, 40));
           const out = (m.is_error && isRateLimit(text)) ? "지금 사용량 한도라 처리를 못 했어요 😢 잠시(1~2분) 뒤 다시 보내주세요."
+            : echoed ? ""
             : text || (selfPosted ? "" : "응답을 만들지 못했어요 😢 다시 한 번 말씀해주세요.");
           if (out) deliver(ctx, out).catch((e) => console.error("[brain] 응답 전송 실패:", e?.message));
           else { console.log("[brain] 빈 응답 — 도구가 직접 게시한 턴이라 전송 생략"); if (ctx?.placeholderTs) ctx.client.chat.delete({ channel: ctx.channel, ts: ctx.placeholderTs }).catch(() => {}); }
@@ -4644,7 +4650,7 @@ function startSession() {
 }
 
 // ── 핵심 처리: 본인 메시지 → ack → 세션에 투입 (응답은 세션 루프가 thread로) ──
-async function handle({ text, channel, ts, threadTs, inThread, user, client, say, files }) {
+async function handle({ text, channel, ts, threadTs, inThread, user, client, say, files, followup }) {
   if (!ALLOWED_USERS.has(user)) return;               // 재상 + 허용 APM만 (그 외 무시)
   // 메시지에 붙은 이미지 파일
   const msgFiles = (files || []).map((f) => ({ url: f.url_private_download || f.url_private, mimetype: f.mimetype, filetype: f.filetype, name: f.name }));
@@ -4714,11 +4720,16 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   if (attFiles.length && !att.blocks.length && !att.texts.length) {
     llmText += `\n\n[주의: 첨부 파일(${attFiles.map((f) => f.name).filter(Boolean).join(", ") || "?"})을 텍스트/이미지로는 못 읽었어요(다운로드 실패·타임아웃, 또는 psd/clip 등 미리보기 미지원 형식). ★이건 파일 '내용'을 볼 때만 문제고, 파일을 그대로 옮기기만 하면 되는 작업은 전혀 문제 없음 — send_message(다른 채널/스레드로 그대로 전달)나 propose_original_reupload(TOTUS 재수급 업로드)는 내용을 안 읽고 바이트만 그대로 옮기니 이 경고와 무관하게 정상 진행할 것("읽을 수 없다"고 거절하면 안 됨). 파일 안의 글자·이미지 내용을 실제로 파악해야 하는 작업일 때만 진행하지 말고 '파일을 못 받았어요 — 용량이 크거나 형식이 안 맞을 수 있으니 다시 올려주세요'라고 안내하라.]`;
   }
+  // ★멘션 없이 들어온 스레드 후속 댓글 — 재상 님이 남에게 한 말일 수도 있다.
+  //   필요한 데이터만 찾아 주고, 제안·의견·맞장구는 하지 않는다(2026-10-05 재상 님 지시).
+  if (followup) llmText += "\n\n[이 메시지는 멘션 없이 들어온 스레드 후속 댓글이다. 너에게 시킨 일이 아닐 수 있다."
+    + " 찾아 줄 데이터·링크·조회 결과가 분명히 있을 때만 그것만 전달하고, 제안·의견·요약·맞장구·되읊기는 절대 하지 마라."
+    + " 할 일이 없으면 아무 말도 하지 말고 빈 응답으로 끝내라.]";
   const content = att.blocks.length ? [{ type: "text", text: llmText }, ...att.blocks] : llmText;
 
   // 턴을 큐에 넣고 한 번에 하나씩 처리 — 완료 시 deliver()가 '처리 중'을 지우고 새 메시지로 답한다
   const entry = { client, channel, threadTs: thread, ts: thread, placeholderTs: ph?.ts, startedAt: Date.now(), done: false };
-  queue.push({ content, ctx: entry, attachTexts: att.texts, fileRefs: msgFiles, user });   // fileRefs=이 메시지에 올린 파일(번역개시 첨부 발송용)
+  queue.push({ content, ctx: entry, attachTexts: att.texts, fileRefs: msgFiles, user, rawText: String(text || "") });   // fileRefs=이 메시지에 올린 파일(번역개시 첨부 발송용)
   if (wake) { const w = wake; wake = null; w(); }
 
   // 멈춤 감시: 제한시간 내 응답 없으면 '처리 중'을 지연 안내로 갱신(영영 멈춘 듯 보이지 않게)
@@ -5379,13 +5390,23 @@ app.message(async ({ message, say, client }) => {
     // 전엔 등록된 스레드의 모든 사람 말을 받아, 작업자↔APM끼리 주고받는 대화에 끼어들었다
     // (실사고: 재수급 채널에서 "원본이 ZIP이라 이미지로 전달드립니다"에 "처리 중…"을 띄움).
     // THREAD_FOLLOWUP=off 로 기능 전체를 즉시 끌 수 있다(재배포 없이 .env만).
-    const twOwner = threadKey ? botThreadWatch.get(threadKey)?.user : null;
+    const twEntry = threadKey ? botThreadWatch.get(threadKey) : null;
+    const twOwner = twEntry?.user || null;
     const followupOn = String(process.env.THREAD_FOLLOWUP ?? "on").toLowerCase() !== "off";
-    if (followupOn && !edited && !message.bot_id && isReply && threadKey && botThreadWatch.has(threadKey)
+    // ★툰식이가 마지막으로 답한 직후에만 후속으로 받는다(2026-10-05). createdAt은 답할 때마다
+    //   갱신되므로 대화가 이어지는 동안은 계속 열려 있고, 한참 뒤의 딴 얘기는 안 받는다.
+    //   실사고는 113초 뒤였다 — 기본 90초.
+    const FOLLOWUP_WINDOW_MS = Number(process.env.THREAD_FOLLOWUP_WINDOW_SEC || 90) * 1000;
+    const fresh = twEntry?.createdAt ? (Date.now() - twEntry.createdAt) <= FOLLOWUP_WINDOW_MS : false;
+    if (followupOn && !edited && !message.bot_id && isReply && threadKey && twEntry
         && message.text && twOwner && twOwner === message.user) {   // user가 안 적힌 옛 등록은 받지 않는다(안전쪽)
+      if (!fresh) {
+        console.log(`[thread-watch] 후속 대화 창 지남(${Math.round((Date.now() - (twEntry.createdAt || 0)) / 1000)}s) — 무시`);
+        return;
+      }
       await handle({
         text: message.text, channel: message.channel, ts: message.ts,
-        threadTs: message.thread_ts, inThread: true,
+        threadTs: message.thread_ts, inThread: true, followup: true,
         user: message.user, client, say, files: message.files,
       });
       return;
