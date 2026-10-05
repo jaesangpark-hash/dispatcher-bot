@@ -5,6 +5,12 @@ import JSZip from "jszip";
 
 const COMMENT_HEADER = "AI検収";
 const YELLOW = "FFFFFF00";
+// ★코멘트 열은 M(13) 고정(재상 님 지시 2026-10-05). 종전엔 '마지막으로 쓰인 열+1'이라
+//   서식만 깔린 빈 열이 Z까지 이어진 파일에서 AA열에 붙어 안 보였다.
+//   단 실제 데이터가 M을 넘어가면 그 뒤로 밀어 덮어쓰기를 막는다.
+const COMMENT_COL_FIXED = 13;
+// 엔진이 검수 대상에서 빼는 시트 — 여기엔 색칠도 코멘트도 하지 않는다
+const EXCLUDED_SHEETS = /^(03\.Font|04\.Cover|05\.Confirm)/i;
 
 const colLetter = (n) => { let s = ""; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = (n - 1 - r) / 26; } return s; };
 const colIndex = (s) => [...s.toUpperCase()].reduce((a, c) => a * 26 + (c.charCodeAt(0) - 64), 0);
@@ -132,6 +138,8 @@ export async function annotateSetjip(buffer, findings) {
   const bySheet = new Map();
   for (const f of findings) {
     if (!paths[f.sheet]) continue;
+    // 검수 대상이 아닌 시트에는 손대지 않는다 — 실측에서 05.Confirm에 노란 셀 6개가 칠해졌다
+    if (EXCLUDED_SHEETS.test(f.sheet)) continue;
     if (!bySheet.has(f.sheet)) bySheet.set(f.sheet, []);
     bySheet.get(f.sheet).push(f);
   }
@@ -149,7 +157,10 @@ export async function annotateSetjip(buffer, findings) {
     let headerRow = 0, maxCol = 1;
     for (const m of xml.matchAll(/<row\b[^>]*\br="(\d+)"[^>]*>([\s\S]*?)<\/row>/g)) {
       const r = Number(m[1]);
-      const cells = [...m[2].matchAll(/<c\b[^>]*\br="([A-Z]+)\d+"/g)].map((c) => colIndex(c[1]));
+      // 값이 든 셀만 센다 — 서식만 깔린 빈 열까지 세면 코멘트가 한참 오른쪽에 붙는다
+      const cells = [...m[2].matchAll(/<c\b[^>]*\br="([A-Z]+)\d+"[^>]*>[\s\S]*?<\/c>/g)]
+        .filter((c) => /<v>[^<]/.test(c[0]) || /<t[^>]*>[^<]/.test(c[0]))
+        .map((c) => colIndex(c[0].match(/\br="([A-Z]+)\d+"/)[1]));
       if (cells.length) maxCol = Math.max(maxCol, ...cells);
       // ★공유 문자열을 풀어 실제 내용이 있는 셀만 센다. 빈 문자열("")도 <v>로 들어와서
       //   풀지 않으면 서식만 깔린 1행이 헤더로 잡힌다(실측: 1행 filled 9 vs 진짜 헤더 6행).
@@ -163,7 +174,7 @@ export async function annotateSetjip(buffer, findings) {
       if (r <= 12 && !headerRow && filled >= 3) headerRow = r;
     }
     if (!headerRow) headerRow = 1;
-    const commentCol = maxCol + 1;
+    const commentCol = Math.max(COMMENT_COL_FIXED, maxCol + 1);
 
     const highlights = [];
     const comments = new Map();
@@ -307,7 +318,7 @@ export function mapFindings(index, reviews) {
         if (index[sheet] && row) break;
       }
     }
-    if (!index[sheet]) { skipped.push(v); continue; }
+    if (!index[sheet] || EXCLUDED_SHEETS.test(sheet)) { skipped.push(v); continue; }
 
     const cols = Object.entries(index[sheet].cols);
     // 지적문이 '무엇이 문제인가'를 가리킨다. 수정안은 고칠 자리를 다른 칸으로 안내하는 일이 많아 뒤로 민다.

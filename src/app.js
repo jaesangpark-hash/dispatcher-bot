@@ -4649,8 +4649,13 @@ function startSession() {
           const _norm = (v) => String(v || "").replace(/\s+/g, "").replace(/[.,!?~…·"'`]/g, "");
           const echoed = Boolean(rlTurn?.rawText) && _norm(text) === _norm(rlTurn.rawText);
           if (echoed) console.log("[brain] 에코 응답 차단 —", String(text).slice(0, 40));
+          // ★에코를 지우고 끝내면 자리표시자까지 사라져 사용자에겐 '아무 일도 안 일어난' 걸로 보인다
+          //   (2026-10-05 실사고: 「원본 이관해」 3번이 전부 조용히 증발). 멘션·DM처럼 분명한
+          //   지시였던 경우엔 실패했다고 알린다. 후속 대화(followup)에서만 조용히 넘긴다.
+          const echoSilent = echoed && rlTurn?.followup;
           const out = (m.is_error && isRateLimit(text)) ? "지금 사용량 한도라 처리를 못 했어요 😢 잠시(1~2분) 뒤 다시 보내주세요."
-            : echoed ? ""
+            : echoSilent ? ""
+            : echoed ? "처리를 못 했어요 😢 한 번만 다시 말씀해주세요."
             : text || (selfPosted ? "" : "응답을 만들지 못했어요 😢 다시 한 번 말씀해주세요.");
           if (out) deliver(ctx, out).catch((e) => console.error("[brain] 응답 전송 실패:", e?.message));
           else { console.log("[brain] 빈 응답 — 도구가 직접 게시한 턴이라 전송 생략"); if (ctx?.placeholderTs) ctx.client.chat.delete({ channel: ctx.channel, ts: ctx.placeholderTs }).catch(() => {}); }
@@ -4772,7 +4777,7 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
 
   // 턴을 큐에 넣고 한 번에 하나씩 처리 — 완료 시 deliver()가 '처리 중'을 지우고 새 메시지로 답한다
   const entry = { client, channel, threadTs: thread, ts: thread, placeholderTs: ph?.ts, startedAt: Date.now(), done: false };
-  queue.push({ content, ctx: entry, attachTexts: att.texts, fileRefs: msgFiles, user, rawText: String(text || "") });   // fileRefs=이 메시지에 올린 파일(번역개시 첨부 발송용)
+  queue.push({ content, ctx: entry, attachTexts: att.texts, fileRefs: msgFiles, user, rawText: String(text || ""), followup: Boolean(followup) });   // fileRefs=이 메시지에 올린 파일(번역개시 첨부 발송용)
   if (wake) { const w = wake; wake = null; w(); }
 
   // 멈춤 감시: 제한시간 내 응답 없으면 '처리 중'을 지연 안내로 갱신(영영 멈춘 듯 보이지 않게)
