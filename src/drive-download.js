@@ -293,7 +293,14 @@ async function findEpisodeFolder(listChildren, isDirFn, containerId, episode, fi
 
   if (depth >= 2) return { ok: false, needsHuman: true, reason: "회차 폴더를 특정 못 함(구조가 예상보다 깊거나 다름)", candidates: list };
 
-  const cat = findCategoryFolders(list, fileType, isDirFn);
+  let cat = findCategoryFolders(list, fileType, isDirFn);
+  // ★빈 폴더(size 0)는 후보에서 뺀다 — 쿠아이칸은 폴더에도 size를 내려준다.
+  //   실측(恶犬 2026-10-05): "본문_PSD 원파일_최종안" 92.8GB 와
+  //   "正文_海外版本PSD源文件_终稿（不可在国内流通）" 0B 가 둘 다 걸려 이관이 멈췄다.
+  if (cat.length > 1) {
+    const nonEmpty = cat.filter((c) => c.size == null || Number(c.size) > 0);
+    if (nonEmpty.length && nonEmpty.length < cat.length) cat = nonEmpty;
+  }
   if (cat.length === 1) return findEpisodeFolder(listChildren, isDirFn, cat[0].id, episode, fileType, depth + 1);
   if (cat.length > 1) {
     // 카테고리 후보들 중에 혹시 회차번호로 바로 매칭되는 게 있으면(폴더명에 psd/jpg가 접미사로만 붙은 경우) 그걸 채택
