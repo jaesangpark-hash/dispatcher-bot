@@ -5281,7 +5281,14 @@ async function handleSetjipCheck({ message, client }) {
   const worker = SETJIP_CHANNELS[message.channel];
   if (!worker) return false;
   const text = String(message.text || "");
-  if (!isSetjipRequest(text)) return false;
+  const xlsx = (message.files || []).find((f) => /\.xlsx$/i.test(f.name || "") || /spreadsheet/i.test(f.mimetype || ""));
+  // ★「設定集チェック」를 안 써도, xlsx를 올리며 국가설정만 적으면 검수 요청으로 본다.
+  //   실측(2026-10-05): 재상 님도 작업자에게 안내하면서 「(파일) @툰식이 日本設定」로 보내셨고
+  //   트리거가 없어 브레인으로 샜다. 작업자는 더 짧게 쓸 가능성이 크다.
+  if (!isSetjipRequest(text) && !(xlsx && parseSetting(text))) return false;
+  // 멘션을 달면 app.message와 app_mention이 둘 다 뜬다 — 먼저 잡은 쪽만 처리한다
+  if (processed.has("sj:" + message.ts)) return true;
+  processed.add("sj:" + message.ts);
 
   const ch = message.channel, thread = message.thread_ts || message.ts;
   const say = (t) => client.chat.postMessage({ channel: ch, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
@@ -5300,7 +5307,7 @@ async function handleSetjipCheck({ message, client }) {
   }
 
   // 첨부 xlsx 우선 — 없으면 작품명으로 TOTUS에서 받는다
-  const file = (message.files || []).find((f) => /\.xlsx$/i.test(f.name || "") || /spreadsheet/i.test(f.mimetype || ""));
+  const file = xlsx;
   const workTitle = parseSetjipWork(text);
   if (!file && !workTitle) {
     await say("設定集ファイルを添付するか、作品名を書いてください。\n例）（ファイル添付）設定集チェック 日本設定");
@@ -5548,6 +5555,9 @@ app.event("app_mention", async ({ event, say, client }) => {
   //  app_mention을 그대로 쏜다 — message 리스너들의 bot_id 필터가 여기엔 없어서 자기 메시지를
   //  새 사용자 요청으로 착각해 처리(앵무새처럼 그대로 반복)하는 사고가 있었음.
   if (event.bot_id || (SELF_BOT_USER && event.user === SELF_BOT_USER)) return;
+  // ★작업자 채널의 설정집 검수는 전용 경로가 받는다 — 멘션을 같이 달면 app.message와 여기가
+  //   둘 다 떠서 검수와 브레인이 동시에 도는 사고가 난다(2026-10-05 실측).
+  if (SETJIP_CHANNELS[event.channel] && await handleSetjipCheck({ message: event, client })) return;
   // 중복 파일 답장 처리
   if (event.text && event.thread_ts && await _handleManualTransferDuplicateReply({ text: event.text, channel: event.channel, threadTs: event.thread_ts, client })) return;
   await handle({
