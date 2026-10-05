@@ -48,14 +48,22 @@ export function parseWork(text) {
       if (!parseSetting(s) && !TRIGGER.test(s)) return s;
     }
   }
-  const rest = t
+  let rest = t
     .replace(/<@[^>]+>/g, "")
     .replace(TRIGGER, " ")
     .replace(/中国設定|武侠設定|ヨーロッパ設定|多国籍設定|日本設定|중국\s*설정|일본\s*설정|유럽|다국적|무협/gi, " ")
-    .replace(/[「『」』]/g, " ")
+    .replace(/[「『」』]/g, " ");
+  // ★인사·의뢰 상투구를 걷어낸다. 안 걷으면 「お願いします」가 작품명으로 잡혀
+  //   TOTUS를 헛되이 뒤지다 '검수 실패'로 끝난다(2026-10-05 실측).
+  rest = rest
+    .replace(/(?:よろしく)?お願いいたします|(?:よろしく)?お願いします|よろしくお願い|お疲れ様です|お世話になります|こんにちは|こんばんは|おはようございます|ありがとうございます|すみません|부탁\s*(?:드립니다|합니다|해요)|안녕하세요|감사합니다/g, " ")
+    .replace(/[、。,.!！?？~〜\-–—:：]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return rest.length >= 2 ? rest : null;
+  // 남은 게 2자 미만이거나 히라가나·조사만 남으면 작품명이 아니다
+  if (rest.length < 2) return null;
+  if (!/[゠-ヿ一-鿿가-힣A-Za-z]/.test(rest)) return null;
+  return rest;
 }
 
 // ── 하루 횟수 ─────────────────────────────────────────────────

@@ -5339,8 +5339,14 @@ async function handleSetjipCheck({ message, client }) {
     }
     console.log(`[setjip-check] ${worker.name} — ${settingType} 지적 ${res.reviews.length}건 (남은 ${left})`);
   } catch (e) {
-    console.error("[setjip-check] 실패:", e?.message ?? e);
-    await say(`チェックに失敗しました。\n\`${String(e?.message ?? e).slice(0, 200)}\`\n担当PMにご連絡ください。`);
+    const msg = String(e?.message ?? e);
+    console.error("[setjip-check] 실패:", msg);
+    // 작품을 못 찾은 건 사용자가 바로 고칠 수 있다 — 장애처럼 안내하지 않는다
+    if (!file && /404|not found|프로젝트|project|見つかり/i.test(msg)) {
+      await say(`「${workTitle}」という作品が見つかりませんでした。\n作品名をご確認いただくか、設定集ファイルを添付してください（添付の方が結果が詳しく出ます）。`);
+    } else {
+      await say(`チェックに失敗しました。\n\`${msg.slice(0, 200)}\`\n担当PMにご連絡ください。`);
+    }
   }
   return true;
 }
