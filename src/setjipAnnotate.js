@@ -194,4 +194,133 @@ export async function annotateSetjip(buffer, findings) {
   return { buffer: out, annotated: findings.length, sheets: [...bySheet.keys()] };
 }
 
+// ── 워크북 색인 — 시트별 헤더 행·열 라벨·전체 셀 값 ───────────────
+export async function readWorkbookIndex(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const paths = await sheetPathMap(zip);
+  const sst = await sharedStrings(zip);
+  const out = {};
+  for (const [name, path] of Object.entries(paths)) {
+    const xml = await zip.file(path).async("string");
+    const cells = {};
+    let headerRow = 0;
+    for (const rm of xml.matchAll(/<row\b[^>]*\br="(\d+)"[^>]*>([\s\S]*?)<\/row>/g)) {
+      const r = Number(rm[1]);
+      const row = {};
+      for (const cm of rm[2].matchAll(/<c\b([^>]*)\br="([A-Z]+)\d+"([^>]*)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+        const attrs = cm[1] + cm[3];
+        const body = cm[4] || "";
+        let v = null;
+        if (/t="s"/.test(attrs)) v = sst[Number((body.match(/<v>(\d+)<\/v>/) || [])[1])];
+        else if (/t="inlineStr"/.test(attrs)) v = (body.match(/<t[^>]*>([\s\S]*?)<\/t>/) || [])[1];
+        else v = (body.match(/<v>([\s\S]*?)<\/v>/) || [])[1];
+        if (v != null && String(v).trim()) row[colIndex(cm[2])] = String(v);
+      }
+      if (Object.keys(row).length) cells[r] = row;
+      if (!headerRow && r <= 12 && Object.keys(row).length >= 3) headerRow = r;
+    }
+    out[name] = { headerRow: headerRow || 1, cols: cells[headerRow] || {}, cells };
+  }
+  return out;
+}
+
+// ── 지적문에서 '어느 칸'인지 ─────────────────────────────────────
+const ALIAS_COL = [
+  [/JP名前|JA名前|名前欄|日本語名/, ["JA", "JA名", "日本語"]],
+  [/CH欄|ZH|中国語/, ["ZH-CN", "ZH", "中国語"]],
+  [/設定及び特徴|設定および特徴|設定・特徴|特徴欄/, ["設定及び特徴", "設定および特徴"]],
+  [/語尾|口調/, ["語尾"]],
+  [/一人称|1人称/, ["1人称"]],
+  [/呼び方|呼称/, ["呼び方"]],
+  [/説明欄|説明文/, ["説明"]],
+  [/登場話数|話数/, ["登場話数"]],
+  [/性別/, ["性別"]],
+  [/年齢/, ["年齢"]],
+];
+function pickCol(cols, text) {
+  if (!text) return null;
+  for (const [re, labels] of ALIAS_COL) {
+    if (!re.test(text)) continue;
+    for (const [idx, label] of cols) {
+      const key = String(label).split("\n")[0].trim();
+      if (labels.some((l) => key === l || key.startsWith(l))) return Number(idx);
+    }
+  }
+  for (const [idx, label] of cols) {
+    const key = String(label).split("\n")[0].replace(/\(.*$/s, "").trim();
+    if (key.length >= 2 && text.includes(key)) return Number(idx);
+  }
+  return null;
+}
+
+// 행이 안 적힌 지적(횡단·공통)은 그 용어가 **처음 나오는 행**에 붙인다(재상 님 지시 2026-10-05)
+function firstRowOf(sheet, text) {
+  const cands = [];
+  for (const m of String(text).matchAll(/[「『"']([^」』"']{2,30})["'」』]/g)) cands.push(m[1]);
+  for (const m of String(text).matchAll(/[゠-ヿ一-鿿]{2,}/g)) cands.push(m[0]);
+  const seen = new Set();
+  const uniq = cands.map((c) => c.trim()).filter((c) => c.length >= 2 && !seen.has(c) && seen.add(c))
+    .sort((a, b) => b.length - a.length);   // 긴 후보부터 — 짧은 조각이 엉뚱한 행에 걸리는 걸 줄인다
+  const rows = Object.keys(sheet.cells).map(Number).filter((r) => r > sheet.headerRow).sort((a, b) => a - b);
+  for (const term of uniq) {
+    for (const r of rows) {
+      for (const [col, val] of Object.entries(sheet.cells[r])) {
+        if (String(val).includes(term)) return { row: r, column: Number(col) };
+      }
+    }
+  }
+  return null;
+}
+
+const SHEET_ALIAS = [
+  [/システムメッセージ|システムメッセ|SystemMessage/i, /SystemMessage/i],
+  [/Character|人物|登場人物|あらすじ|줄거리/i, /Character/i],
+  [/Term|用語/i, /Term/i],
+];
+
+/** 엔진 reviews → annotateSetjip 이 받는 findings */
+export function mapFindings(index, reviews) {
+  const keys = Object.keys(index);
+  const out = [];
+  const skipped = [];
+  for (const v of reviews || []) {
+    const loc = String(v.locator || "");
+    const detail = String(v.issue_detail || "");
+    const sugg = String(v.suggestion || "");
+    // 엔진 시트명엔 「シート」「★最優先」 같은 꼬리표가 붙는다
+    let sheet = String(v.sheet || "").replace(/★.*$/, "").replace(/シート$/, "").trim();
+    if (!index[sheet]) {
+      const flat = (t) => t.replace(/\s/g, "");
+      let hit = keys.find((k) => flat(k).startsWith(flat(sheet)) || flat(sheet).startsWith(flat(k)));
+      if (!hit) for (const [re, target] of SHEET_ALIAS) if (re.test(sheet)) { hit = keys.find((k) => target.test(k)); break; }
+      if (hit) sheet = hit;
+    }
+    let row = Number((loc.match(/(\d+)\s*行/) || [])[1]) || 0;
+    // 「その他・共通」처럼 실제 시트가 아니면 locator에서 시트+행을 건진다
+    if (!index[sheet] || !row) {
+      const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      for (const name of keys) {
+        for (const pat of [esc(name), esc(name.split(/\s+/)[0])]) {
+          const m = loc.match(new RegExp(`${pat}[^\\d]{0,6}(\\d+)\\s*行`));
+          if (m) { sheet = name; row = Number(m[1]); break; }
+        }
+        if (index[sheet] && row) break;
+      }
+    }
+    if (!index[sheet]) { skipped.push(v); continue; }
+
+    const cols = Object.entries(index[sheet].cols);
+    // 지적문이 '무엇이 문제인가'를 가리킨다. 수정안은 고칠 자리를 다른 칸으로 안내하는 일이 많아 뒤로 민다.
+    let column = pickCol(cols, detail) ?? pickCol(cols, sugg);
+    if (!row) {
+      const f = firstRowOf(index[sheet], `${loc} ${detail} ${sugg}`);
+      if (!f) { skipped.push(v); continue; }
+      row = f.row;
+      column = column ?? f.column;
+    }
+    out.push({ sheet, row, column, text: `【${v.severity}】${detail}${sugg ? `\n→ ${sugg}` : ""}` });
+  }
+  return { findings: out, skipped };
+}
+
 export { colLetter, colIndex };

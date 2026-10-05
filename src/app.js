@@ -37,6 +37,7 @@ import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock, learnedSignature, findSimilar } from "./learned.js";
 import { runLearnedAudit, formatAudit } from "./learnedAudit.js";
+import { SETJIP_CHANNELS, DAILY_LIMIT as SETJIP_LIMIT, isSetjipRequest, parseSetting, parseWork as parseSetjipWork, quotaCheck as setjipQuota, quotaUse as setjipQuotaUse, runSetjipCheck, resultText as setjipResultText } from "./setjipWorker.js";
 import { recordTurn, recordReply, runDistill, runFollowupScan, dueDailyDistill, listCandidates, setCandidateStatus, pruneTurns, kstDay as distillDay } from "./distill.js";
 import { scanFirstDeliveryQA, formatFirstDeliveryQA, customerQaStatus } from "./firstDeliveryQA.js";
 import { missingOriginals, deliveryOnDate, workSchedule, episodeLaunch, episodeDelivery, deliveryBatchMode, deliveryReconcile, dailyCheckList, koTitlesByCommonNo } from "./schedule.js";
@@ -5278,6 +5279,72 @@ const app = new App({
 const pendingWfo = new Map();
 let wfoSeq = 0;
 
+const setjipQuotaStore = new PersistMap("setjip-quota", { ttlMs: 3 * 86400000 });
+
+// 작업자 개인 채널에서 설정집 자가검수를 받는다. 멘션은 필요 없다(본인 채널).
+async function handleSetjipCheck({ message, client }) {
+  const worker = SETJIP_CHANNELS[message.channel];
+  if (!worker) return false;
+  const text = String(message.text || "");
+  if (!isSetjipRequest(text)) return false;
+
+  const ch = message.channel, thread = message.thread_ts || message.ts;
+  const say = (t) => client.chat.postMessage({ channel: ch, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+
+  // 국가 설정은 필수 — 기본값을 때려 넣으면 중국 설정 작품이 조용히 틀린 기준으로 검수된다
+  const settingType = parseSetting(text);
+  if (!settingType) {
+    await say("国家設定を一緒に書いてください（日本設定 / 中国設定 / 武侠設定 / ヨーロッパ設定 / 多国籍設定）。\n例）設定集チェック 日本設定");
+    return true;
+  }
+
+  const q = setjipQuota(setjipQuotaStore, ch);
+  if (!q.ok) {
+    await say(`本日の設定集チェックは上限（${SETJIP_LIMIT}回）に達しました。明日またお願いします。`);
+    return true;
+  }
+
+  // 첨부 xlsx 우선 — 없으면 작품명으로 TOTUS에서 받는다
+  const file = (message.files || []).find((f) => /\.xlsx$/i.test(f.name || "") || /spreadsheet/i.test(f.mimetype || ""));
+  const workTitle = parseSetjipWork(text);
+  if (!file && !workTitle) {
+    await say("設定集ファイルを添付するか、作品名を書いてください。\n例）（ファイル添付）設定集チェック 日本設定");
+    return true;
+  }
+
+  await say(`設定集をチェックしています（${settingType}）… 1〜2分ほどお待ちください。`);
+  try {
+    let workbook = null;
+    if (file) {
+      const dl = await fetch(file.url_private_download || file.url_private, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
+      if (!dl.ok) throw new Error(`ファイルの取得に失敗しました (${dl.status})`);
+      workbook = Buffer.from(await dl.arrayBuffer());
+    }
+    const res = await runSetjipCheck({
+      engineBase: REVIEW_ENGINE_BASE,
+      apiKey: process.env.REVIEW_ENGINE_API_KEY || "",
+      workbook, filename: file?.name, workTitle, settingType,
+    });
+    setjipQuotaUse(setjipQuotaStore, ch);
+    const left = setjipQuota(setjipQuotaStore, ch).left;
+    const body = setjipResultText({ ...res, left });
+
+    if (res.buffer) {
+      await client.files.uploadV2({ channel_id: ch, thread_ts: thread, initial_comment: body,
+        file_uploads: [{ file: res.buffer, filename: res.filename }] });
+    } else {
+      // TOTUS 경로는 원본 파일이 우리 손에 없어 주석을 못 단다 — 본문으로만 전한다
+      const list = res.reviews.slice(0, 30).map((v, i) => `${i + 1}. [${v.sheet}] ${v.locator}\n   ${v.issue_detail}${v.suggestion ? `\n   → ${v.suggestion}` : ""}`).join("\n");
+      await say(`${body}\n\n${list || "指摘はありません。"}`);
+    }
+    console.log(`[setjip-check] ${worker.name} — ${settingType} 지적 ${res.reviews.length}건 (남은 ${left})`);
+  } catch (e) {
+    console.error("[setjip-check] 실패:", e?.message ?? e);
+    await say(`チェックに失敗しました。\n\`${String(e?.message ?? e).slice(0, 200)}\`\n担当PMにご連絡ください。`);
+  }
+  return true;
+}
+
 async function handleWorkerFileOrder({ message, client }) {
   const worker = WFO_CHANNELS[message.channel];
   if (!worker) return false;
@@ -5388,6 +5455,7 @@ app.action("wfo_cancel", async ({ ack, body, client }) => {
 app.message(async ({ message, say, client }) => {
   // 작업자 채널: 작업자 본인 요청만 전용 경로로. 재상 님·APM이 쓴 글은 평소대로 브레인이 받는다
   //(그 채널에서 기능 소개·설명을 시키실 수 있어야 하므로).
+  if (SETJIP_CHANNELS[message.channel] && !message.bot_id && await handleSetjipCheck({ message, client })) return;
   if (WFO_CHANNELS[message.channel] && !ALLOWED_USERS.has(message.user)) { await handleWorkerFileOrder({ message, client }); return; }
   // 수급 안내 채널 — 설정집/타이틀 로고 도착 안내면 배정 작업자+채널 링크 답글
   if (message.channel === SUPPLY_NOTICE_CHANNEL && (SUPPLY_BOTS[message.bot_id] || /도착\s*안내/.test(message.text || ""))) {
