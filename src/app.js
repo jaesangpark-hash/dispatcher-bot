@@ -7236,6 +7236,44 @@ async function checkWeeklyScrum() {
     console.log(`[scrum] 주간 공지 (${mdate}) doc=${doc?.url || "없음"} thread=${res?.ts || "?"}`);
   } catch (e) { console.error("[scrum] 실패:", e?.message ?? e); }
 }
+// ── 중일 원가율 스크럼 공지(2026-10-07 재상 님 지정) ─────────────
+// 자동화 정기 스크럼과 **다르게** Outline 문서를 만들지 않는다 — 각 APM이 그 주 이슈를
+// 스레드에 바로 적게만 한다. 채널은 자동화 스크럼과 같은 곳(월요일 12시, 같은 시각에 2건).
+// 오화진 님은 대상에서 제외(재상 님 지정).
+const COSTRATE_CHANNEL = process.env.COSTRATE_SCRUM_CHANNEL || SCRUM_CHANNEL;
+const COSTRATE_DAY = Number(process.env.COSTRATE_SCRUM_DAY ?? 1);     // 0=일 … 1=월
+const COSTRATE_HOUR = Number(process.env.COSTRATE_SCRUM_HOUR ?? 12);  // KST 시
+const COSTRATE_MENTIONS = process.env.COSTRATE_SCRUM_MENTIONS || "<@U07E0QPL8MV> <@U05CE8HFA6B> (cc <@U04463JR4HH>)";
+async function checkCostRateScrum() {
+  try {
+    if (!COSTRATE_CHANNEL) return;
+    const kst = new Date(Date.now() + 9 * 3600 * 1000);
+    if (kst.getUTCDay() !== COSTRATE_DAY || kstHourNow() < COSTRATE_HOUR) return;
+    const today = kst.toISOString().slice(0, 10);
+    let st = {}; try { st = JSON.parse(readFileSync("data/costrate-scrum.json", "utf8")); } catch { /* 첫 실행 */ }
+    if (st.week === today) return;
+    // 상태 파일만으론 못 막은 중복발송 전례(2026-08-24 자동화 스크럼)가 있어 채널도 같이 본다.
+    try {
+      const hist = await app.client.conversations.history({ channel: COSTRATE_CHANNEL, limit: 20 });
+      const already = (hist.messages || []).some((m) => (m.bot_id === SELF_BOT_ID || m.user === SELF_BOT_USER)
+        && /원가율 스크럼/.test(m.text || "")
+        && new Date(parseFloat(m.ts) * 1000 + 9 * 3600 * 1000).toISOString().slice(0, 10) === today);
+      if (already) { console.log("[costrate-scrum] 오늘자 공지가 이미 있어서 스킵"); st.week = today; try { writeFileSync("data/costrate-scrum.json", JSON.stringify(st)); } catch { } return; }
+    } catch (e) { console.error("[costrate-scrum] 중복확인 실패(진행은 계속):", e?.message ?? e); }
+    st.week = today; try { writeFileSync("data/costrate-scrum.json", JSON.stringify(st)); } catch { }
+    const lines = [
+      `💰 *중일 원가율 스크럼 — 한 주간 이슈 공유*`,
+      COSTRATE_MENTIONS,
+      ``,
+      `이번 주 원가율 관련 이슈가 있으면 이 스레드에 남겨주세요 🙌`,
+      `없으면 「없음」만 적어주셔도 됩니다.`,
+    ];
+    const res = await app.client.chat.postMessage({ channel: COSTRATE_CHANNEL, text: lines.join("\n"), ...SENDER, unfurl_links: false });
+    st.channel = COSTRATE_CHANNEL; st.threadTs = res?.ts || null;
+    try { writeFileSync("data/costrate-scrum.json", JSON.stringify(st)); } catch { /* 무시 */ }
+    console.log(`[costrate-scrum] 주간 공지 (${today}) thread=${res?.ts || "?"}`);
+  } catch (e) { console.error("[costrate-scrum] 실패:", e?.message ?? e); }
+}
 // 회의일(수) diff 요약 — 이번 주 vs 지난주 문서 비교, 월요일 공지 스레드에 답글
 async function checkWeeklyScrumDiff() {
   try {
@@ -8502,7 +8540,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkDemoProposal().catch((e) => console.error("[demo] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkLearnedAudit().catch((e) => console.error("[learned-audit] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkDemoProposal().catch((e) => console.error("[demo] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkLearnedAudit().catch((e) => console.error("[learned-audit] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkCostRateScrum().catch((e) => console.error("[costrate-scrum] tick 오류:", e?.message ?? e)); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
