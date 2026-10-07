@@ -4419,6 +4419,8 @@ const CTX_RE = /prompt is too long|context[_ ]?length|too many tokens|maximum co
 const isCtxOverflow = (s) => CTX_RE.test(String(s || ""));
 // true면 지금 세션 스트림을 끝낸다 → for-await 루프가 끝나며 startSession()이 새 세션을 띄운다(컨텍스트 초기화).
 let sessionResetWanted = false;
+// 이 입력 토큰을 넘긴 턴 뒤에는 세션을 갈아탄다 — 한도(보통 200k)에 부딪히기 전에 선제적으로.
+const CTX_SOFT_LIMIT = Number(process.env.BRAIN_CTX_SOFT_LIMIT || 150000);
 
 const TURN_HARD_TIMEOUT_MS = 420_000;   // 한 턴이 이 시간 넘게 안 끝나면(행/과부하) 중단·재시작.
 // ★210→420s(2026-06-28): 대량 집계·검수 턴이 정당하게 3~6분 걸리는데 210s가 너무 짧아 멀쩡한 작업을
@@ -4678,6 +4680,14 @@ function startSession() {
         // th: 스레드 식별자 — 한 상담이 여러 턴으로 이어질 때 채널+th로 하나의 대화로 묶는다
         logUsage({ kind: "main", user: currentTurn?.user || null, channel: ctx?.channel || null, th: ctx?.threadTs || ctx?.ts || null, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, chars: text.length, isError: !!m.is_error, req: reqRaw.replace(/\s+/g, " ").trim().slice(0, 200) || null, tools: toolList, res, inTok: m.usage?.input_tokens ?? null, outTok: m.usage?.output_tokens ?? null, cacheRead: m.usage?.cache_read_input_tokens ?? null, cacheWrite: m.usage?.cache_creation_input_tokens ?? null });
         turnTools = new Set();
+        // ★한도에 부딪히기 전에 미리 비운다(2026-10-07). 세션은 재기동 전까지 계속 쌓이는데
+        //   첨부가 큰 턴이 두어 번 들어오면 바로 한도에 닿는다. 성공한 턴 뒤에만 갈아타므로
+        //   사용자는 끊김을 못 느끼고, 실패 후 재시도보다 훨씬 싸다.
+        const ctxUsed = (m.usage?.input_tokens || 0) + (m.usage?.cache_read_input_tokens || 0) + (m.usage?.cache_creation_input_tokens || 0);
+        if (!m.is_error && ctxUsed > CTX_SOFT_LIMIT) {
+          console.log(`[brain] 컨텍스트 ${Math.round(ctxUsed / 1000)}k — 한도 전에 세션 교체`);
+          sessionResetWanted = true;
+        }
         try { recordReply({ channel: ctx?.channel, threadTs: ctx?.threadTs, text, ms: ctx?.startedAt ? Date.now() - ctx.startedAt : null, isError: !!m.is_error }); } catch {}
         if (m.is_error) console.log(`[brain] 에러내용: ${text.slice(0, 200).replace(/\n/g, " ")}`);
         const rlTurn = currentTurn;   // rate-limit 재시도용 캡처
@@ -4738,11 +4748,27 @@ function startSession() {
   })().catch((e) => {
     const msg = e?.message ?? String(e);
     const rl = isRateLimit(msg);
-    console.error("[brain] 세션 루프 오류:", msg, rl ? "(rate-limit)" : "");
+    const ctxOver = isCtxOverflow(msg);
+    console.error("[brain] 세션 루프 오류:", msg, rl ? "(rate-limit)" : ctxOver ? "(컨텍스트 초과)" : "");
     const dead = [currentTurn, ...queue].filter(Boolean);
     currentTurn = null; queue.length = 0;
-    const note = rl ? "⏳ 사용량 한도로 잠시 멈췄어요. 곧 자동 복구되니 1~2분 뒤 다시 보내주세요." : `⚠️ 브레인 오류: ${msg}`;
-    for (const t of dead) deliver(t.ctx, note).catch(() => {});
+    // ★컨텍스트 초과는 result가 아니라 **예외**로도 올라온다(2026-10-07 실사고:
+    //   「⚠️ 브레인 오류: Claude Code returned an error result: Prompt is too long」).
+    //   아래 startSession이 어차피 새 세션(=빈 컨텍스트)을 띄우므로, 버리지 말고 그대로 다시 태운다.
+    if (ctxOver) {
+      const retry = dead.filter((t) => !t._ctxRetry);
+      const giveUp = dead.filter((t) => t._ctxRetry);
+      for (const t of retry) {
+        queue.push({ ...t, _ctxRetry: 1 });
+        if (t.ctx?.placeholderTs) t.ctx.client?.chat.update({ channel: t.ctx.channel, ts: t.ctx.placeholderTs, text: "⏳ 대화가 길어져서 정리하고 다시 시도할게요…" }).catch(() => {});
+      }
+      for (const t of giveUp) deliver(t.ctx, "대화가 너무 길어져서 처리를 못 했어요 😢 정리하고 다시 시도했는데도 안 됐어요.\n새 스레드에서, 필요한 작품·회차만 적어 다시 보내주세요.").catch(() => {});
+      console.log(`[brain] 컨텍스트 초과(예외) — 세션 비우고 ${retry.length}건 재시도${giveUp.length ? `, ${giveUp.length}건 포기` : ""}`);
+    } else {
+      const note = rl ? "⏳ 사용량 한도로 잠시 멈췄어요. 곧 자동 복구되니 1~2분 뒤 다시 보내주세요."
+        : `⚠️ 처리 중 오류가 났어요 — 한 번만 다시 말씀해주세요.\n\`${String(msg).slice(0, 200)}\``;
+      for (const t of dead) deliver(t.ctx, note).catch(() => {});
+    }
     if (turnResolve) { const r = turnResolve; turnResolve = null; r(); }
     setTimeout(startSession, rl ? 30000 : 1000);
   });
