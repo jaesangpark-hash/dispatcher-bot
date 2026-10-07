@@ -93,7 +93,8 @@ export function workerBlocks(surveyId, s, role, worker) {
     //   「이 작업이 가능한가」지 「언제까지 되는가」가 아니다. 일정은 배정 확정 후 따로 간다.
     `${B} ${t.work} : ${s.work}${s.originalTitle ? `（${s.originalTitle}）` : ""}`,
     s.episodes ? `${B} ${t.eps(s.episodes)}` : null,
-    s.country ? `${B} ${s.country}` : null,
+    // ★국가설정은 번역에만 — 식자 작업에는 쓰이지 않는다(2026-10-07 재상 님 지정)
+    (role === "번역" && s.country) ? `${B} ${s.country}` : null,
     // 해당 역할 블록만 — 번역가에게 식자 리터칭 등급을 보여줄 이유가 없다
     note ? `\n${t.about}\n${note}` : null,
     "",
