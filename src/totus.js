@@ -156,8 +156,15 @@ export const completeSourceGroups = (sourceGroupIds) =>
   sendJSON("POST", `/source-groups/complete`, { sourceGroupIds }, { "X-Confirm-Mutation": "I-UNDERSTAND-PROD" });
 
 // 파일별 전처리 상태 조회. fileIds: string[] → meta.전체완료:bool, meta.오류있음:bool
+// ★여기 들어가는 fileId는 **source-tree의 파일 id**다(명세: "Source Tree에서 얻은 파일 ID로 조회").
+// PIVO 업로드 API가 돌려주는 fileId는 PIVO GraphQL Directory의 id라 **다른 체계**이고, 그걸 넣으면
+// 200에 빈 배열(`전체파일수:0`)이 온다 — 2026-10-01~10-07 내내 "게이트웨이가 기록을 안 준다"고
+// 오판했던 원인. 전처리 상태만 필요하면 projectSourceTree 한 번이면 끝난다(파일마다 전처리상태 포함).
 export const getPreprocessingStatus = (fileIds) =>
   getJSON(`/files/preprocessing-status`, { fileIds: Array.isArray(fileIds) ? fileIds.join(",") : fileIds });
+
+// 프로젝트 source tree — 폴더/파일 구조 + 파일별 전처리상태(DONE 등). 회차 폴더명은 "055_055" 꼴.
+export const projectSourceTree = (projectUuid) => getJSON(`/projects/${encodeURIComponent(projectUuid)}/source-tree`);
 
 // ── 재수급 원본 → PIVO 업로드(2026-08-23) ────────────────────────
 // PIVO 작품 회차의 원본(작업용) 파일 목록. read-only(PIVO GraphQL Directory query만, 부작용 없음).

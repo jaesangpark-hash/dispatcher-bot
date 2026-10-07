@@ -25,7 +25,7 @@ import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { quotationByPivo, findProject, projectByPivo, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, episodeSourceGroups, reorderFiles, completeSourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl, pivoEpisodeSourceFiles, pivoUploadSourceFile, getPreprocessingStatus, setupReferenceFiles, downloadReferenceFile, productPrices, confirmedPrice, setJobProductPrices } from "./totus.js";
+import { quotationByPivo, findProject, projectByPivo, scheduleSummary, projectJobs, taskList, taskDetail, translationText, jobProcesses, setDeliveryDate, setProjectSettings, deliverySourceGroups, episodeSourceGroups, reorderFiles, completeSourceGroups, retakeTask, setTaskDates, setupXlsxBuffer, filePresignUrl, pivoEpisodeSourceFiles, pivoUploadSourceFile, getPreprocessingStatus, projectSourceTree, setupReferenceFiles, downloadReferenceFile, productPrices, confirmedPrice, setJobProductPrices } from "./totus.js";
 import { patchMinRowHeight } from "./xlsxRowHeight.js";
 import { search as notionSearch, readPage as notionReadPage } from "./notion.js";
 import { extractEpisode, extractEpisodeRange, QA_INSTRUCTIONS } from "./review.js";
@@ -4641,13 +4641,32 @@ const TOOL_LABEL = {
 // 전처리 상태 응답 해석(2026-10-01). meta.전체파일수가 0이면 "진행 중"이 아니라 **기록 자체가 없음**이다.
 // 실측: 어떤 fileId를 넣어도 빈 배열이 오는데 TOTUS에선 전처리가 끝나 있다(PV-190819 38화).
 // 이걸 진행 중으로 보면 재시도만 15분 헛돌다 실패로 끝난다 → unknown으로 갈라 한 번만 알리고 멈춘다.
-function readPreprocess(s) {
-  const m = s?.meta;
-  if (!m) return { unknown: true };
-  if (Number(m.전체파일수) === 0 && Number(m.요청파일수) > 0) return { unknown: true };
-  if (m.오류있음) return { error: true };
-  if (m.전체완료) return { done: true };
-  return { pending: true };
+// 회차 전처리 상태 — source-tree에서 그 회차 폴더의 파일들을 보고 판정한다(2026-10-07).
+// 폴더 이름은 "055_055", "001_第1话 …" 꼴이라 앞머리 숫자가 회차다.
+// 전처리 상태만 필요하므로 projectSourceTree 한 번이면 끝난다(preprocessing-status를 또 부를 필요 없음).
+async function episodePreprocess(pivo, episodes) {
+  try {
+    const proj = await projectByPivo(String(pivo).replace(/\D/g, ""));
+    const uuid = proj?.data?.[0]?.uuid;
+    if (!uuid) return { unknown: true, why: "프로젝트 UUID 조회 실패" };
+    const tree = (await projectSourceTree(uuid))?.data?.sourceTree;
+    if (!tree) return { unknown: true, why: "source-tree 응답 없음" };
+    const want = new Set((episodes || []).map((e) => Number(String(e).replace(/\D/g, ""))));
+    const files = [];
+    (function walk(n) {
+      for (const d of (n.하위폴더 || [])) {
+        const ep = Number(String(d.이름 || "").match(/^(\d+)/)?.[1] ?? NaN);
+        if (want.has(ep)) for (const f of (d.파일 || [])) if (!f.삭제여부) files.push({ ep, name: f.이름, st: String(f.전처리상태 || "") });
+        walk(d);
+      }
+    })(tree);
+    if (!files.length) return { unknown: true, why: `회차 폴더(${[...want].join(",")})를 source-tree에서 못 찾음` };
+    const err = files.filter((f) => /ERROR|FAIL/i.test(f.st));
+    const notDone = files.filter((f) => f.st !== "DONE" && !/ERROR|FAIL/i.test(f.st));
+    if (err.length) return { error: true, total: files.length, detail: `오류 ${err.length}건 (${err.slice(0, 3).map((f) => f.name).join(", ")})` };
+    if (notDone.length) return { pending: true, total: files.length, detail: `미완 ${notDone.length}/${files.length}` };
+    return { done: true, total: files.length };
+  } catch (e) { return { unknown: true, why: String(e?.message ?? e).slice(0, 120) }; }
 }
 
 function setPlaceholder(ctx, text) {
@@ -7943,10 +7962,9 @@ async function _handleResupplyAutoTransfer({ message, client }) {
       let ppDone = false;
       while (Date.now() - start < maxWait) {
         await new Promise(r => setTimeout(r, 30000));
-        const s = await getPreprocessingStatus(allFileIds).catch(() => null);
-        const pp = readPreprocess(s);
-        if (pp.unknown) { preprocessWarn = "\nℹ️ 전처리 상태를 조회할 수 없어요(게이트웨이가 기록을 안 줌) — TOTUS에서 직접 확인해주세요"; break; }
-        if (pp.error) { preprocessWarn = "\n⚠️ 전처리 오류 발생 — 수동 확인 필요"; break; }
+        const pp = await episodePreprocess(entry.pivo, [...new Set(uploadedEpisodes)]);
+        if (pp.unknown) { preprocessWarn = `\nℹ️ 전처리 상태를 조회할 수 없어요(${pp.why}) — TOTUS에서 직접 확인해주세요`; break; }
+        if (pp.error) { preprocessWarn = `\n⚠️ 전처리 오류 — ${pp.detail}`; break; }
         if (pp.done) { ppDone = true; break; }
       }
       if (!ppDone && !preprocessWarn) preprocessWarn = "\n⚠️ 전처리 확인 시간 초과 — 수동 확인 필요";
@@ -8047,11 +8065,10 @@ async function checkPendingFinalize() {
     const tries = (j.tries || 0) + 1;
     let done = false, reason = "", unknownStatus = false;
     try {
-      const s = await getPreprocessingStatus(j.fileIds).catch(() => null);
-      const pp = readPreprocess(s);
-      if (pp.unknown) { unknownStatus = true; reason = "전처리 상태 조회 불가"; }
-      else if (pp.error) reason = "전처리 오류";
-      else if (!pp.done) reason = "전처리 진행 중";
+      const pp = await episodePreprocess(j.pivo, j.episodes);
+      if (pp.unknown) { unknownStatus = true; reason = `전처리 상태 조회 불가(${pp.why})`; }
+      else if (pp.error) reason = `전처리 오류 — ${pp.detail}`;
+      else if (!pp.done) reason = `전처리 진행 중 — ${pp.detail}`;
       else {
         const warns = [];
         await _finalizeTransferEpisodes({ pivo: j.pivo, episodes: j.episodes, allFileIds: j.fileIds, allWarns: warns, partialUpload: false });
@@ -8066,11 +8083,14 @@ async function checkPendingFinalize() {
         text: `✅ *${j.work}* ${_epText(j.episodes)} 전처리가 끝나 소스그룹 확정까지 마쳤어요.` }).catch(() => {});
       continue;
     }
-    // 상태 자체를 못 읽는 건 기다린다고 달라지지 않는다 — 재시도 없이 한 번만 알리고 큐에서 뺀다(2026-10-01).
-    if (unknownStatus) {
+    // ★조회 불가는 이제 드물다(2026-10-07: 엉뚱한 ID 체계로 물어서 늘 빈 결과였던 것을 고침).
+    // 남은 경우는 프로젝트 조회 실패·회차 폴더 미생성 같은 **일시적인 것**이라 몇 번은 기다려본다.
+    // 전엔 1회로 끝내면서 안내문엔 "최대 10번"이라고 적어 48분을 기다리게 만들었다.
+    const UNKNOWN_MAX = 3;
+    if (unknownStatus && tries >= UNKNOWN_MAX) {
       pendingFinalize.delete(key);
       await app.client.chat.postMessage({ channel: j.channel, thread_ts: j.threadTs, ...SENDER,
-        text: `ℹ️ *${j.work}* ${_epText(j.episodes)} 전처리 상태를 조회할 수 없어 소스그룹 확정은 건너뛰었어요 — TOTUS에서 직접 확인해주세요.` }).catch(() => {});
+        text: `ℹ️ *${j.work}* ${_epText(j.episodes)} 전처리 상태를 ${UNKNOWN_MAX}번 조회했는데 못 읽어서 소스그룹 확정은 건너뛰었어요(${reason}) — TOTUS에서 직접 확인해주세요.` }).catch(() => {});
       continue;
     }
     if (tries >= FINALIZE_MAX_TRIES) {
@@ -8486,12 +8506,11 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
     // 전처리는 평균 17분이라 워커를 붙들고 기다리지 않는다(구 10분 블로킹 폐지, 2026-09-22).
     // 여기서 한 번만 확인하고, 아직이면 확정을 큐에 넘겨 3분 뒤부터 5분 간격으로 본다.
     if (!skipPreprocessing && allFileIds.length) {
-      const s = await getPreprocessingStatus(allFileIds).catch((e) => { console.error("[transfer] 전처리 상태 조회 실패:", e?.message); return null; });
-      console.log("[transfer] 전처리 1차 확인:", JSON.stringify(s?.meta));
-      const pp = readPreprocess(s);
-      if (pp.unknown) allWarns.push("ℹ️ 전처리 상태를 조회할 수 없어요 — TOTUS에서 직접 확인해주세요");
-      else if (pp.error) allWarns.push("⚠️ 전처리 오류 발생");
-      else if (!pp.done) allWarns.push("⏳ 전처리 진행 중");
+      const pp = await episodePreprocess(entry.pivo, episodeList.map((e) => e.episode));
+      console.log("[transfer] 전처리 1차 확인:", JSON.stringify(pp));
+      if (pp.unknown) allWarns.push(`ℹ️ 전처리 상태를 조회할 수 없어요(${pp.why}) — TOTUS에서 직접 확인해주세요`);
+      else if (pp.error) allWarns.push(`⚠️ 전처리 오류 — ${pp.detail}`);
+      else if (!pp.done) allWarns.push(`⏳ 전처리 진행 중 — ${pp.detail}`);
     } else {
       console.log(`[transfer] 전처리 스킵: skipPreprocessing=${skipPreprocessing}, allFileIds.length=${allFileIds.length}`);
     }
