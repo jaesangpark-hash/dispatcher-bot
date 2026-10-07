@@ -4489,7 +4489,7 @@ async function fetchThreadContext(client, channel, threadTs, { perMsg = 500, hig
       });
     const attFiles = [];
     for (const m of msgs) for (const f of (m.files || []))
-      attFiles.push({ url: f.url_private_download || f.url_private, mimetype: f.mimetype, filetype: f.filetype, name: f.name });
+      attFiles.push({ url: f.url_private_download || f.url_private, mimetype: f.mimetype, filetype: f.filetype, name: f.name, ts: m.ts });
     return { text: lines.length ? lines.join("\n") : null, attFiles };
   } catch (e) {
     console.error("[thread] 맥락 조회 실패:", e?.message ?? e);
@@ -4532,8 +4532,56 @@ async function findThreads(client, query, { channel = "", days = 60, maxPages = 
 
 // 슬랙 첨부(url_private)를 봇 토큰으로 받아 Claude content 블록으로 변환. (files:read 스코프 필요)
 // 이미지=image블록, PDF=document블록, 엑셀=시트별 CSV 텍스트, csv/txt/md/json 등=텍스트.
+// ── 스레드 첨부 추리기(2026-10-07 실사고) ───────────────────────
+// 전엔 스레드의 **모든** 파일을 매 턴 통째로 실었다. 「원본 체크리스트」 다섯 글자를 보냈는데
+// 그 스레드에 쌓인 설정집 5개(약 25만 자)가 같이 들어가 두 턴 만에 컨텍스트가 터졌다.
+// 실측: 체크리스트 본체는 5,083자인데 설정집은 하나가 5만 자였다.
+//
+// 가르는 기준 — ①직접 붙인 파일은 무조건 싣는다(붙였다는 것 자체가 의도)
+//              ②요청문에 파일 단서가 있으면 맞는 것만  ③단서가 없으면 최근 것부터
+//              ④안 싣는 것도 **이름은 알려준다**(조용히 사라지면 더 나쁘다)
+// 한국어 요청 ↔ 일본어 파일명이라 글자 겹침이 없다("원본 체크리스트" vs "原本チェック") — 짝을 둔다.
+const DOC_SYNONYMS = [
+  ["설정집", "設定集", "設定"], ["원본", "原本", "原稿"], ["체크리스트", "チェックリスト", "チェック", "checklist"],
+  ["수정", "修正"], ["확인", "確認"], ["검수", "検収", "検査"], ["납품", "納品"],
+  ["견적", "見積"], ["요청", "依頼"], ["표지", "表紙"], ["로고", "ロゴ"], ["폰트", "フォント", "font"],
+];
+const THREAD_FILE_AUTOLOAD = Number(process.env.THREAD_FILE_AUTOLOAD || 3);   // 단서 없을 때 자동으로 싣는 개수
+function pickThreadFiles(text, threadFiles) {
+  const t = String(text || "").toLowerCase();
+  const has = (name, group) => group.some((w) => String(name || "").toLowerCase().includes(w.toLowerCase()));
+  const cues = DOC_SYNONYMS.filter((g) => g.some((w) => t.includes(w.toLowerCase())));
+  let picked = [];
+  if (cues.length) {
+    picked = threadFiles.filter((f) => cues.every((g) => has(f.name, g)));           // 단서 전부 맞는 것
+    if (!picked.length) picked = threadFiles.filter((f) => cues.some((g) => has(f.name, g)));  // 하나라도
+  }
+  // 단서가 없거나 아무것도 안 걸리면 최근 것부터 — 다 버리면 지금보다 나빠진다
+  if (!picked.length) picked = [...threadFiles].sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0)).slice(0, THREAD_FILE_AUTOLOAD);
+  const pickedSet = new Set(picked.map((f) => f.url));
+  return { picked, skipped: threadFiles.filter((f) => !pickedSet.has(f.url)) };
+}
+
+// ★인라인으로 넣는 텍스트는 **턴 전체 합산**으로 제한한다(2026-10-07 실사고).
+// 전엔 파일당 3만 자 × 6개 = 18만 자를 그대로 넣었다. 한국어·일본어는 글자당 토큰이 거의 1:1이라
+// 「원본 체크리스트」처럼 첨부 7개짜리 턴 하나가 10만 토큰을 먹고, 그게 세션에 영구히 남아
+// 두어 번 만에 `Prompt is too long`이 났다. 전문은 어차피 texts(=compute 도구)로 따로 가므로
+// 인라인은 '무엇이 들어있는지 보이는' 정도면 충분하다.
+const ATTACH_INLINE_BUDGET = Number(process.env.ATTACH_INLINE_BUDGET || 60000);   // 턴 합산 글자수
+const ATTACH_INLINE_PER_FILE = Number(process.env.ATTACH_INLINE_PER_FILE || 15000);
 async function toAttachmentBlocks(files, cap = 6) {
   const blocks = [], texts = [], seen = new Set();
+  let budget = ATTACH_INLINE_BUDGET;
+  // 전문은 compute로 넘어가니, 인라인은 예산 안에서만 잘라 넣고 잘렸음을 모델에게 알린다.
+  const inline = (name, full) => {
+    const room = Math.max(0, Math.min(ATTACH_INLINE_PER_FILE, budget));
+    const cut = full.slice(0, room);
+    budget -= cut.length;
+    const omitted = full.length - cut.length;
+    return cut + (omitted > 0
+      ? `\n…(이하 ${omitted.toLocaleString()}자 생략 — 전체 ${full.length.toLocaleString()}자. 전체를 봐야 하면 compute 도구로 이 첨부(${name})를 처리해라)`
+      : "");
+  };
   for (const f of files) {
     const url = f.url; if (!url || seen.has(url) || blocks.length >= cap) continue;
     seen.add(url);
@@ -4558,11 +4606,11 @@ async function toAttachmentBlocks(files, cap = 6) {
         const wb = XLSX.read(buf, { type: "buffer" });
         let txt = "";
         for (const sn of wb.SheetNames) txt += `## ${sn}\n${XLSX.utils.sheet_to_csv(wb.Sheets[sn])}\n\n`;
-        blocks.push({ type: "text", text: `[첨부 엑셀: ${name}]\n${txt.slice(0, 30000)}` });
+        blocks.push({ type: "text", text: `[첨부 엑셀: ${name}]\n${inline(name, txt)}` });
         texts.push({ name, text: txt.slice(0, 500000) });   // compute용 전체(LLM 컨텍스트보다 넉넉히)
       } else if (mt.startsWith("text/") || /json|csv|markdown|xml|yaml/.test(mt) || ["csv", "tsv", "txt", "md", "markdown", "json", "log", "yaml", "yml", "xml"].includes(ft)) {  // 텍스트류
         const t = buf.toString("utf8");
-        blocks.push({ type: "text", text: `[첨부 파일: ${name}]\n${t.slice(0, 30000)}` });
+        blocks.push({ type: "text", text: `[첨부 파일: ${name}]\n${inline(name, t)}` });
         texts.push({ name, text: t.slice(0, 500000) });
       } else {
         console.error(`[file] ${name} 미지원 타입 스킵 (mt=${mt}, ft=${ft})`);
@@ -4790,7 +4838,16 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
   if (inThread) {
     const tc = await fetchThreadContext(client, channel, thread);
     if (tc.text) llmText = `아래는 이 슬랙 스레드의 대화 맥락이야. 참고해서 마지막 [요청]에 답해줘.\n\n[스레드 맥락]\n${tc.text}\n\n[요청]\n${text || "(첨부된 파일 참고)"}`;
-    attFiles = attFiles.concat(tc.attFiles);
+    // 스레드 파일은 전부가 아니라 요청과 맞는 것만. 안 싣는 건 이름을 알려줘 필요하면 달라고 할 수 있게 한다.
+    const alreadyUrls = new Set(msgFiles.map((f) => f.url));
+    const threadOnly = tc.attFiles.filter((f) => !alreadyUrls.has(f.url));
+    const { picked, skipped } = pickThreadFiles(text, threadOnly);
+    attFiles = attFiles.concat(picked);
+    if (skipped.length) {
+      llmText += `\n\n[이 스레드에 있지만 이번엔 안 읽은 파일 ${skipped.length}개 — 이름만 보여준다. 내용이 필요하면 사용자에게 "○○ 파일도 볼까요?"라고 물어라(혼자 넘겨짚고 "파일이 없다"고 하지 말 것)]\n` +
+        skipped.map((f, i) => `${i + 1}. ${f.name}`).join("\n");
+      console.log(`[handle] 스레드 첨부 ${threadOnly.length}개 중 ${picked.length}개만 읽음 (${skipped.length}개는 이름만)`);
+    }
   }
   // 현재 시각 주입 — '월요일 10시' 같은 상대 시각 리마인더를 브레인이 정확히 계산하도록
   const nowStr = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "full", timeStyle: "short" });
