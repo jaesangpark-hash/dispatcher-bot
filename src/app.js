@@ -37,7 +37,7 @@ import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock, learnedSignature, findSimilar } from "./learned.js";
 import { runLearnedAudit, formatAudit } from "./learnedAudit.js";
-import { surveyTargets, workerBlocks, summaryText, roleLang, splitWorkNotes } from "./setjipSurvey.js";
+import { surveyTargets, workerBlocks, summaryText, roleLang, splitWorkNotes, SURVEY_ROLE_NAMES } from "./setjipSurvey.js";
 import { SETJIP_CHANNELS, DAILY_LIMIT as SETJIP_LIMIT, isSetjipRequest, parseSetting, parseWork as parseSetjipWork, quotaCheck as setjipQuota, quotaUse as setjipQuotaUse, runSetjipCheck, resultText as setjipResultText } from "./setjipWorker.js";
 import { recordTurn, recordReply, runDistill, runFollowupScan, dueDailyDistill, listCandidates, setCandidateStatus, pruneTurns, kstDay as distillDay } from "./distill.js";
 import { scanFirstDeliveryQA, formatFirstDeliveryQA, customerQaStatus } from "./firstDeliveryQA.js";
@@ -6463,6 +6463,7 @@ app.action("setjip_survey_send", async ({ ack, body, client }) => {
   // ★발송 전에 먼저 마킹 — 버튼을 두 번 누르거나 슬랙이 재전송해도 작업자에게 두 번 가지 않게.
   s.sentRoles.push(role);
   s.sentAt = Date.now();
+  s.sentRoleAt = { ...(s.sentRoleAt || {}), [role]: Date.now() };   // 역할별 24시간 마감 계산용
   pendingSetjipSurvey.set(ts, s);
   const failed = [];
   for (const w of targets) {
@@ -6512,6 +6513,42 @@ async function handleSetjipSurveyAnswer({ ack, body, client }, answer) {
 }
 app.action("setjip_survey_yes", async (a) => handleSetjipSurveyAnswer(a, "yes"));
 app.action("setjip_survey_no", async (a) => handleSetjipSurveyAnswer(a, "no"));
+
+// ── 의향조사 결과 취합(2026-10-07 재상 님 시나리오) ────────────────
+// 6시간마다 훑어서 역할별로 결과를 **요청 스레드에** 올린다.
+//   · 24시간 전에 전원 응답 → 그때 공유
+//   · 24시간이 지나면 미응답이 남아 있어도 공유
+//   · 어느 쪽이든 **수락한 사람 이름만** 알린다(거절·미응답은 이름을 적지 않는다)
+//   · 수락이 0명이면 그 사실을 따로 알린다 — 번역·식자 각각 별개로 본다
+// 역할마다 한 번만 보고한다(reportedRoles).
+const SURVEY_POLL_MS = Number(process.env.SETJIP_SURVEY_POLL_H || 6) * 3600 * 1000;
+const SURVEY_DEADLINE_MS = Number(process.env.SETJIP_SURVEY_DEADLINE_H || 24) * 3600 * 1000;
+let _surveyLastScan = 0;
+async function checkSetjipSurvey() {
+  if (Date.now() - _surveyLastScan < SURVEY_POLL_MS) return;
+  _surveyLastScan = Date.now();
+  for (const [ts, s] of [...pendingSetjipSurvey.entries()]) {
+    for (const role of SURVEY_ROLE_NAMES) {
+      if (!s.sentRoles?.includes(role)) continue;
+      if (s.reportedRoles?.includes(role)) continue;
+      const targets = surveyTargets(role);
+      const ans = s.answers || {};
+      const key = (w) => `${role}|${w.channel}`;
+      const pending = targets.filter((w) => !ans[key(w)]);
+      const overdue = Date.now() - (s.sentRoleAt?.[role] || s.sentAt || 0) >= SURVEY_DEADLINE_MS;
+      if (pending.length && !overdue) continue;   // 아직 기다린다
+      const yes = targets.filter((w) => ans[key(w)]?.answer === "yes");
+      const tail = pending.length ? `\n_${SURVEY_DEADLINE_MS / 3600000}시간이 지나 마감했어요 — 미응답 ${pending.length}명._` : "";
+      const text = yes.length
+        ? `✅ *${s.work}* — ${role} 의향조사 결과\n수락 *${yes.length}명* : ${yes.map((w) => w.name).join(", ")}${tail}`
+        : `⚠️ *${s.work}* — ${role} 의향조사 결과\n*수락한 작업자가 없습니다.*${tail}`;
+      await app.client.chat.postMessage({ channel: s.channel, thread_ts: s.threadTs, text, ...SENDER }).catch((e) => console.error("[setjip-survey] 결과 공유 실패:", e?.message ?? e));
+      s.reportedRoles = [...(s.reportedRoles || []), role];
+      pendingSetjipSurvey.set(ts, s);
+      console.log(`[setjip-survey] 결과 공유 — ${s.work} ${role}: 수락 ${yes.length}명${pending.length ? ` (미응답 ${pending.length})` : ""}`);
+    }
+  }
+}
 
 app.action("setjip_run_review", async ({ ack, body, client }) => {
   await ack();
@@ -8786,7 +8823,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkDemoProposal().catch((e) => console.error("[demo] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkLearnedAudit().catch((e) => console.error("[learned-audit] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkCostRateScrum().catch((e) => console.error("[costrate-scrum] tick 오류:", e?.message ?? e)); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkDemoProposal().catch((e) => console.error("[demo] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkLearnedAudit().catch((e) => console.error("[learned-audit] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkCostRateScrum().catch((e) => console.error("[costrate-scrum] tick 오류:", e?.message ?? e)); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipSurvey().catch((e) => console.error("[setjip-survey] tick 오류:", e?.message ?? e)); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
