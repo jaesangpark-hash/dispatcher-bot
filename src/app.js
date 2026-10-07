@@ -292,6 +292,7 @@ const DISPATCHER_PROMPT = [
   "- 설정집 AI검수 인증번호 발급/재발급 — 재상 님뿐 아니라 APM도 쓸 수 있음. 트리거는 아주 짧은 문장이면 충분: '(PIVO 또는 작품명) 번역 배정 완료', '번역검수 배정 완료', '배정 끝났어 토큰 발급해줘' 류. → reissue_setjip_ai_token(pivo, [role], [worker], [thread]). ★설정집 작성 요청 스레드 안에서 멘션/DM으로 부르면 스레드 맥락이 이미 함께 전달되니(그 스레드 본문의 'PIVO : XXXXXX'(숫자 6자리, 옛 요청은 'PV-XXXXXX')), 사용자가 PIVO를 따로 말 안 해도 그 본문에서 추출해서 채워라(pivo를 되묻지 마라) — 스레드 밖(DM에서 다른 작품 얘기하듯)이면 사용자가 준 PIVO/작품명 그대로 pivo에 넣는다. ★role 생략하면 TOTUS에서 그 작품 '설정집' JOB의 번역(OTC0052)·번역검수(OTC0054) 담당자를 실시간 조회해 배정된 역할 전부를 한 번에 발급(배정현황 구글시트는 하루 1번만 동기화라 방금 배정한 건 못 잡을 수 있어 TOTUS를 우선 씀, 못 찾으면 시트로 폴백). worker는 자동조회를 못 믿을 때만 수동 지정. 이메일이 작업자 DB에 있으면 결과 메시지에 Slack 멘션도 자동으로 붙는다. thread를 생략하면 지금 대화 중인 곳에 게시되는데, 설정집 스레드 안에서 부른 거면 자동으로 그 스레드(공개 채널)에 남아 — DM에서 pivo/작품명만 주고 불렀다면 결과가 DM에 남으니, 그럴 땐 '설정집 일정' 시트에서 그 PIVO의 등록된 스레드 링크를 찾아 thread로 넘겨 그 공개 스레드에 게시되게 하라(register_setjip_schedule이 기록한 threadLink). ★같은 PIVO+역할당 활성 토큰은 항상 1개만 유지된다 — 이미 발급된 게 있으면 새로 안 만들고 그 토큰(사용횟수 포함)을 그대로 다시 보여준다('재발급해줘'가 실제로는 같은 코드 재확인인 경우가 많다는 뜻). 게이트 없이 즉시 실행(발급은 되돌리기 쉬운 저위험 동작).",
   "- 원고수급/이관 시트 미발송 일괄 전송('원고수급 미발송 전송/돌려줘', '이관 시트 업데이트 돌려줘', '원본수급 알림 안 보낸 거 보내줘'): run_wongo_update(인자 없음). ★재상 님이 버튼 없이 바로 실행하기로 함 — 확인 버튼 없이 즉시 전송하고 결과만 보고. 성공이면 '○건 전송했어요' 한 줄, 실패/타임아웃이면 분명히 알릴 것. 사용자가 명시적으로 전송을 요청했을 때만 호출(임의 실행 금지).",
   "- 번역 개시 요청(설정집 검수 끝난 뒤 '○○ 번역 개시/번역 시작 요청해줘'): propose_translation_start(work=작품명 또는 PIVO). ★사용자가 요청 문장에 PIVO를 직접 언급했으면(숫자만이든 'PIVO 123456'이든) 반드시 pivo 인자로도 같이 넘겨라 — 설정집 요청 메시지 자체엔 PIVO가 안 찍혀있는 경우가 있어서(오래된 스레드 등) work만으로는 검색은 되도 뒤의 TOTUS 프로젝트명+시트 반영 단계가 PIVO를 못 찾아 건너뛰어질 수 있다. DM에서 불러도 됨 — 도구가 설정집 작성 요청 채널을 검색해 그 작품의 스레드를 찾고, 메시지의 담당 APM 멘션·PIVO를 추출, PIVO로 견적 조회해 초도 납품일·초도 회차를 자동으로 채운다. 한국어 타이틀은 보통 이 대화에서 함께 정한 합의 제목을 ko_title로 넘긴다(없으면 견적 제목). 검수 시작일 자동(요청일+11일). 발송은 그 설정집 스레드에 답글, APM 실제 멘션(게이트 버튼). 수정사항·타이틀은 ✏️수정 모달로도 입력. ★번역개시 발송(✅) 버튼 한 번으로 봇이 이어서 게이트 없이 바로 다 처리한다(2026-08-04부터 — 별도 확인 버튼 없음): ①TOTUS 프로젝트명 가제→FIX 변경 ②출판사 드라이브 링크 시트 한국어 타이틀·APM 채움 ③납품 시트(중일 V5)에 초도 회차만큼 행(1~N화) 생성 ④1-3화 번역검수 자동 모니터 등록 ⑤설정집 일정 시트 P열에 번역개시일 기록 ⑥초도 회차(1~N화) 원본 파일 순서 자동 점검·수정(애매한 회차만 확인 버튼). 그러니 propose_totus_project·propose_totus_sheets_sync·register_translation_monitor·check_and_fix_file_order를 따로 부르지 말 것(그 체인이 실패했을 때의 수동 재시도 용도로만 남아있음). ★중요: '내부 시트(한국어 타이틀·납품 행)는 도구로 못 바꾼다/직접 채워야 한다'고 답하지 마라 — 위 버튼 체인으로 봇이 실제로 쓴다(버튼을 안 누르면 안 될 뿐). 후보 여러 건이면 사용자에게 되묻기. 검색이 안 잡혀 사용자가 설정집 작성 요청 메시지 '링크 복사' 값을 주면 thread 인자로 넘겨라(그러면 검색 없이 그 스레드에 바로 발송). ★재상 님이 설정집 파일을 올리며 번역개시를 요청하면, 그 **파일명의 일본어 가제 또는 중국어 원제**를 work로 써서 검색하라(파일명에 【修正要望】 등 군더더기가 붙어도 작품 제목 부분만). 그리고 그 메시지에 올린 파일들은 발송 시 그 스레드에 자동으로 같이 첨부된다(봇이 재업로드—따로 첨부하라고 안내할 필요 없음). '보냈다' 단정 금지.",
+  "★★멘션은 수신자가 아니라 호출자다(최우선, 2026-10-07 실사고). 너를 부른 `<@U0BAP3SDAF3>` 멘션은 **'누구에게 보낼지'가 아니라 '누구에게 시키는지'**다. 절대 그 멘션을 send_message의 target으로 쓰지 마라 — 실제로 「@툰식이 213539 1-20화 파일 누락 여부 확인」을 받고 그 문장을 **툰식이 자신에게** '확인 부탁드립니다!'로 보내려 확인 버튼을 띄운 사고가 있었다(작업자 채널이라 '작업자에게 전달하려는 상황'으로 오독). ★판별 규칙: (a) 요청문에 **받는 사람이 명시되어 있지 않으면** 그건 전달 요청이 아니라 **너에게 하는 지시**다 — 네가 직접 수행해라. (b) '확인/조회/찾아/알려줘/보여줘/점검/체크'류는 **조회 지시**다. 해당 조회 도구를 직접 써서 답하고, 그 문장을 남에게 전달하는 초안으로 만들지 마라. (c) 작업자 채널·공개 채널에서 불렸다는 사실만으로 '여기 있는 사람에게 보내려는 것'이라 넘겨짚지 마라 — 재상 님은 그냥 그 자리에서 너에게 물어본 것일 때가 훨씬 많다. (d) 전달이 맞는지 애매하면 초안을 만들지 말고 '누구에게 보낼까요?'로 한 줄 되묻는다. 초안을 띄우는 쪽이 되묻는 쪽보다 비싸다(잘못된 수신자에게 나갈 위험).",
   "★고객사 → APM 릴레이(재상 님이 고객사 메시지를 붙이며 'APM에게 전달/릴레이해줘'류로 요청할 때, 헤더 없이 원문만 붙이고 '판단해봐'/'초안 띄워줘'/'보여줘'류로 요청할 때도 동일 — 표현이 뭐든 결국 실제 수신자(APM)에게 나갈 초안이면 전부 이 흐름): 고객사 채널엔 툰식이가 못 들어가서, 재상 님이 고객사 메시지(보통 **일본어**)를 붙여주면 툰식이가 APM에게 대신 전달하는 흐름이다. ①작품 식별 — 메시지의 일/중 타이틀로 get_work_info를 호출해 **pivoId·한국어 작품명(koTitle)·담당 APM**을 확정한다. get_work_info가 exact 매칭을 못 찾으면(애매하면) 초안으로 넘어가지 말고 먼저 '이 작품 맞아?'로 확인부터 받는다. ★pivoId를 확정한 뒤에는 get_project_url을 포함한 이후 모든 조회에 **원문 텍스트가 아니라 pivoId만** 넘긴다 — get_project_url·get_work_info는 서로 다른 백엔드로 검색해 결과가 갈릴 수 있고, get_project_url은 호출 즉시 슬랙에 링크를 게시하는 부작용이 있어 원문으로 잘못 조회하면 오탐 링크가 바로 게시된다(실제로 'ドラゴン使い' 같은 원문 조각으로 get_project_url을 불렀다가 전혀 다른 작품 링크가 게시된 사고 있었음, 2026-08-07). ②요청 유형 파악(원본 교체 / 원본 파일 추가공유 / 식자본 선납품 / 번역 JPG 공유 등) — ★다운로드 경로/원본 소재지는 **get_work_info의 driveLink 필드**로 안내한다 — 첨부 스크린샷을 보고 폴더 구조·경로를 눈짐작으로 지어내지 말 것(이미지 판독은 부정확하고 실제 드라이브 구조와 다를 수 있음). driveLink가 있으면 그 링크를, driveLink가 null이면(콰이칸·빌리빌리 등 URL 미제공 출판사) 경로 대신 **출판사명(get_work_info의 publisher 필드)만** 언급한다(예: '콰이칸 쪽에 공유된 파일이에요, 확인 부탁드립니다'). 파일명은 스크린샷에 명확히 보이면 참고해 언급해도 되지만, 폴더 경로 자체는 image에서 재구성하지 않는다. → **재상 님 대화체 톤**으로 APM 릴레이 초안을 만들어 **반드시 send_message 도구를 호출**해 발송 제안(target=재팬_요청 `C09B8QHP7D4`, 본문 맨 앞 `<@담당APM>` + 끝에 `cc <@U04463JR4HH>`). ★금지: 초안을 채팅 텍스트로 직접 적고 '보낼까요?'라고 말로만 묻는 것 — send_message를 안 거치면 버튼·linkToken 치환·첨부파일 동반이 전부 빠진다. 무엇을 시켜도('띄워줘'/'보여줘' 포함) 실제 발송 대상이 정해진 초안은 항상 send_message로 제안하고, 그 결과 버튼 메시지를 '초안이에요'로 소개하는 정도만 채팅에 남긴다. ★톤(엄수, 재상 님이 재팬_요청 채널에 실제로 쓴 문장 기반): 짧고 사실 위주의 격식체(-습니다/-합니다체)만 쓴다. **금지**: 이모지, 물결(~), '~드릴게요'/'~해드릴게요' 같은 캐주얼한 쿠션어, 과한 친근함, '안녕하세요'/'수고하세요'/'감사합니다' 같은 인사·의례 문구(용건만 바로 말함), '혹시'/'괜찮으시다면'/'번거로우시겠지만' 같은 쿠션어(가장 부드러운 표현도 '~가능할까요?' 정도까지만). 요청 어휘는 아래 몇 개로 고정해서 쓰고 매번 새로 창작하지 않는다: '확인 부탁 드립니다.' / '말씀 주세요.' / '진행 부탁 드립니다.' / '~가능할까요?'. 문제가 있으면 돌려 말하지 않고 사실만 직설적으로 쓴다(예: '번역문과 다른 내용으로 식자가 되어 있습니다.'). 구조는 `<@담당APM>` 줄 → `<작품명> {상황을 담백하게 서술, 완료형}.` → (있으면) 세부 이슈 한두 줄(여러 건이면 '•'나 번호로 나열) → (요청이 있으면) 마지막 줄에 위 고정 어휘로 짧게. 실제 예시(그대로 참고) — 1) `<@U07E0QPL8MV>\n<죽음이 나를 왕이라 부른다> 1차 납품 검수 완료되었습니다.\n1화에만 식자 관련 코멘트 있습니다.\n\n[요청 사항]\n1화 고객 검수 반영 후 슬라이스한 JPG 파일 따로 받아서 7/23 오전 중으로 여기로 제출가능하실까요?` 2) `<@U05CE8HFA6B>\n<세컨드 로그인> 1-3화 식자본 선납품이 필요합니다.\n아직 최종 검수 진행 전이지만, 우선 LQA 작업 반영 + 타이틀 로고 / 크레딧 삽입 후 1-3화만 재제출 부탁 드립니다.\n내일 오전까지 가능할까요?` 3) `<@U05CE8HFA6B>\n<언리미티드 네크로멘서> 1차 납품 고객 검수 완료되었습니다.\n2화에만 텍스트 박스 방향 관련 코멘트 있습니다.\n이후 회차에도 반영이 필요한 내용이라, 식자 작업자에게도 공유 부탁 드립니다.` 이 정도의 간결함·어미·격식·직설적 태도를 그대로 따라간다. ★언어(엄수): 원문이 일본어·중국어여도 본문은 **전체 한국어**로 쓰고 작품명도 반드시 **한국어 작품명(koTitle)**을 쓴다 — 원문 언어를 따라가지 않는다. 링크는 슬랙 마스킹 `<url|라벨>`(생 URL 나열 금지). ★링크: 프로젝트 링크(get_project_url, pivoId로 조회)는 **모든 유형에 공통으로** 본문에 포함한다 — ★단 URL을 직접 쓰지 말 것: get_project_url이 돌려준 linkToken 문자열(`{{PROJECT_LINK:uuid}}` 형태)을 그 자리에 그대로 복사해 넣으면 send_message가 발송 직전에 실제 하이퍼링크로 치환해준다(UUID를 손으로 옮기다 오타 낸 사고 있었음, 2026-07-28 — 그래서 모델은 URL 자체를 절대 모른다). 원본 파일(교체·추가공유 등) 관련 요청이면 여기에 원본 링크(고객사가 준 baidu 등, 원문에 있는 그대로)를 더해 `<url|원본 링크> {linkToken}`으로, 식자·식자검수 담당(작업자 DB)도 함께. 원본과 무관한 유형은 linkToken만. 담당 APM이 애매하면 한 줄 되묻기. ★대상 APM이 여러 명이어도 기본은 **하나의 메시지로 합쳐서 보낸다**(send_message의 단일 target/text로, 채널 앞머리에 관련 APM들을 전부 `<@APM1> <@APM2>`로 멘션 나열하고 본문에 작품별로 '• 작품명 (@담당APM)'처럼 구분) — items 배열(대상별 별도 메시지)은 재상 님이 그 자리에서 명시적으로 '각각 나눠줘/따로 보내줘'라고 할 때만 쓴다(items를 쓰면 항목별 ✏️수정은 되지만 대상마다 메시지가 갈라진다). 합친 단일 메시지 쪽이 대상별 ✏️수정도 더 간단하다(단일 수정 모달). 게이트(버튼)—'보냈다' 단정 금지.",
   "★내부 채널 요청/공유 시 관련 정보 동봉: 재상 님이 툰식이를 통해 내부 채널(재팬_요청·PM요청·작업자 채널 등)에 무언가 요청하거나 공유할 때는, 본문만 덜렁 보내지 말고 상황에 맞는 참고정보를 같이 실어라 — 프로젝트 링크(get_project_url의 linkToken), 원본/드라이브 링크(get_work_info의 driveLink), 작업자 채널·담당자 정보(작업자 DB) 등. 그 요청 성격과 무관한 것까지 억지로 채우지 말고, 받는 사람이 바로 찾아볼 수 있게 관련된 것만 고른다(2026-08-19).",
   "★작품 특이사항(비고) 등록: '이 작품 특이사항으로 ~ 적어둬/기억해둬'류 요청은 propose_work_note(work, note)로 출판사 드라이브 링크 시트 비고란에 즉시 기록(확인 버튼 없이 바로 반영). 저장해두면 그 작품 납품일마다 시스템이 자동으로 스캔해 그날 재팬_공지의 'Toon_Japan 납품스레드'(하루 1개, 결정적으로 찾음)에 리마인드를 직접 게시한다 — 이건 브레인(너) 개입 없이 스케줄러가 처리하니, 이 흐름 자체를 네가 따로 신경 쓸 필요는 없다(등록만 propose_work_note로 확실히 해주면 됨).",
@@ -3438,12 +3439,34 @@ const apmTools = createSdkMcpServer({
       "TOTUS PIVO 작품의 특정 회차에 **어떤 원본 파일이 올라와 있는지**(파일명·용량) 조회한다. 키워드: '원본 목록 [작품명] [N화]', '몇 개 올라와 있어'. 게이트 없이 즉시 실행(읽기성 조회, 부작용 없음). ★**파일 '순서'를 묻는 질문에는 절대 쓰지 마라** — 이 API의 나열 순서는 저장소 응답 순이라 실제 작업 순서와 뒤집혀 나온다(2026-09-25 실사고: 멀쩡한 회차를 역순으로 보여줘 오인 발생). '지금 파일 순서 보여줘/순서 맞아?'는 **get_file_order**를 써라.",
       {
         pivo: z.string().describe("PIVO 번호(PV- 접두 붙여도 됨, 숫자만 추출해서 씀)"),
-        episode: z.union([z.string(), z.number()]).describe("회차 번호"),
+        episode: z.union([z.string(), z.number()]).describe("회차. ★여러 회차는 한 번에 넘겨라 — 범위 '1-20' 또는 목록 '3,7,12'. 1화씩 스무 번 부르면 몇 분씩 걸린다."),
       },
       async ({ pivo, episode }) => {
         try {
           const num = String(pivo).match(/\d{4,}/)?.[0] || String(pivo).trim();
-          const res = await pivoEpisodeSourceFiles(num, String(episode));
+          // ★여러 회차를 한 호출로 받는다(2026-10-07). 전엔 1화씩만 받아서 「1-20화 누락 확인」이
+          // 모델 왕복 20번 + TOTUS 20번이 됐고 4분 넘게 걸렸다. 여기서 병렬로 끝낸다.
+          const eps = parseEpisodeSpec(episode);
+          if (eps.length > 1) {
+            const CONC = 5;   // TOTUS를 한꺼번에 때리지 않게 5개씩 끊어서
+            const out = [];
+            for (let i = 0; i < eps.length; i += CONC) {
+              const part = await Promise.all(eps.slice(i, i + CONC).map(async (ep) => {
+                try {
+                  const r = await pivoEpisodeSourceFiles(num, String(ep));
+                  const fs2 = (r?.data?.파일목록 || []).map((f) => f.파일명)
+                    .sort((a, b) => String(a).localeCompare(String(b), "en", { numeric: true }));
+                  return { 회차: ep, 파일수: fs2.length, 파일명: fs2 };
+                } catch (e) { return { 회차: ep, error: String(e?.message ?? e) }; }
+              }));
+              out.push(...part);
+            }
+            return { content: [{ type: "text", text: JSON.stringify({
+              found: true, pivo: num, 회차수: out.length, 회차별: out,
+              note: "★나열 순서는 파일명 정렬일 뿐 TOTUS 작업 순서가 아니다. 순서 질문엔 get_file_order를 써라. 누락 판정은 회차별 파일수·파일명을 보고 네가 해라.",
+            }) }] };
+          }
+          const res = await pivoEpisodeSourceFiles(num, String(eps[0] ?? episode));
           // ★이 응답의 나열 순서는 작업 순서가 아니다(2026-09-25 실사고). 저장소가 주는 대로일 뿐이라
           // 같은 회차에서도 source-groups(에디터 파일관리 탭)와 뒤집혀 나온다 — 회귀 좀비 서바이버 188화:
           // 여기선 9→15→14→…→10, source-groups에선 9→10→…→15(정상).
@@ -3753,6 +3776,19 @@ const apmTools = createSdkMcpServer({
           const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
           if (!ctx?.client) return { content: [{ type: "text", text: JSON.stringify({ error: "발송 컨텍스트 없음" }) }] };
+          // ★툰식이 자신에게는 절대 보내지 않는다(2026-10-07 실사고: 「@툰식이 213539 1-20화 파일
+          //   누락 여부 확인」을 받고, 그 문장을 **툰식이 자신에게** 「확인 부탁드립니다!」로 보내려
+          //   확인 버튼을 띄웠다). 호출 멘션을 수신자로 착각한 것이고, 어떤 경우에도 정상이 아니다.
+          const SELF = new Set([SELF_BOT_USER, SELF_BOT_ID].filter(Boolean));
+          const isSelf = (t) => SELF.has(String(t || "").trim().replace(/^<@|>$/g, ""));
+          const selfHit = isSelf(target) || (items || []).some((it) => isSelf(it?.target));
+          if (selfHit) {
+            return { content: [{ type: "text", text: JSON.stringify({
+              error: "수신자가 툰식이 자신이다 — 발송하지 않았다.",
+              why: "너를 부른 @멘션은 '누구에게 보낼지'가 아니라 '누구에게 시키는지'다. 멘션을 수신자로 쓰지 마라.",
+              do: "요청 문장을 남에게 전달하려 하지 말고, 그 지시를 네가 직접 수행해라(조회·확인이면 해당 조회 도구를 써라). 정말 누군가에게 보내야 한다면 받는 사람을 사용자에게 먼저 확인해라.",
+            }) }] };
+          }
           if (text) text = expandLinkTokens(text);
 
           if (items && items.length) {
@@ -4376,14 +4412,25 @@ const RL_RE = /rate.?limit|\b429\b|overloaded|too many requests|usage limit|quot
 const isRateLimit = (s) => RL_RE.test(String(s || ""));
 const RL_BACKOFF = [8000, 20000];   // 재시도별 대기(ms). 배열 길이 = 최대 자동 재시도 횟수
 
+// 컨텍스트 초과 — 세션에 대화가 쌓여 한도를 넘은 경우. 기다린다고 풀리는 rate-limit과 달리
+// **세션을 비우지 않으면 그 뒤 모든 턴이 똑같이 죽는다**. 2026-10-07 실사고: 재상 님이
+// 「원본 체크리스트」라고 하자 툰식이가 `Prompt is too long` 한 줄만 뱉고 끝났다.
+const CTX_RE = /prompt is too long|context[_ ]?length|too many tokens|maximum context/i;
+const isCtxOverflow = (s) => CTX_RE.test(String(s || ""));
+// true면 지금 세션 스트림을 끝낸다 → for-await 루프가 끝나며 startSession()이 새 세션을 띄운다(컨텍스트 초기화).
+let sessionResetWanted = false;
+
 const TURN_HARD_TIMEOUT_MS = 420_000;   // 한 턴이 이 시간 넘게 안 끝나면(행/과부하) 중단·재시작.
 // ★210→420s(2026-06-28): 대량 집계·검수 턴이 정당하게 3~6분 걸리는데 210s가 너무 짧아 멀쩡한 작업을
 //   중간에 죽이고 재시도 악순환을 냈음. 진짜 무거운 작업 여유 확보(stall 안내가 150s에 떠서 사용자도 인지).
 
 async function* messageStream() {
+  sessionResetWanted = false;
   while (true) {
+    if (sessionResetWanted) return;   // 컨텍스트 초과 → 이 세션을 끝내고 새 세션으로 갈아탄다
     if (queue.length === 0) await new Promise((r) => { wake = r; });
     while (queue.length) {
+      if (sessionResetWanted) return;
       const turn = queue.shift();
       currentTurn = turn;
       currentCtx = turn.ctx;   // 도구(발송·진행알림)가 '이 턴'의 자리로 답하도록 고정
@@ -4399,6 +4446,7 @@ async function* messageStream() {
       yield { type: "user", message: { role: "user", content: turn.content } };
       await new Promise((r) => { turnResolve = r; });   // 이 턴의 result가 처리될 때까지 대기(직렬화)
       clearTimeout(killer);
+      if (sessionResetWanted) return;
     }
   }
 }
@@ -4634,7 +4682,13 @@ function startSession() {
         if (m.is_error) console.log(`[brain] 에러내용: ${text.slice(0, 200).replace(/\n/g, " ")}`);
         const rlTurn = currentTurn;   // rate-limit 재시도용 캡처
         currentTurn = null;
-        if (m.is_error && isRateLimit(text) && rlTurn && (rlTurn._retry || 0) < RL_BACKOFF.length) {
+        if (m.is_error && isCtxOverflow(text) && rlTurn && !rlTurn._ctxRetry) {
+          // 세션을 비우고 같은 턴을 한 번만 다시 태운다. 기다려봐야 안 풀리므로 즉시 간다.
+          console.log("[brain] 컨텍스트 초과 — 세션 비우고 1회 재시도");
+          if (ctx?.placeholderTs) ctx.client.chat.update({ channel: ctx.channel, ts: ctx.placeholderTs, text: "⏳ 대화가 길어져서 정리하고 다시 시도할게요…" }).catch(() => {});
+          queue.unshift({ ...rlTurn, _ctxRetry: 1 });
+          sessionResetWanted = true;
+        } else if (m.is_error && isRateLimit(text) && rlTurn && (rlTurn._retry || 0) < RL_BACKOFF.length) {
           const n = (rlTurn._retry || 0) + 1;
           const delay = RL_BACKOFF[n - 1];
           console.log(`[brain] rate-limit — ${Math.round(delay / 1000)}s 후 자동 재시도 (${n}/${RL_BACKOFF.length})`);
@@ -4654,9 +4708,13 @@ function startSession() {
           //   (2026-10-05 실사고: 「원본 이관해」 3번이 전부 조용히 증발). 멘션·DM처럼 분명한
           //   지시였던 경우엔 실패했다고 알린다. 후속 대화(followup)에서만 조용히 넘긴다.
           const echoSilent = echoed && rlTurn?.followup;
+          // ★에러 결과를 그대로 내보내지 않는다 — 사용자에겐 아무 뜻도 없고 무엇을 하면 되는지도 모른다
+          //   (2026-10-07 실사고: 공개 스레드에 `Prompt is too long` 한 줄만 올라갔다).
           const out = (m.is_error && isRateLimit(text)) ? "지금 사용량 한도라 처리를 못 했어요 😢 잠시(1~2분) 뒤 다시 보내주세요."
+            : (m.is_error && isCtxOverflow(text)) ? "대화가 너무 길어져서 처리를 못 했어요 😢 정리하고 다시 시도했는데도 안 됐어요.\n새 스레드에서, 필요한 작품·회차만 적어 다시 보내주세요."
             : echoSilent ? ""
             : echoed ? "처리를 못 했어요 😢 한 번만 다시 말씀해주세요."
+            : m.is_error ? `⚠️ 처리 중 오류가 났어요 — 한 번만 다시 말씀해주세요.\n\`${String(text).slice(0, 200)}\``
             : text || (selfPosted ? "" : "응답을 만들지 못했어요 😢 다시 한 번 말씀해주세요.");
           if (out) deliver(ctx, out).catch((e) => console.error("[brain] 응답 전송 실패:", e?.message));
           else { console.log("[brain] 빈 응답 — 도구가 직접 게시한 턴이라 전송 생략"); if (ctx?.placeholderTs) ctx.client.chat.delete({ channel: ctx.channel, ts: ctx.placeholderTs }).catch(() => {}); }
