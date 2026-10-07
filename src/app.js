@@ -6361,9 +6361,11 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
     appendFileSync("logs/sends.jsonl", JSON.stringify({ at: new Date().toISOString(), user: body.user?.id, kind: "setjip", channel: p.channel, work: p.work, pivo: p.e?.pivo }) + "\n");
     // n8n 인터랙션 디스패처가 하던 "검수 버튼 부착"을 여기서 직접 함 — 그쪽 워크플로우 없이도 자동 검수 V2(seoljeongjip-run)를 바로 트리거할 수 있게.
     await client.chat.postMessage({
-      channel: p.channel, thread_ts: posted.ts, ...SENDER, text: "설정집 검수 버튼",
+      channel: p.channel, thread_ts: posted.ts, ...SENDER, text: "설정집 검수 · 의향조사 버튼",
+      // ★안내문 없이 버튼만 띄운다(2026-10-07 재상 님 지정). 원래 문구("완성되면 아래 버튼을
+      //   눌러주세요")는 검수 버튼 하나뿐이던 시절의 것이라, 의향조사까지 붙은 지금은
+      //   무엇을 완성하라는 건지 읽히지 않는다.
       blocks: [
-        { type: "section", text: { type: "mrkdwn", text: "✅ 완성되면 아래 버튼을 눌러주세요.\n수정 후 *재검수*도 버튼 재클릭." } },
         { type: "actions", elements: [
           { type: "button", style: "primary", text: { type: "plain_text", text: "🔍 설정집 검수" }, action_id: "setjip_run_review", value: posted.ts },
           // 의향조사는 게시와 동시가 아니라 **필요할 때만**, 그리고 번역·식자를 따로 누른다(2026-10-07 재상 님 지정).
