@@ -8484,6 +8484,14 @@ async function checkSikjaHandover() {
     }).catch((e) => console.error("[sikja-handover] 링크 답글 실패:", e?.message ?? e));
     await markSikjaHandoverSent(items, today).catch((e) => console.error("[sikja-handover] 발송일 기록 실패:", e?.message ?? e));
     console.log(`[sikja-handover] ${today} ${items.length}건 발송 — ${items.map((i) => i.pivo).join(",")}`);
+    // 외국인 작업자 의향조사(태영 님 n8n)로 같은 items를 넘긴다 — 공지·이모지 집계·후보 시트 기록은 그쪽 몫.
+    // ★여기가 markSent 뒤인 이유: 시트에 발송일이 남은 건에 대해서만 쏴야 재기동·재시도 때 중복 조사가 안 나간다.
+    // 실패해도 본 흐름(슬랙 공지·시트 기록)은 이미 끝났으므로 로그만 남기고 삼킨다.
+    if (process.env.SIKJA_HANDOVER_N8N !== "false") {
+      await n8nPost("sikja-handover-notice", items)
+        .then(() => console.log(`[sikja-handover] n8n 의향조사 전달 ${items.length}건`))
+        .catch((e) => console.error("[sikja-handover] n8n 전달 실패:", e?.message ?? e));
+    }
     const dmLines = items.map((i) => `• ${i.ko} (${i.workers.join(", ")})`).join("\n");
     await dmOwner(`🧵 초도 납품 완료 ${items.length}건, 식자 이관 요청 보냈어요.\n${dmLines}`).catch(() => {});
   } catch (e) { console.error("[sikja-handover] 실패:", e?.message ?? e); }
