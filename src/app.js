@@ -37,6 +37,7 @@ import { overdueInquiries, findUnresolved } from "./inquiries.js";
 import { dueCompletions, fmtCompletions } from "./completions.js";
 import { addLearned, removeLearned, listLearned, learnedPromptBlock, learnedSignature, findSimilar } from "./learned.js";
 import { runLearnedAudit, formatAudit } from "./learnedAudit.js";
+import { surveyTargets, workerBlocks, summaryText, roleLang, splitWorkNotes } from "./setjipSurvey.js";
 import { SETJIP_CHANNELS, DAILY_LIMIT as SETJIP_LIMIT, isSetjipRequest, parseSetting, parseWork as parseSetjipWork, quotaCheck as setjipQuota, quotaUse as setjipQuotaUse, runSetjipCheck, resultText as setjipResultText } from "./setjipWorker.js";
 import { recordTurn, recordReply, runDistill, runFollowupScan, dueDailyDistill, listCandidates, setCandidateStatus, pruneTurns, kstDay as distillDay } from "./distill.js";
 import { scanFirstDeliveryQA, formatFirstDeliveryQA, customerQaStatus } from "./firstDeliveryQA.js";
@@ -399,6 +400,8 @@ const workLinkPosted = new PersistMap("worklink-posted", { ttlMs: 3 * 86400000 }
 const pendingRetakes = new PersistMap("retakes", { ttlMs: DRAFT_TTL_MS });    // rkId → { target, headerReal, headerPreview, body, ..., previewChannel, previewTs }
 const pendingTransStart = new PersistMap("transstart", { ttlMs: DRAFT_TTL_MS }); // tsId → { channel, threadTs, text, createdAt } 번역 개시 요청(스레드 답글 발송)
 const pendingSetjip = new PersistMap("setjip", { ttlMs: DRAFT_TTL_MS });      // sjId → { channel, text, work, createdAt } 설정집 작성 요청 게시
+// 설정집 작성 의향조사 — 게시된 요청 ts → 작품 정보·응답. 설정집은 제출까지 2~3주라 길게 잡는다.
+const pendingSetjipSurvey = new PersistMap("setjip-survey", { ttlMs: 45 * 86400000 });
 const pendingReuploads = new Map();                  // ruId → { pivo, episode, items:[{fileName,buffer,size,sourceName,page}], createdAt } — 바이너리 포함이라 비영속(재기동 시 소멸, TTL도 짧으니 재요청하면 됨)
 const reuploadRunning = new Map();                   // ruId → startedAt. 실행 중인 업로드 — 버튼을 두 번 눌렀을 때 "만료" 대신 "진행 중"으로 답하려고 둔다(2026-09-30)
 let reuploadSeq = 0;
@@ -6361,9 +6364,24 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
       channel: p.channel, thread_ts: posted.ts, ...SENDER, text: "설정집 검수 버튼",
       blocks: [
         { type: "section", text: { type: "mrkdwn", text: "✅ 완성되면 아래 버튼을 눌러주세요.\n수정 후 *재검수*도 버튼 재클릭." } },
-        { type: "actions", elements: [{ type: "button", style: "primary", text: { type: "plain_text", text: "🔍 설정집 검수" }, action_id: "setjip_run_review", value: posted.ts }] },
+        { type: "actions", elements: [
+          { type: "button", style: "primary", text: { type: "plain_text", text: "🔍 설정집 검수" }, action_id: "setjip_run_review", value: posted.ts },
+          // 의향조사는 게시와 동시가 아니라 **필요할 때만**, 그리고 번역·식자를 따로 누른다(2026-10-07 재상 님 지정).
+          { type: "button", text: { type: "plain_text", text: "🙋 번역 의향조사" }, action_id: "setjip_survey_send", value: `${posted.ts}|번역` },
+          { type: "button", text: { type: "plain_text", text: "🙋 식자 의향조사" }, action_id: "setjip_survey_send", value: `${posted.ts}|식자` },
+        ] },
       ],
     }).catch((e) => console.error("[setjip_confirm] 검수 버튼 게시 실패:", e?.message ?? e));
+    // 의향조사 버튼이 나중에 눌릴 때 쓸 작품 정보를 남겨둔다(버튼 value엔 ts만 실린다).
+    pendingSetjipSurvey.set(posted.ts, {
+      channel: p.channel, threadTs: posted.ts, work: p.work,
+      pivo: String(p.e?.pivo || ""), originalTitle: p.e?.original_title || "",
+      submitDate: p.e?.submit_date || "", deliveryDate: p.e?.delivery_date || "",
+      episodes: p.e?.episodes || "", country: p.e?.country || "",
+      // 평가자가 쓴 작품 설명을 번역/식자로 갈라 저장 — 각 역할에게 자기 블록만 보낸다
+      workNotes: splitWorkNotes(p.e?.work_notes),
+      answers: {}, sentAt: null, summaryTs: null, createdAt: Date.now(),
+    });
     // AI검수 툴용 인증번호 발급 — 배정현황(매일 갱신)에서 번역/번역검수 담당자를 조회, 각각 있는 만큼만 발급.
     // 번역은 배정현황에 없으면 요청 시 지정한 이름으로 대체(플레이스홀더 "프리랜서 배정"이면 스킵). 번역검수는 대체 소스가 없어 배정현황 미기재 시 스킵.
     try {
@@ -6428,6 +6446,73 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
 
 // 설정집 검수 버튼 클릭 → n8n "중일 설정집 자동 검수 V2"(seoljeongjip-run) 직접 트리거.
 // 원래 n8n "설정집 인터랙션 디스패처"가 하던 역할(요청 생성)을 이 도구가 대체하면서, 검수 버튼 부착·클릭 처리까지 여기서 떠맡는다.
+// ── 설정집 작성 의향조사 ───────────────────────────────────────
+// 「🙋 작업자 의향조사」 → 대상 작업자 개인 채널에 가능/불가 버튼 발송, 응답은 요청 스레드에 집계.
+// 배정을 자동으로 확정하지 않는다 — 후보만 모으고 결정은 사람이 한다.
+app.action("setjip_survey_send", async ({ ack, body, client }) => {
+  await ack();
+  const [ts, role] = String(body.actions?.[0]?.value || "").split("|");
+  const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+  const s = pendingSetjipSurvey.get(ts);
+  if (!s) return reply("⌛ 이 요청의 작품 정보를 못 찾았어요 — 의향조사 기능이 생기기 전에 올린 요청일 수 있어요.");
+  const targets = surveyTargets(role);
+  if (!targets.length) return reply(`${role} 의향조사 대상이 지정되지 않았어요.`);
+  s.sentRoles = s.sentRoles || [];
+  if (s.sentRoles.includes(role)) return reply(`${role} 의향조사는 이미 보냈어요.\n${summaryText(s)}`);
+  // ★발송 전에 먼저 마킹 — 버튼을 두 번 누르거나 슬랙이 재전송해도 작업자에게 두 번 가지 않게.
+  s.sentRoles.push(role);
+  s.sentAt = Date.now();
+  pendingSetjipSurvey.set(ts, s);
+  const failed = [];
+  for (const w of targets) {
+    await client.chat.postMessage({ channel: w.channel, ...SENDER, text: `${s.work} — 설정집(${role}) 작업 가능 여부`, blocks: workerBlocks(ts, s, role, w) })
+      .catch((e) => { failed.push(`${w.name}(${e?.data?.error || e?.message})`); });
+  }
+  // 집계는 역할이 늘어도 한 메시지를 갱신해서 쓴다 — 스레드에 집계가 여러 개 쌓이면 어느 게 최신인지 모른다.
+  if (s.summaryTs) {
+    await client.chat.update({ channel: s.channel, ts: s.summaryTs, text: summaryText(s) }).catch(() => {});
+  } else {
+    const sum = await client.chat.postMessage({ channel: s.channel, thread_ts: s.threadTs, ...SENDER, text: summaryText(s) }).catch(() => null);
+    if (sum?.ts) s.summaryTs = sum.ts;
+  }
+  pendingSetjipSurvey.set(ts, s);
+  console.log(`[setjip-survey] ${s.work} ${role} — ${targets.length}명 발송${failed.length ? ` (실패 ${failed.length})` : ""}`);
+  if (failed.length) await reply(`⚠️ ${role} 일부 작업자에게 못 보냈어요 — ${failed.join(", ")}`);
+});
+
+async function handleSetjipSurveyAnswer({ ack, body, client }, answer) {
+  await ack();
+  const [ts, role] = String(body.actions?.[0]?.value || "").split("|");
+  const ch = body.channel?.id;
+  const lang = roleLang(role);
+  const s = pendingSetjipSurvey.get(ts);
+  if (!s) {
+    await client.chat.postMessage({ channel: ch, ...SENDER, text: lang.closed }).catch(() => {});
+    return;
+  }
+  const who = surveyTargets(role).find((w) => w.channel === ch)?.name || WFO_CHANNELS[ch]?.name || ch;
+  // 같은 사람이 번역·식자 양쪽 대상일 수 있어 역할까지 키에 넣는다.
+  s.answers = { ...(s.answers || {}), [`${role}|${ch}`]: { name: who, answer, at: Date.now() } };
+  pendingSetjipSurvey.set(ts, s);
+  // 누른 버튼을 결과 문장으로 바꿔 둔다 — 버튼이 남아 있으면 바꿔 눌렀는지 본인도 헷갈린다.
+  await client.chat.update({
+    channel: ch, ts: body.message?.ts, text: lang.thanks(answer === "yes" ? lang.yes : lang.no).replace(/\*/g, ""),
+    blocks: [{ type: "section", text: { type: "mrkdwn", text: `🙋 *${s.work}*\n${lang.thanks(answer === "yes" ? lang.yes : lang.no)}\n${lang.changed}` } }],
+  }).catch((e) => console.error("[setjip-survey] 작업자 메시지 갱신 실패:", e?.message ?? e));
+  // 요청 스레드 집계 갱신(없으면 새로 올린다)
+  if (s.summaryTs) {
+    await client.chat.update({ channel: s.channel, ts: s.summaryTs, text: summaryText(s) })
+      .catch((e) => console.error("[setjip-survey] 집계 갱신 실패:", e?.message ?? e));
+  } else {
+    const sum = await client.chat.postMessage({ channel: s.channel, thread_ts: s.threadTs, ...SENDER, text: summaryText(s) }).catch(() => null);
+    if (sum?.ts) { s.summaryTs = sum.ts; pendingSetjipSurvey.set(ts, s); }
+  }
+  console.log(`[setjip-survey] ${s.work} ${role} — ${who}: ${answer}`);
+}
+app.action("setjip_survey_yes", async (a) => handleSetjipSurveyAnswer(a, "yes"));
+app.action("setjip_survey_no", async (a) => handleSetjipSurveyAnswer(a, "no"));
+
 app.action("setjip_run_review", async ({ ack, body, client }) => {
   await ack();
   const channel = body.channel?.id;
@@ -6669,7 +6754,8 @@ async function enrichSetjip(pivo) {
       originLink = sval(ci.olink); driveLink = sval(ci.drive);
     }
   } catch (e) { /* 권한 없음 등 — 견적-only */ }
-  return { pivo: String(pivo).trim(), work_title: d.pivoTitle || "", original_title: d.pivoOriginalTitle || "", submit_date, delivery_date, episodes, country, expectation, notes, isOriginal, originLink, driveLink, projectUuid: d.projectUuid || "", quotationId: d.quotationId || "", quotationProductId: (d["상품목록"]?.[0]?.quotationProductId) || "", sheetOk };
+  // 작업특이사항 = 평가자가 쓴 작품 설명(번역/식자 블록으로 나뉘어 있다). 의향조사에 그대로 쓴다.
+  return { pivo: String(pivo).trim(), work_title: d.pivoTitle || "", original_title: d.pivoOriginalTitle || "", submit_date, delivery_date, episodes, country, expectation, notes, work_notes: d["작업특이사항"] || "", isOriginal, originLink, driveLink, projectUuid: d.projectUuid || "", quotationId: d.quotationId || "", quotationProductId: (d["상품목록"]?.[0]?.quotationProductId) || "", sheetOk };
 }
 // 설정집 작성 요청 메시지(모달 제출 빌드와 동일 포맷). preview=true면 APM 멘션 코드표기.
 function buildSetjipText(e, { translator, typesetter, apmId, client_pm }, preview = false) {
