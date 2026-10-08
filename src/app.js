@@ -2052,6 +2052,39 @@ function ensureWorkers() {
   console.log(`[worker-pool] 워커 ${WORKER_COUNT}개 기동`);
 }
 function enqueueJob(job) { jobs.push(job); const w = jobWaiters.shift(); if (w) w(); }
+
+// ── 검수 잡 영속화(2026-10-08) ───────────────────────────────
+// 잡은 메모리에만 있어서 **재기동하면 통째로 사라진다**. 실사고: 재상 님이 납품 리스트로 검수를
+// 걸어 워커 4개가 돌기 시작한 직후 내가 배포해서 전부 죽었고, 아무 결과도 안 나왔다.
+// run은 클로저라 저장할 수 없으니 **되살릴 수 있는 인자만** 남기고, 부팅 때 다시 만들어 넣는다.
+// 끝나면 지운다 — 남아 있는 건 곧 "아직 못 끝낸 것"이다.
+const pendingReviewJobs = new PersistMap("review-jobs", { ttlMs: 2 * 86400000 });
+let _reviewJobSeq = 0;
+function enqueueReviewJob(spec) {
+  const key = `rj_${Date.now()}_${++_reviewJobSeq}`;
+  pendingReviewJobs.set(key, {
+    work: spec.work ?? null, pivo: spec.pivo ?? null, episode: spec.episode, lang: spec.lang ?? null, label: spec.label,
+    ctx: { channel: spec.ctx?.channel ?? null, threadTs: spec.ctx?.threadTs ?? null, ts: spec.ctx?.ts ?? null },
+    createdAt: Date.now(),   // ★PersistMap의 TTL 정리는 이 이름만 본다
+  });
+  enqueueJob(makeReviewJob({ ...spec, _persistKey: key }));
+  return key;
+}
+// 부팅 시 복구 — 재기동으로 끊긴 검수를 다시 큐에 넣는다.
+function resumeReviewJobs() {
+  const left = [...pendingReviewJobs.entries()].filter(([, s]) => s?.episode && (s.work || s.pivo));
+  if (!left.length) return;
+  ensureWorkers();
+  for (const [key, s] of left) {
+    enqueueJob(makeReviewJob({ ...s, ctx: { ...s.ctx, client: app.client }, _persistKey: key }));
+  }
+  console.log(`[review-jobs] 재기동으로 끊겼던 검수 ${left.length}건 복구 — 다시 큐에 넣음`);
+  const first = left[0][1];
+  if (first?.ctx?.channel) {
+    app.client.chat.postMessage({ channel: first.ctx.channel, thread_ts: first.ctx.threadTs || first.ctx.ts, ...SENDER,
+      text: `🔁 재기동으로 끊겼던 검수 ${left.length}건을 다시 돌릴게요.` }).catch(() => {});
+  }
+}
 async function workerPost(ctx, text) {
   if (!ctx?.client) return;
   await ctx.client.chat.postMessage({ channel: ctx.channel, thread_ts: ctx.threadTs || ctx.ts, text, ...SENDER })
@@ -2098,19 +2131,29 @@ async function jobWorker(id) {
     } catch (e) {
       console.error(`[worker ${id}] ${job.label} 오류:`, e?.message ?? e);
       await workerPost(job.ctx, `⚠️ ${job.label} 오류: ${e?.message ?? e}`).catch(() => {});
+    } finally {
+      // 결과든 오류든 **사용자에게 한 번 전했으면 끝이다** — 영속 기록을 지운다.
+      // 여기를 안 거치고 프로세스가 죽은 경우만 다음 부팅에서 다시 돌린다.
+      try { job.settle?.(); } catch { /* 정리 실패는 무시 */ }
     }
   }
 }
 // 검수 잡 생성기 — extract(결정적) → 진행알림 → toolless 2패스 판단 → 결과 반환
-function makeReviewJob({ work, pivo, episode, lang, label, ctx }) {
-  return { label: `${label} ${episode}화 검수`, ctx, run: async (id) => {
+function makeReviewJob({ work, pivo, episode, lang, label, ctx, _persistKey = null }) {
+  // 결과를 돌려주는 순간이 '끝'이다 — 그때 영속 기록을 지운다. 중간에 프로세스가 죽으면 기록이
+  // 남아 다음 부팅에서 다시 돌아간다(resumeReviewJobs).
+  const settle = () => { if (_persistKey) pendingReviewJobs.delete(_persistKey); };
+  return { label: `${label} ${episode}화 검수`, ctx, settle, run: async (id) => {
     const r = await extractEpisode({ work, pivo, episode, lang: lang || "ko-ja", stage: null });
-    if (r.error) return `${label} ${episode}화: ${r.error}`;
+    if (r.error) { settle(); return `${label} ${episode}화: ${r.error}`; }
     await workerPost(ctx, `🔎 ${r.work} ${r.episode}화 — ${r.stage} ${r.count}건 추출, review-engine 검수 중… (워커 ${id})`);
     try {
       const resp = await reviewEngineReview({ work: r.work, episode: r.episode, stage: r.stage, lang: r.lang || lang || "ko-ja", taskUuid: r.taskUuid, pairs: r.pairs });
-      return formatReviewEngineResult({ work: r.work, episode: r.episode, stage: r.stage, url: r.url }, resp);
+      const out = formatReviewEngineResult({ work: r.work, episode: r.episode, stage: r.stage, url: r.url }, resp);
+      settle();
+      return out;
     } catch (e) {
+      settle();
       return `⚠️ ${r.work} ${r.episode}화 review-engine 검수 오류: ${e?.message ?? e}`;
     }
   } };
@@ -3077,10 +3120,10 @@ const apmTools = createSdkMcpServer({
           ensureWorkers();
           // 검수는 워커 풀(동시 WORKER_COUNT개)이 처리 — 메인 브레인은 안 막힘. ctx는 잡에 캡처해 그 스레드로 결과 게시.
           const jobCtx = { client: ctx.client, channel: ctx.channel, threadTs: ctx.threadTs, ts: ctx.ts };
-          list.forEach((w) => enqueueJob(makeReviewJob({
+          list.forEach((w) => enqueueReviewJob({
             work: w.work || null, pivo: w.pivo ? String(w.pivo).trim() : null,
             episode: String(w.episode).trim(), lang: w.lang || "ko-ja", label: w.work || `PV-${w.pivo}`, ctx: jobCtx,
-          })));
+          }));
           return { content: [{ type: "text", text: JSON.stringify({ queued: list.length, workers: WORKER_COUNT, order: list.map((w) => `${w.work || "PV-" + w.pivo} ${w.episode}`), note: `${list.length}작품을 검수 워커 풀(${WORKER_COUNT}개 동시)에 넘겼음 — 병렬로 검수해 끝나는 대로 각 결과를 이 스레드에 워커가 직접 올린다(메인 대화는 안 막힘). 사용자에겐 '${list.length}작품 검수 시작 — 병렬로 돌려서 끝나는 대로 결과 올릴게요'라고만 알리고, 절대 직접 review_episode를 호출하거나 검수하려 들지 말 것.` }) }] };
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
@@ -5372,7 +5415,7 @@ async function checkDeliveryCheckReviewDue() {
     }
     ensureWorkers();
     const jobCtx = { client: app.client, channel: dm.channel?.id, threadTs: null };
-    due.forEach((w) => enqueueJob(makeReviewJob({ pivo: w.pivo, episode: w.episode, lang: "zh-ja", label: `PV-${w.pivo}`, ctx: jobCtx })));
+    due.forEach((w) => enqueueReviewJob({ pivo: w.pivo, episode: w.episode, lang: "zh-ja", label: `PV-${w.pivo}`, ctx: jobCtx }));
     for (const w of due) w.reviewed = true;
     saveDeliveryCheckQueue(queue);
     if (dm.channel?.id) await app.client.chat.postMessage({ channel: dm.channel.id, text: `🔁 *재팬_납품전-체크 자동검수* — 납품 D-3~4일 도달 ${due.length}건 검수 시작(${due.map((w) => `PV-${w.pivo} ${w.episode}화`).join(", ")}) — 끝나는 대로 여기 결과 올릴게요.`, ...SENDER });
@@ -5459,6 +5502,78 @@ let wfoSeq = 0;
 const setjipQuotaStore = new PersistMap("setjip-quota", { ttlMs: 3 * 86400000 });
 
 // 작업자 개인 채널에서 설정집 자가검수를 받는다. 멘션은 필요 없다(본인 채널).
+// ── 설정집 자가검수 영속화(2026-10-08) ───────────────────────
+// 검수는 1~2분 걸리는데 그 사이에 재기동되면 「チェックしています」만 남고 영영 답이 없다.
+// 작업자는 그걸 모르고 무한정 기다린다. 요청을 남겨두고 부팅 때 이어서 돌린다 —
+// 슬랙 파일 URL은 나중에도 살아 있어서 **실제로 다시 검수**할 수 있다.
+const pendingSetjipChecks = new PersistMap("setjip-checks", { ttlMs: 2 * 86400000 });
+const SETJIP_RESUME_MAX_MS = 6 * 3600 * 1000;   // 이보다 오래된 건 다시 돌리지 않고 사과만 — 작업자는 이미 다른 걸 하고 있다
+
+// 실제 검수 1회 — handleSetjipCheck과 부팅 복구가 같은 경로를 쓴다.
+async function setjipCheckRun({ client, channel, thread, settingType, workTitle, file, workerName, persistKey }) {
+  const say = (t) => client.chat.postMessage({ channel, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+  try {
+    let workbook = null;
+    if (file) {
+      const dl = await fetch(file.url_private_download || file.url_private, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
+      if (!dl.ok) throw new Error(`ファイルの取得に失敗しました (${dl.status})`);
+      workbook = Buffer.from(await dl.arrayBuffer());
+    }
+    const res = await runSetjipCheck({
+      engineBase: REVIEW_ENGINE_BASE,
+      apiKey: process.env.REVIEW_ENGINE_API_KEY || "",
+      workbook, filename: file?.name, workTitle, settingType,
+    });
+    setjipQuotaUse(setjipQuotaStore, channel);
+    const left = setjipQuota(setjipQuotaStore, channel).left;
+    const body = setjipResultText({ ...res, left });
+
+    if (res.buffer) {
+      await client.files.uploadV2({ channel_id: channel, thread_ts: thread, initial_comment: body,
+        file_uploads: [{ file: res.buffer, filename: res.filename }] });
+    } else {
+      // TOTUS 경로는 원본 파일이 우리 손에 없어 주석을 못 단다 — 본문으로만 전한다
+      const list = res.reviews.slice(0, 30).map((v, i) => `${i + 1}. [${v.sheet}] ${v.locator}\n   ${v.issue_detail}${v.suggestion ? `\n   → ${v.suggestion}` : ""}`).join("\n");
+      await say(`${body}\n\n${list || "指摘はありません。"}`);
+    }
+    console.log(`[setjip-check] ${workerName} — ${settingType} 지적 ${res.reviews.length}건 (남은 ${left})`);
+  } catch (e) {
+    const msg = String(e?.message ?? e);
+    console.error("[setjip-check] 실패:", msg);
+    // 작품을 못 찾은 건 사용자가 바로 고칠 수 있다 — 장애처럼 안내하지 않는다
+    if (!file && /404|not found|프로젝트|project|見つかり/i.test(msg)) {
+      await say(`「${workTitle}」という作品が見つかりませんでした。\n作品名をご確認いただくか、設定集ファイルを添付してください（添付の方が結果が詳しく出ます）。`);
+    } else {
+      await say(`チェックに失敗しました。\n\`${msg.slice(0, 200)}\`\n担当PMにご連絡ください。`);
+    }
+  } finally {
+    if (persistKey) pendingSetjipChecks.delete(persistKey);   // 끝났으면(성공·실패 안내 모두) 복구 대상이 아니다
+  }
+}
+
+// 부팅 시 — 「체크 중」에서 끊긴 요청을 이어서 돌리거나, 오래됐으면 사과하고 접는다.
+function resumeSetjipChecks() {
+  const left = [...pendingSetjipChecks.entries()];
+  if (!left.length) return;
+  let rerun = 0, dropped = 0;
+  for (const [key, r] of left) {
+    if (!r?.channel) { pendingSetjipChecks.delete(key); continue; }
+    if (Date.now() - Number(r.createdAt || 0) > SETJIP_RESUME_MAX_MS) {
+      pendingSetjipChecks.delete(key);
+      dropped++;
+      app.client.chat.postMessage({ channel: r.channel, thread_ts: r.thread, ...SENDER,
+        text: "申し訳ありません。システムの再起動によりチェックが中断されていました。お手数ですが、もう一度お送りいただけますでしょうか。" }).catch(() => {});
+      continue;
+    }
+    rerun++;
+    app.client.chat.postMessage({ channel: r.channel, thread_ts: r.thread, ...SENDER,
+      text: "システムの再起動によりチェックが中断されました。もう一度チェックしています…" }).catch(() => {});
+    setjipCheckRun({ client: app.client, ...r, persistKey: key })
+      .catch((e) => { pendingSetjipChecks.delete(key); console.error("[setjip-check] 복구 실행 실패:", e?.message ?? e); });
+  }
+  console.log(`[setjip-check] 끊겼던 요청 ${left.length}건 — 재실행 ${rerun} / 만료 안내 ${dropped}`);
+}
+
 async function handleSetjipCheck({ message, client }) {
   const worker = SETJIP_CHANNELS[message.channel];
   if (!worker) return false;
@@ -5505,41 +5620,14 @@ async function handleSetjipCheck({ message, client }) {
   }
 
   await say(`設定集をチェックしています（${settingType}）… 1〜2分ほどお待ちください。`);
-  try {
-    let workbook = null;
-    if (file) {
-      const dl = await fetch(file.url_private_download || file.url_private, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
-      if (!dl.ok) throw new Error(`ファイルの取得に失敗しました (${dl.status})`);
-      workbook = Buffer.from(await dl.arrayBuffer());
-    }
-    const res = await runSetjipCheck({
-      engineBase: REVIEW_ENGINE_BASE,
-      apiKey: process.env.REVIEW_ENGINE_API_KEY || "",
-      workbook, filename: file?.name, workTitle, settingType,
-    });
-    setjipQuotaUse(setjipQuotaStore, ch);
-    const left = setjipQuota(setjipQuotaStore, ch).left;
-    const body = setjipResultText({ ...res, left });
-
-    if (res.buffer) {
-      await client.files.uploadV2({ channel_id: ch, thread_ts: thread, initial_comment: body,
-        file_uploads: [{ file: res.buffer, filename: res.filename }] });
-    } else {
-      // TOTUS 경로는 원본 파일이 우리 손에 없어 주석을 못 단다 — 본문으로만 전한다
-      const list = res.reviews.slice(0, 30).map((v, i) => `${i + 1}. [${v.sheet}] ${v.locator}\n   ${v.issue_detail}${v.suggestion ? `\n   → ${v.suggestion}` : ""}`).join("\n");
-      await say(`${body}\n\n${list || "指摘はありません。"}`);
-    }
-    console.log(`[setjip-check] ${worker.name} — ${settingType} 지적 ${res.reviews.length}건 (남은 ${left})`);
-  } catch (e) {
-    const msg = String(e?.message ?? e);
-    console.error("[setjip-check] 실패:", msg);
-    // 작품을 못 찾은 건 사용자가 바로 고칠 수 있다 — 장애처럼 안내하지 않는다
-    if (!file && /404|not found|프로젝트|project|見つかり/i.test(msg)) {
-      await say(`「${workTitle}」という作品が見つかりませんでした。\n作品名をご確認いただくか、設定集ファイルを添付してください（添付の方が結果が詳しく出ます）。`);
-    } else {
-      await say(`チェックに失敗しました。\n\`${msg.slice(0, 200)}\`\n担当PMにご連絡ください。`);
-    }
-  }
+  // ★검수를 시작한다고 남긴다 — 중간에 프로세스가 죽어도 부팅 때 이어서 돌린다(resumeSetjipChecks).
+  const key = `sc_${message.ts}`;
+  pendingSetjipChecks.set(key, {
+    channel: ch, thread, settingType, workTitle: workTitle || null, workerName: worker.name,
+    file: file ? { name: file.name, url_private: file.url_private, url_private_download: file.url_private_download } : null,
+    createdAt: Date.now(),
+  });
+  await setjipCheckRun({ client, channel: ch, thread, settingType, workTitle, file, workerName: worker.name, persistKey: key });
   return true;
 }
 
@@ -8989,6 +9077,8 @@ app.view("wfo_order_submit", async ({ ack, view, client }) => {
   if (BRAIN_ON) startSession();   // 엔진을 미리 띄워 워밍(콜드스타트 제거)
   initSince();                    // 토톡 since 복원(없으면 KST 자정)
   refreshJungil().catch((e) => console.error("[totalk] 중일 캐시 초기빌드 실패:", e?.message));   // 중일 작품 uuid 집합 백그라운드 빌드
+  try { resumeReviewJobs(); } catch (e) { console.error("[review-jobs] 복구 실패:", e?.message ?? e); }   // 재기동으로 끊긴 검수 이어서
+  try { resumeSetjipChecks(); } catch (e) { console.error("[setjip-check] 복구 실패:", e?.message ?? e); }   // 「체크 중」에서 끊긴 설정집 요청
   tick();                         // 부팅 직후 1회
   setInterval(tick, 60 * 1000);   // 1분마다 (예약은 ~1분 내 발송, 재촉·문의는 dueNagSlot이 시각 슬롯별 하루 1회로 제한)
   console.log(`🤖 디스패처 가동 — 브레인 ${BRAIN_ON ? `ON (${DISPATCHER_MODEL}, 세션 워밍됨)` : "OFF (에코 모드)"} · 재촉 ${BOT_NAG_HOURS}시 · 예약 1분틱`);
