@@ -5718,6 +5718,45 @@ app.message(async ({ message, say, client }) => {
 });
 
 // 멘션 (@봇) — 채널/스레드에서 소환
+// ── 놓친 멘션 복구(2026-10-08) ──────────────────────────────
+// Socket Mode는 연결이 끊긴 동안의 이벤트를 **재전송하지 않는다** — 그냥 사라진다.
+// 실측: 로그에 pong/ping 타임아웃이 75회, 대부분 원본 이관(PSD 수백MB 연속 PUT) 중에 몰린다.
+// 2026-10-05 19:59 타무라 님의 「順番がおかしい」가 이렇게 증발했다(수신 기록 자체가 없음).
+// 봇은 자기가 놓친 줄도 모르고, 작업자는 봇이 죽은 줄 안다.
+// 그래서 주기적으로 작업자 채널을 훑어 **답 안 한 멘션**을 찾아 뒤늦게라도 처리한다.
+const MISSED_WINDOW_MS = Number(process.env.MISSED_MENTION_WINDOW_MIN || 20) * 60 * 1000;
+let _missedLastScan = 0;
+async function checkMissedMentions() {
+  if (!SELF_BOT_USER) return;
+  if (Date.now() - _missedLastScan < 5 * 60 * 1000) return;   // 5분마다
+  _missedLastScan = Date.now();
+  const chans = [...new Set([...Object.keys(WFO_CHANNELS), ...Object.keys(SETJIP_CHANNELS)])];
+  const oldest = ((Date.now() - MISSED_WINDOW_MS) / 1000).toFixed(6);
+  for (const ch of chans) {
+    const h = await app.client.conversations.history({ channel: ch, oldest, limit: 30 }).catch(() => null);
+    for (const m of (h?.messages || [])) {
+      if (m.bot_id || m.subtype || !m.user || m.user === SELF_BOT_USER) continue;
+      if (!String(m.text || "").includes(`<@${SELF_BOT_USER}>`)) continue;
+      if (processed.has(m.ts) || processed.has(`mm:${m.ts}`)) continue;
+      // ★이미 누가 답했으면 건드리지 않는다 — 재기동으로 processed가 비었을 때 재처리를 막는 핵심.
+      let answered = false;
+      if (m.thread_ts || m.reply_count) {
+        const r = await app.client.conversations.replies({ channel: ch, ts: m.thread_ts || m.ts, limit: 50 }).catch(() => null);
+        answered = (r?.messages || []).some((x) => Number(x.ts) > Number(m.ts) && (x.bot_id === SELF_BOT_ID || x.user === SELF_BOT_USER));
+      }
+      if (answered) { processed.add(`mm:${m.ts}`); continue; }
+      processed.add(`mm:${m.ts}`);
+      console.log(`[missed] 놓친 멘션 복구 (ch=${ch}, ${Math.round((Date.now() - Number(m.ts) * 1000) / 60000)}분 전): ${String(m.text).slice(0, 60).replace(/\n/g, " ")}`);
+      const say = (a) => app.client.chat.postMessage({ channel: ch, ...(typeof a === "string" ? { text: a } : a) });
+      await handle({
+        text: m.text, channel: ch, ts: m.ts,
+        threadTs: m.thread_ts || m.ts, inThread: Boolean(m.thread_ts),
+        user: m.user, client: app.client, say, files: m.files,
+      }).catch((e) => console.error("[missed] 복구 처리 실패:", e?.message ?? e));
+    }
+  }
+}
+
 app.event("app_mention", async ({ event, say, client }) => {
   // ★자기호출 루프 방지(2026-07-28): 워커/자동알림이 올린 메시지 텍스트에 툰식이 자신에 대한
   //  멘션이 literal하게 들어있으면(예: 예시문구로 "@툰식이 ...줘"), Slack은 그 글쓴이가 봇 자신이어도
@@ -8825,7 +8864,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkDemoProposal().catch((e) => console.error("[demo] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkLearnedAudit().catch((e) => console.error("[learned-audit] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkCostRateScrum().catch((e) => console.error("[costrate-scrum] tick 오류:", e?.message ?? e)); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkSetjipSurvey().catch((e) => console.error("[setjip-survey] tick 오류:", e?.message ?? e)); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkDemoProposal().catch((e) => console.error("[demo] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkLearnedAudit().catch((e) => console.error("[learned-audit] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkCostRateScrum().catch((e) => console.error("[costrate-scrum] tick 오류:", e?.message ?? e)); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkMissedMentions().catch((e) => console.error("[missed] tick 오류:", e?.message ?? e)); await checkSetjipSurvey().catch((e) => console.error("[setjip-survey] tick 오류:", e?.message ?? e)); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
