@@ -4647,7 +4647,11 @@ const TOOL_LABEL = {
 // 회차 전처리 상태 — source-tree에서 그 회차 폴더의 파일들을 보고 판정한다(2026-10-07).
 // 폴더 이름은 "055_055", "001_第1话 …" 꼴이라 앞머리 숫자가 회차다.
 // 전처리 상태만 필요하므로 projectSourceTree 한 번이면 끝난다(preprocessing-status를 또 부를 필요 없음).
-async function episodePreprocess(pivo, episodes) {
+// expected: 방금 올린 파일 수. 주면 트리에 그만큼 보이는지까지 본다.
+// ★없으면 "아직 동기화 안 된 파일"을 "없는 파일"로 보고 완료 처리한다 — 실측(2026-10-07
+//   PV-143925 233~235화): 18장을 올린 직후 조회했더니 12장만 보였는데 done:true가 나왔다.
+//   그때는 나중에 다 DONE이 됐지만, 동기화가 느리면 절반만 보고 소스그룹을 확정해버린다.
+async function episodePreprocess(pivo, episodes, expected = 0) {
   try {
     const proj = await projectByPivo(String(pivo).replace(/\D/g, ""));
     const uuid = proj?.data?.[0]?.uuid;
@@ -4668,6 +4672,10 @@ async function episodePreprocess(pivo, episodes) {
     const notDone = files.filter((f) => f.st !== "DONE" && !/ERROR|FAIL/i.test(f.st));
     if (err.length) return { error: true, total: files.length, detail: `오류 ${err.length}건 (${err.slice(0, 3).map((f) => f.name).join(", ")})` };
     if (notDone.length) return { pending: true, total: files.length, detail: `미완 ${notDone.length}/${files.length}` };
+    // 올린 수보다 트리에 적게 보이면 아직 PIVO→TOTUS 동기화 중이다. 완료로 보지 않는다.
+    if (expected && files.length < expected) {
+      return { pending: true, total: files.length, expected, detail: `동기화 대기 ${files.length}/${expected}` };
+    }
     return { done: true, total: files.length };
   } catch (e) { return { unknown: true, why: String(e?.message ?? e).slice(0, 120) }; }
 }
@@ -8229,7 +8237,7 @@ async function checkPendingFinalize() {
     const tries = (j.tries || 0) + 1;
     let done = false, reason = "", unknownStatus = false;
     try {
-      const pp = await episodePreprocess(j.pivo, j.episodes);
+      const pp = await episodePreprocess(j.pivo, j.episodes, (j.fileIds || []).length);
       if (pp.unknown) { unknownStatus = true; reason = `전처리 상태 조회 불가(${pp.why})`; }
       else if (pp.error) reason = `전처리 오류 — ${pp.detail}`;
       else if (!pp.done) reason = `전처리 진행 중 — ${pp.detail}`;
@@ -8669,12 +8677,16 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
 
     // 전처리는 평균 17분이라 워커를 붙들고 기다리지 않는다(구 10분 블로킹 폐지, 2026-09-22).
     // 여기서 한 번만 확인하고, 아직이면 확정을 큐에 넘겨 3분 뒤부터 5분 간격으로 본다.
+    let preprocessNote = "";
     if (!skipPreprocessing && allFileIds.length) {
-      const pp = await episodePreprocess(entry.pivo, episodeList.map((e) => e.episode));
+      const pp = await episodePreprocess(entry.pivo, episodeList.map((e) => e.episode), allFileIds.length);
       console.log("[transfer] 전처리 1차 확인:", JSON.stringify(pp));
       if (pp.unknown) allWarns.push(`ℹ️ 전처리 상태를 조회할 수 없어요(${pp.why}) — TOTUS에서 직접 확인해주세요`);
       else if (pp.error) allWarns.push(`⚠️ 전처리 오류 — ${pp.detail}`);
       else if (!pp.done) allWarns.push(`⏳ 전처리 진행 중 — ${pp.detail}`);
+      // ★잘 됐을 때도 알린다(2026-10-08) — 전엔 문제가 있을 때만 말해서, 「전처리까지 추적해」라고
+      //   지시받고도 정상이면 한 마디도 안 했다. 추적해놓고 결과를 안 주면 추적 안 한 것과 같다.
+      else preprocessNote = `🔄 전처리 완료 (${pp.total}개 파일) · 소스그룹 확정`;
     } else {
       console.log(`[transfer] 전처리 스킵: skipPreprocessing=${skipPreprocessing}, allFileIds.length=${allFileIds.length}`);
     }
@@ -8699,7 +8711,9 @@ async function _handleManualTransferCommand({ workName, pivoId, originalTitleCH,
       });
       return;
     }
-    await finalize(`✅ *${displayName}* ${epSummary} 이관 완료 (파일 ${allFileIds.length}개)\n${summary}`
+    await finalize(`✅ *${displayName}* ${epSummary} 이관 완료 (파일 ${allFileIds.length}개)`
+      + (preprocessNote ? `\n${preprocessNote}` : "")
+      + `\n${summary}`
       + (allWarns.length ? `\n⚠️ 확인할 게 ${allWarns.length}건 있어요 — DM으로 보냈어요.` : ""));
     await dmTransferReason(client, {
       title: `⚠️ *${displayName}* ${epSummary} 이관 중 확인할 것 ${allWarns.length}건`,
