@@ -1,10 +1,12 @@
-// 설정집 xlsx에 검수 결과를 직접 써 넣는다 — 우측 「AI検収」 열에 일본어 지적, 지적 셀만 노란색.
+// 설정집 xlsx에 검수 결과를 직접 써 넣는다 — 우측 「AI検収」 열에 일본어 지적, 지적 셀만 색칠.
 // ★ExcelJS로 재직렬화하면 이미지·도형이 날아간다(설정집은 SS 이미지가 수십 장).
 //   그래서 xlsxRowHeight.js와 같은 방식으로 JSZip으로 풀어 sheet XML을 직접 고친다.
 import JSZip from "jszip";
 
 const COMMENT_HEADER = "AI検収";
-const YELLOW = "FFFFFF00";
+// ★주황이다. 노랑으로 칠하던 걸 바꿨다(2026-10-08) — 설정집 원본에 작업자가 칠해둔 노란 셀이
+//   이미 있어서 AI가 지적한 셀과 구분이 안 됐다.
+const HILITE = "FFFFC000";
 // ★코멘트 열은 M(13) 고정(재상 님 지시 2026-10-05). 종전엔 '마지막으로 쓰인 열+1'이라
 //   서식만 깔린 빈 열이 Z까지 이어진 파일에서 AA열에 붙어 안 보였다.
 //   단 실제 데이터가 M을 넘어가면 그 뒤로 밀어 덮어쓰기를 막는다.
@@ -50,7 +52,7 @@ function addYellowStyles(stylesXml, srcIdxSet) {
   const fillsM = xml.match(/<fills count="(\d+)">([\s\S]*?)<\/fills>/);
   if (!fillsM) throw new Error("styles.xml에 <fills>가 없다");
   const newFillId = Number(fillsM[1]);
-  const fillsNew = `<fills count="${newFillId + 1}">${fillsM[2]}<fill><patternFill patternType="solid"><fgColor rgb="${YELLOW}"/><bgColor indexed="64"/></patternFill></fill></fills>`;
+  const fillsNew = `<fills count="${newFillId + 1}">${fillsM[2]}<fill><patternFill patternType="solid"><fgColor rgb="${HILITE}"/><bgColor indexed="64"/></patternFill></fill></fills>`;
   xml = xml.replace(fillsM[0], fillsNew);
 
   // cellXfs — 원본 xf를 복제해 fill만 노랗게 바꾼다(글꼴·테두리·줄바꿈 유지)

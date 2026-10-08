@@ -6,7 +6,9 @@ import { setCell } from "./sheets-write.js";
 
 const MASTER = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
 const RANGE = "출판사 드라이브 링크!A:I";
-const TITLE_COLS = [2, 3, 4]; // C 한국어, D 일본어가제, E FIX일본어
+// B 중국어 원제도 넣는다(2026-10-08) — 재상 님은 이관·조회를 시킬 때 중국어 원제를 그대로
+// 주는데(「ID: 143925 全民转职：无职的我终结了神明！」) 여기 없어서 제목으로는 한 번도 안 잡혔다.
+const TITLE_COLS = [1, 2, 3, 4]; // B 중국어, C 한국어, D 일본어가제, E FIX일본어
 
 // 판권사가 시트 드라이브 링크 대신 특정 플랫폼에서 직접 검색해야 하는 경우(재상 님 확인, 2026-08-26).
 // XINGYUE는 자체 드라이브가 없고 원본이 bilibili에 있음 — 원본/드라이브 링크 안내 시 이 이름으로 검색하라고 알려줄 것.

@@ -8071,7 +8071,35 @@ async function _triggerKuaikanReupload({ work, entry, episodePage, apm }) {
 }
 
 // 문의봇 '재수급 완료' 감지 시 Kuaikan→PIVO 자동 이관. toon-원본재수급 채널에서 resupply_upload_file 버튼 메시지 수신 시 호출.
-async function _handleResupplyAutoTransfer({ message, client }) {
+// onlyEpisodes/folderPicks: 폴더가 여러 개 걸려 멈춘 회차를 사람이 버튼으로 고른 뒤
+// 그 회차만 다시 돌릴 때 쓴다(2026-10-08). 평소 호출에선 둘 다 없다.
+// 폴더가 여러 개 걸려 이관이 멈췄을 때, 후보를 버튼으로 띄워 사람이 고르게 한다(2026-10-08).
+// 그전에는 reason만 경고로 남기고 candidates를 통째로 버려서, 사람이 어디를 봐야 하는지조차 몰랐다.
+//  - "카테고리 폴더가 여러 개" → 고른 폴더를 컨테이너로 보고 그 안에서 회차를 다시 찾는다(mode=cat)
+//  - 그 외(회차 폴더 특정 실패) → 고른 폴더를 회차 폴더로 확정한다(mode=ep)
+async function postFolderPicker({ client, channel, threadTs, srcTs, workName, episode, epResult }) {
+  const cands = (epResult?.candidates || []).filter((c) => isKuaikanDir(c)).slice(0, 5);
+  if (!cands.length) return;
+  const mode = /카테고리/.test(String(epResult.reason || "")) ? "cat" : "ep";
+  const fmtSize = (b) => (b == null ? "" : ` · ${(Number(b) / 1024 ** 3).toFixed(1)}GB`);
+  const blocks = [
+    { type: "section", text: { type: "mrkdwn",
+      text: `📁 *${workName}* ${episode}화 — 폴더를 특정하지 못했어요.
+${epResult.reason}
+어느 폴더인지 골라주시면 그 회차만 다시 이관할게요.` } },
+    { type: "actions", elements: cands.map((c, i) => ({
+      type: "button",
+      action_id: `transfer_pick_folder_${i}`,
+      text: { type: "plain_text", text: String(c.name || "(이름없음)").slice(0, 72) },
+      value: JSON.stringify({ c: channel, t: srcTs, ep: String(episode), id: c.id, m: mode, n: String(c.name || "").slice(0, 60) }),
+    })) },
+    { type: "context", elements: [{ type: "mrkdwn",
+      text: cands.map((c) => `\`${String(c.name || "").slice(0, 28)}\`${fmtSize(c.size)}`).join(" · ") }] },
+  ];
+  await client.chat.postMessage({ channel, thread_ts: threadTs, text: `${workName} ${episode}화 폴더 선택 필요`, blocks, ...SENDER });
+}
+
+async function _handleResupplyAutoTransfer({ message, client, onlyEpisodes = null, folderPicks = null }) {
   const btn = message.blocks?.find(b => b.type === "actions")?.elements?.find(e => e.action_id === "resupply_upload_file");
   if (!btn?.value) return;
   let meta;
@@ -8111,8 +8139,13 @@ async function _handleResupplyAutoTransfer({ message, client }) {
     }
     if (!episodePage && episodeRaw) episodePage = `${episodeRaw}화`;
 
-    const episodeList = _parseEpisodeList(episodePage);
+    let episodeList = _parseEpisodeList(episodePage);
     if (!episodeList.length) throw new Error(`화수 파싱 실패: "${episodePage}"`);
+    if (onlyEpisodes?.length) {
+      const want = new Set(onlyEpisodes.map(String));
+      episodeList = episodeList.filter((e) => want.has(String(e.episode)));
+      if (!episodeList.length) throw new Error(`지정한 회차(${onlyEpisodes.join(",")})가 이 요청에 없음`);
+    }
 
     // 2. 드라이브 항목 조회
     const entry = await lookupDriveEntryForWork(workName).catch(() => null);
@@ -8177,8 +8210,17 @@ async function _handleResupplyAutoTransfer({ message, client }) {
       } else {
         // 에피소드 전체 파일 이관
         await updateProgress(`⏳ *${workName}* ${epLabel}${progress} — 폴더 탐색 중...`);
-        const epResult = await findEpisodeFolder(adapter.listChildren, isKuaikanDir, rootId, episode, "psd");
-        if (!epResult.ok) { allWarns.push(`⚠️ ${epLabel} 폴더 탐색 실패: ${epResult.reason}`); continue; }
+        const pick = folderPicks?.[String(episode)];
+        let epResult;
+        if (pick?.mode === "ep") epResult = { ok: true, folder: { id: pick.id, name: pick.name } };
+        else if (pick?.mode === "cat") epResult = await findEpisodeFolder(adapter.listChildren, isKuaikanDir, pick.id, episode, "psd");
+        else epResult = await findEpisodeFolder(adapter.listChildren, isKuaikanDir, rootId, episode, "psd");
+        if (!epResult.ok) {
+          allWarns.push(`⚠️ ${epLabel} 폴더 탐색 실패: ${epResult.reason}`);
+          // ★후보를 그냥 버리지 않는다 — 사람이 고를 수 있게 버튼으로 띄운다(2026-10-08).
+          await postFolderPicker({ client, channel: message.channel, threadTs: replyTs, srcTs: message.ts, workName, episode, epResult }).catch(() => {});
+          continue;
+        }
 
         const allItems = await kuaikanListChildren(epResult.folder.id);
         const psdFiles = allItems.filter(it => !isKuaikanDir(it) && /\.psd$/i.test(it.name || ""));
@@ -9042,6 +9084,38 @@ app.action("wfo_ep_pick", async ({ ack, body, client, action }) => {
   const rec = pendingWfo.get(batchId);
   if (!rec) return;
   await wfoShowModal({ client, body, rec, batchId, episode: Number(action.selected_option.value), viewId: body.view.id });
+});
+
+// 폴더 선택 버튼 — 사람이 고른 폴더로 그 회차만 다시 이관한다(2026-10-08).
+// 버튼 action_id가 인덱스로 갈리는 건 한 actions 블록에 같은 id를 두 개 넣으면 invalid_blocks라서다.
+app.action(/^transfer_pick_folder_\d+$/, async ({ ack, body, client, action }) => {
+  await ack();
+  let v;
+  try { v = JSON.parse(action.value); } catch { return; }
+  const ch = body.channel?.id || v.c;
+  const threadTs = body.message?.thread_ts || body.message?.ts;
+  // 누른 뒤 버튼을 거둬 중복 실행을 막는다
+  if (body.message?.ts) {
+    await client.chat.update({ channel: ch, ts: body.message.ts, ...SENDER,
+      text: `📁 \`${v.n}\` 선택됨 — ${v.ep}화 이관을 다시 시작합니다.`,
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: `📁 \`${v.n}\` 선택됨 — ${v.ep}화 이관을 다시 시작합니다. (<@${body.user?.id}>)` } }],
+    }).catch(() => {});
+  }
+  // 원본 재수급 메시지를 가져와 같은 경로로 재실행 — 이관 로직을 복제하지 않기 위해서다.
+  const h = await client.conversations.history({ channel: v.c, latest: v.t, inclusive: true, limit: 1 }).catch(() => null);
+  const src = h?.messages?.[0];
+  if (!src) {
+    await client.chat.postMessage({ channel: ch, thread_ts: threadTs, text: "원본 요청 메시지를 못 찾아서 재시도하지 못했어요.", ...SENDER }).catch(() => {});
+    return;
+  }
+  await _handleResupplyAutoTransfer({
+    message: { ...src, channel: v.c },
+    client,
+    onlyEpisodes: [String(v.ep)],
+    folderPicks: { [String(v.ep)]: { id: v.id, mode: v.m, name: v.n } },
+  }).catch(async (e) => {
+    await client.chat.postMessage({ channel: ch, thread_ts: threadTs, text: `⚠️ ${v.ep}화 재이관 실패: ${e?.message ?? e}`, ...SENDER }).catch(() => {});
+  });
 });
 
 app.view("wfo_order_submit", async ({ ack, view, client }) => {
