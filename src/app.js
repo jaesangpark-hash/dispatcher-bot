@@ -4423,7 +4423,11 @@ const isCtxOverflow = (s) => CTX_RE.test(String(s || ""));
 // true면 지금 세션 스트림을 끝낸다 → for-await 루프가 끝나며 startSession()이 새 세션을 띄운다(컨텍스트 초기화).
 let sessionResetWanted = false;
 // 이 입력 토큰을 넘긴 턴 뒤에는 세션을 갈아탄다 — 한도(보통 200k)에 부딪히기 전에 선제적으로.
-const CTX_SOFT_LIMIT = Number(process.env.BRAIN_CTX_SOFT_LIMIT || 150000);
+// ★150k로 잡았다가 **매 턴** 걸렸다(2026-10-07 실측). 측정값(input+cache_read+cache_creation)은
+//   대화 누적이 아니라 **시스템 지침 + 도구 78개까지 포함한 총량**이라, 빈 세션에서도 258k가 나온다.
+//   그래서 대화가 하나도 안 쌓여도 임계를 넘어 턴마다 세션을 버렸다(학습 규칙 재주입·응답 지연).
+//   관측 분포: 258k(바닥) ~ 746k(성공). 한도는 그보다 위이므로 700k로 둔다 — 정말 가까워졌을 때만 교체.
+const CTX_SOFT_LIMIT = Number(process.env.BRAIN_CTX_SOFT_LIMIT || 700000);
 
 const TURN_HARD_TIMEOUT_MS = 420_000;   // 한 턴이 이 시간 넘게 안 끝나면(행/과부하) 중단·재시작.
 // ★210→420s(2026-06-28): 대량 집계·검수 턴이 정당하게 3~6분 걸리는데 210s가 너무 짧아 멀쩡한 작업을
@@ -5457,7 +5461,15 @@ const setjipQuotaStore = new PersistMap("setjip-quota", { ttlMs: 3 * 86400000 })
 async function handleSetjipCheck({ message, client }) {
   const worker = SETJIP_CHANNELS[message.channel];
   if (!worker) return false;
+  // ★자가검수는 **작업자 본인이 요청할 때만** 돈다(2026-10-08 실사고).
+  //   APM이 작업자에게 보낸 신규 의뢰서(「新作設定集チェックをお願いしたく…日本設定…」 + 샘플 xlsx 첨부)가
+  //   아래 조건을 전부 만족해 봇이 참고용 샘플을 검수해버렸다. 하루 횟수도 1회 깎였다.
+  //   이 채널의 작업자 uid가 아니면(APM·봇·제3자) 자가검수가 아니다.
+  const uid = WFO_CHANNELS[message.channel]?.uid;
+  if (uid && message.user && message.user !== uid) return false;
   const text = String(message.text || "");
+  // 의뢰·안내 문구가 있으면 요청이 아니다 — 작업자에게 「해줄 수 있나」 묻는 글이다.
+  if (/お願いしたく|作業可能か|ご連絡いただけ|ご確認のうえ|ご参考|日程の調整/.test(text)) return false;
   const xlsx = (message.files || []).find((f) => /\.xlsx$/i.test(f.name || "") || /spreadsheet/i.test(f.mimetype || ""));
   // ★「設定集チェック」를 안 써도, xlsx를 올리며 국가설정만 적으면 검수 요청으로 본다.
   //   실측(2026-10-05): 재상 님도 작업자에게 안내하면서 「(파일) @툰식이 日本設定」로 보내셨고
