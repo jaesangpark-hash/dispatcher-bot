@@ -178,8 +178,14 @@ export async function applyOrder(records) {
   const done = [], failed = [];
   for (const r of records.filter((x) => x.status === "fix")) {
     try {
-      const sources = r.sorted.map((name, i) => ({ id: r.fileMap[name], order: i + 1 })).filter((s) => s.id != null);
-      if (!sources.length) throw new Error("파일 id를 못 찾음");
+      // ★필드명은 sourceId, order는 0부터다(2026-10-09 수정). 명세:
+      //   sources: [{ sourceId(= source-groups 파일목록[].id), order(0부터) }]
+      //   `id`/1부터로 보내면 TOTUS가 400 VALIDATION_ERROR를 돌려준다 — 모리시타 님이
+      //   「この殺し屋は婿養子 21話」를 고치려다 두 번 다 여기서 막혔다. 제안 순서는 맞았는데
+      //   반영만 실패해서, 작업자 입장에선 봇이 일을 안 한 것으로 보였다.
+      //   본체 경로(app.js)는 처음부터 맞게 보내고 있었다 — 작업자용 경로만 따로 어긋나 있었다.
+      const sources = r.sorted.map((name, i) => ({ sourceId: r.fileMap[name], order: i })).filter((s) => s.sourceId != null);
+      if (sources.length !== r.sorted.length) throw new Error("파일 id를 못 찾음");
       await reorderFiles(sources);
       await completeSourceGroups([r.groupId]);
       done.push(r.episode);
@@ -358,7 +364,8 @@ export function orderModalView(batchId, rec, episode, order) {
 export async function applyManualOrder(rec, episode, order) {
   const r = (rec?.records || []).find((x) => Number(x.episode) === Number(episode));
   if (!r) throw new Error("該当話数が見つかりません");
-  const sources = (order || []).map((name, i) => ({ id: r.fileMap?.[name], order: i + 1 })).filter((s) => s.id != null);
+  // 필드명·기준은 applyOrder와 같다 — sourceId, order는 0부터(2026-10-09 수정).
+  const sources = (order || []).map((name, i) => ({ sourceId: r.fileMap?.[name], order: i })).filter((s) => s.sourceId != null);
   if (!sources.length || sources.length !== order.length) throw new Error("ファイルIDを取得できませんでした");
   await reorderFiles(sources);
   await completeSourceGroups([r.groupId]);
