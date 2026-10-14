@@ -513,9 +513,20 @@ async function checkWorkList(works, lang = "zh-ja") {
   }
   return out;
 }
-// n8n 로컬 웹훅 POST(.env N8N_WEBHOOK_BASE = http://localhost:5678). path=웹훅 경로.
+// ★워크플로우마다 dev/prod 가 섞여 있다(2026-10-14). 배포 자동화가 prod 를 켜면서 dev 쪽을 끄므로,
+//   옮겨간 webhook 을 계속 dev 로 부르면 404 가 난다. 반대로 아직 dev 에만 있는 것을 prod 로 부르면 같은 일이 생긴다.
+//   그래서 path 단위로 호스트를 고른다 — **배포될 때마다 그 path 를 아래 목록에 추가**하면 끝난다.
+//   실측(2026-10-14): translation-monitor-register 는 prod, seoljeongjip-run·sikja-handover-notice 는 dev.
+const N8N_PROD_PATHS = new Set([
+  "translation-monitor-register",   // 2026-10-14 prod 배포 (번역검수 완료 모니터 — 등록)
+]);
+function n8nBase(path) {
+  const prod = process.env.N8N_WEBHOOK_BASE_PROD || "https://n8n.voithru-ai.com";
+  return N8N_PROD_PATHS.has(path) ? prod : process.env.N8N_WEBHOOK_BASE;
+}
+// n8n 웹훅 POST. path=웹훅 경로(호스트는 n8nBase 가 dev/prod 중에서 고른다).
 async function n8nPost(path, body) {
-  const base = process.env.N8N_WEBHOOK_BASE;
+  const base = n8nBase(path);
   if (!base) throw new Error("N8N_WEBHOOK_BASE 미설정");
   const r = await fetch(`${base.replace(/\/$/, "")}/webhook/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
   const t = await r.text();
@@ -2510,7 +2521,7 @@ const apmTools = createSdkMcpServer({
       },
       async ({ pivoId, workTitle, episodes, deadline }) => {
         try {
-          const base = process.env.N8N_WEBHOOK_BASE ?? "http://localhost:5678";
+          const base = n8nBase("translation-monitor-register") ?? "http://localhost:5678";
           const url  = `${base}/webhook/translation-monitor-register`;
           const num  = String(pivoId).match(/\d{4,}/)?.[0] || String(pivoId).trim();   // 'PV-201454' → '201454'
           // ★모델이 직접 손으로 옮겨적은 workTitle(특히 일본어 원제)이 깨져서 저장된 사고 있었음(2026-07-28) —
