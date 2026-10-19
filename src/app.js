@@ -6528,11 +6528,22 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
         { type: "actions", elements: [
           { type: "button", style: "primary", text: { type: "plain_text", text: "🔍 설정집 검수" }, action_id: "setjip_run_review", value: posted.ts },
           // 의향조사는 게시와 동시가 아니라 **필요할 때만**, 그리고 번역·식자를 따로 누른다(2026-10-07 재상 님 지정).
-          { type: "button", text: { type: "plain_text", text: "🙋 번역 의향조사" }, action_id: "setjip_survey_send", value: `${posted.ts}|번역` },
-          { type: "button", text: { type: "plain_text", text: "🙋 식자 의향조사" }, action_id: "setjip_survey_send", value: `${posted.ts}|식자` },
+          // ★action_id 는 한 메시지 안에서 유일해야 한다. 둘 다 "setjip_survey_send" 를 쓰던 동안
+          //   Slack 이 invalid_blocks 로 **메시지 전체를 거부**해서, 의향조사는 물론 같은 블록의
+          //   검수 버튼까지 통째로 안 붙었다(2026-10-19). 역할 구분은 그대로 value 로 한다.
+          { type: "button", text: { type: "plain_text", text: "🙋 번역 의향조사" }, action_id: "setjip_survey_send_translation", value: `${posted.ts}|번역` },
+          { type: "button", text: { type: "plain_text", text: "🙋 식자 의향조사" }, action_id: "setjip_survey_send_typesetting", value: `${posted.ts}|식자` },
         ] },
       ],
-    }).catch((e) => console.error("[setjip_confirm] 검수 버튼 게시 실패:", e?.message ?? e));
+    }).catch((e) => {
+      // ★조용히 삼키지 않는다. 이 버튼이 안 붙은 걸 12일 동안 아무도 몰랐다(2026-10-19 invalid_blocks).
+      //   뒤 단계(진행체크·파일순서)는 멀쩡히 붙어서 겉보기엔 정상이라, 스레드에 남겨야 보인다.
+      console.error("[setjip_confirm] 검수 버튼 게시 실패:", e?.message ?? e);
+      client.chat.postMessage({
+        channel: p.channel, thread_ts: posted.ts, ...SENDER,
+        text: `⚠️ 검수·의향조사 버튼을 붙이지 못했어요 (${e?.message ?? e}). 재상 님께 알려주세요.`,
+      }).catch(() => {});
+    });
     // 의향조사 버튼이 나중에 눌릴 때 쓸 작품 정보를 남겨둔다(버튼 value엔 ts만 실린다).
     pendingSetjipSurvey.set(posted.ts, {
       channel: p.channel, threadTs: posted.ts, work: p.work,
@@ -6610,7 +6621,9 @@ app.action("setjip_confirm", async ({ ack, body, client }) => {
 // ── 설정집 작성 의향조사 ───────────────────────────────────────
 // 「🙋 작업자 의향조사」 → 대상 작업자 개인 채널에 가능/불가 버튼 발송, 응답은 요청 스레드에 집계.
 // 배정을 자동으로 확정하지 않는다 — 후보만 모으고 결정은 사람이 한다.
-app.action("setjip_survey_send", async ({ ack, body, client }) => {
+// 번역·식자가 action_id 는 다르고 역할은 value 로 오므로 핸들러는 하나로 둔다.
+// 옛 id("setjip_survey_send")도 받도록 접미사를 선택으로 둔다 — 안 쓰이지만 받아서 손해 없다.
+app.action(/^setjip_survey_send(_translation|_typesetting)?$/, async ({ ack, body, client }) => {
   await ack();
   const [ts, role] = String(body.actions?.[0]?.value || "").split("|");
   const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
