@@ -6,7 +6,18 @@ import { projectByPivo, projectJobs } from "./totus.js";
 const BASE = (process.env.SOURCE_INJECTION_URL || "https://agent.voithru-ai.com/api/webhook/source-injection").replace(/\/+$/, "");
 const KEY = () => (process.env.SOURCE_INJECTION_API_KEY || "").trim();
 
-const TARGET_CODE = "OTC0024";                 // 식번검(식자번역검수)
+// 주입할 공정. 검수 WF마다 읽는 단계가 달라서 대상도 달라야 한다(사본 간 원문 상속이 없다).
+//   1-3화 AI 검수      → 번역검수(OTC0013) 를 읽는다
+//   초도검수(1-20화)    → 식번검(OTC0024) 우선, 없으면 번역검수(OTC0013)
+//   사람이 에디터로 볼 때 → 식번검(기본)
+const STAGES = {
+  "식번검": "OTC0024", "식자번역검수": "OTC0024",
+  "번역검수": "OTC0013",
+  "번역": "OTC0012",
+};
+const CODE_NAME = { OTC0024: "식자번역검수", OTC0013: "번역검수", OTC0012: "번역" };
+const AUTO_CHAIN = ["OTC0024", "OTC0013", "OTC0012"];   // 초도검수가 쓰는 순서와 같다
+const TARGET_CODE = "OTC0024";                 // stage 생략 시 기본(사람이 보는 사본)
 const TARGET_NAME = "식자번역검수";
 // 「완료」로 볼 상태. COMPLETED를 우선하고, 없으면 CONFIRMED(검수 확정)도 대상으로 본다.
 const DONE_RANK = { COMPLETED: 2, CONFIRMED: 1 };
@@ -42,7 +53,13 @@ async function apiCall(method, path, body) {
 }
 
 // PIVO + 회차 → 식번검 최신 완료본. 고르지 못하면 왜 못 골랐는지까지 돌려준다.
-export async function resolveTarget({ pivo, episode }) {
+// stage: '식번검'(기본) | '번역검수' | '번역' | 'auto'(식번검→번역검수→번역 중 완료본 있는 첫 단계)
+export async function resolveTarget({ pivo, episode, stage }) {
+  const want = String(stage || "").trim();
+  const chain = want === "auto" ? AUTO_CHAIN
+    : want ? [STAGES[want] || (/^OTC\d{4}$/.test(want) ? want : null)].filter(Boolean)
+    : [TARGET_CODE];
+  if (!chain.length) return { error: `모르는 단계: '${stage}' (식번검·번역검수·번역·auto 중 하나)` };
   const pv = String(pivo || "").trim();
   if (!/^\d{3,}$/.test(pv)) return { error: `PIVO ID 형식이 아님: '${pivo}'` };
   const ep = String(episode ?? "").trim();
@@ -61,22 +78,23 @@ export async function resolveTarget({ pivo, episode }) {
   }
   if (!jobs.length) return { error: `${projectName} ${ep}화 JOB 없음 (회차 표기 확인)`, projectName, pivo: pv };
 
-  const all = [];
-  for (const job of jobs)
-    for (const op of job.오퍼레이션 || [])
-      for (const t of op.태스크 || [])
-        if (t.오퍼레이션유형 === TARGET_CODE)
-          all.push({ ...t, jobName: job.JOB명 ?? null });
-
-  if (!all.length)
-    return { error: `${projectName} ${ep}화에 ${TARGET_NAME}(${TARGET_CODE}) 태스크가 없음`, projectName, pivo: pv };
-
-  const done = all.filter((t) => DONE_RANK[t.상태]);
+  // 체인 순서대로 보되, 완료본이 있는 첫 단계에서 멈춘다(auto가 아니면 체인 길이가 1이라 그대로).
+  let code = null, all = [], done = [], seen = [];
+  for (const c of chain) {
+    const got = [];
+    for (const job of jobs)
+      for (const op of job.오퍼레이션 || [])
+        for (const t of op.태스크 || [])
+          if (t.오퍼레이션유형 === c) got.push({ ...t, jobName: job.JOB명 ?? null });
+    if (got.length) seen.push(`${CODE_NAME[c] || c} ${got.length}건`);
+    const d = got.filter((t) => DONE_RANK[t.상태]);
+    if (d.length) { code = c; all = got; done = d; break; }
+  }
   if (!done.length) {
-    const states = [...new Set(all.map((t) => `${t.상태명 || t.상태}`))].join(", ");
+    const label = chain.map((c) => CODE_NAME[c] || c).join(" → ");
     return {
-      error: `${projectName} ${ep}화 ${TARGET_NAME}에 완료된 태스크가 없음 (현재: ${states})`,
-      projectName, pivo: pv, candidates: all.length,
+      error: `${projectName} ${ep}화 ${label}에 완료된 태스크가 없음${seen.length ? ` (있는 것: ${seen.join(", ")})` : ""}`,
+      projectName, pivo: pv,
     };
   }
   // 완료 상태 우선순위(COMPLETED > CONFIRMED) → 같은 등급이면 마감일 최신
@@ -85,6 +103,7 @@ export async function resolveTarget({ pivo, episode }) {
 
   return {
     pivo: pv, episode: ep, projectName,
+    stageCode: code, stage: CODE_NAME[code] || code,
     taskUuid: pick.uuid,
     url: EDITOR_URL(pick.uuid),
     state: pick.상태, stateName: pick.상태명 || pick.상태,
@@ -97,10 +116,10 @@ export async function resolveTarget({ pivo, episode }) {
 }
 
 // 여러 회차를 한 번에 — 실패한 회차는 errors에 남기고 나머지는 그대로 진행한다(조용히 빠지지 않게).
-export async function resolveMany({ pivo, episodes }) {
+export async function resolveMany({ pivo, episodes, stage }) {
   const ok = [], errors = [];
   for (const ep of episodes) {
-    const r = await resolveTarget({ pivo, episode: ep });
+    const r = await resolveTarget({ pivo, episode: ep, stage });
     (r.error ? errors : ok).push(r.error ? { episode: String(ep), error: r.error } : r);
   }
   return { ok, errors };

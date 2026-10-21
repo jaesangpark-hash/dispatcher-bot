@@ -4323,9 +4323,10 @@ const apmTools = createSdkMcpServer({
       {
         pivo: z.string().describe("PIVO ID(숫자)"),
         episodes: z.string().describe("회차. 단일 '4', 복수 '1,2,3', 범위 '1-3' 모두 가능"),
+        stage: z.enum(["식번검", "번역검수", "번역", "auto"]).optional().describe("주입할 공정(기본 식번검). ★검수 WF마다 읽는 단계가 달라 사본 간 원문이 공유되지 않는다 — 1-3화 AI 검수용이면 '번역검수', 초도검수(1-20화)용이면 '식번검'(없으면 '번역검수'로 떨어지게 하려면 'auto'). 사람이 에디터로 볼 거면 생략."),
         force: z.boolean().optional().describe("PROCESSING 사본에도 강행(기본 false). 작업자가 에디터를 닫은 걸 확인했을 때만 true"),
       },
-      async ({ pivo, episodes, force }) => {
+      async ({ pivo, episodes, stage, force }) => {
         try {
           const _d = ownerOnly(); if (_d) return _d;
           const ctx = currentCtx;
@@ -4339,7 +4340,7 @@ const apmTools = createSdkMcpServer({
           if (!eps.length) return { content: [{ type: "text", text: JSON.stringify({ error: `회차를 못 읽음: '${episodes}'` }) }] };
           if (eps.length > 30) return { content: [{ type: "text", text: JSON.stringify({ error: "한 번에 30회차까지" }) }] };
 
-          const { ok, errors } = await resolveInjectTargets({ pivo, episodes: eps });
+          const { ok, errors } = await resolveInjectTargets({ pivo, episodes: eps, stage });
           if (!ok.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, errors, msg: "주입할 대상을 못 찾음. 사유를 그대로 전해라." }) }] };
 
           const pr = await injectProbe(ok.map((t) => t.taskUuid));
@@ -4362,7 +4363,7 @@ const apmTools = createSdkMcpServer({
             await ctx.client.chat.postMessage({
               channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: "원문 주입 확인",
               blocks: [
-                { type: "section", text: { type: "mrkdwn", text: `🈶 *원문 OCR 주입 확인*\n• 작품: ${ok[0].projectName} (PV-${pivo})\n• 대상: 식번검 최신 완료본 ${go.length}건 · 채울 칸 ${targets}개\n• 예상 비용 약 $${cost} · 소요 ${Math.ceil(go.length * 2)}분 내외${force ? "\n• ⚠️ force — PROCESSING 사본도 강행" : ""}\n\n${lines.join("\n")}\n\n진행할까요? (에디터에 실제 기록)` } },
+                { type: "section", text: { type: "mrkdwn", text: `🈶 *원문 OCR 주입 확인*\n• 작품: ${ok[0].projectName} (PV-${pivo})\n• 대상: ${ok[0].stage} 최신 완료본 ${go.length}건 · 채울 칸 ${targets}개\n• 예상 비용 약 $${cost} · 소요 ${Math.ceil(go.length * 2)}분 내외${force ? "\n• ⚠️ force — PROCESSING 사본도 강행" : ""}\n\n${lines.join("\n")}\n\n진행할까요? (에디터에 실제 기록)` } },
                 { type: "actions", elements: [
                   { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 주입" }, value: id, action_id: "srcinj_confirm" },
                   { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: id, action_id: "srcinj_cancel" },
