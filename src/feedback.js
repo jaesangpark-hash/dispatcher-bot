@@ -26,7 +26,7 @@ function dateNum(s) {
 
 // 작품·회차로 검수 배치(初回分 또는 再提出･追話)의 총평/번역가/LG를 모아 공유 메시지 작성
 // batch: '再提出追話'/재제출/추가 → 再提出･追話 배치 / 그 외(初回 등) → 初回分(기본). F열(追話備考)로 선택.
-export async function buildFeedback({ work, episode, batch }) {
+export async function buildFeedback({ work, episode, batch, date }) {
   const w = await lookupWork(work);
   if (!w.found) return w.ambiguous ? { found: false, ambiguous: true, candidates: w.candidates } : { found: false, query: work };
   const apmId = w.apm ? APM_SLACK[trim(w.apm)] : null;
@@ -55,6 +55,13 @@ export async function buildFeedback({ work, episode, batch }) {
   if (!sochongAll.length) return { found: false, query: work, msg: `'${w.koTitle}'에 翻訳ck(総評) 기록이 없음(아직 총평 미작성).` };
   const epStr = trim(episode);
   let pool = sochongAll.filter((x) => matchF(trim(x.r[C.epNote])));
+  // date(対応日·A열)가 오면 그 날짜로 더 좁힌다. 시트엔 회차가 없어서(F는 初回分/再提出･追話 두 값뿐)
+  // 「A열 날짜 + 재제출·추가화」만으로 배치를 특정할 수 있어야 한다(2026-10-21).
+  if (date) {
+    const want = dateNum(date);
+    const onDate = (pool.length ? pool : sochongAll).filter((x) => dateNum(x.r[C.date]) === want);
+    if (onDate.length) pool = onDate;
+  }
   if (!pool.length) pool = sochongAll;                 // 해당 배치 없으면 전체에서
   const sochong = latest(pool);
   const batchNote = trim(sochong.r[C.epNote]);         // 初回分 / 再提出･追話
@@ -85,7 +92,9 @@ export async function buildFeedback({ work, episode, batch }) {
   if (lgRow) { sections.push(blk(`[LG] ${trim(lgRow.r[C.lg])}`, lgRow.r[C.memo], lgRow.r[C.grade])); rowsToMark.push(lgRow.sheetRow); }
   for (const qaRow of qaRows) { const nm = qaNameOf(qaRow); if (nm) { sections.push(blk(`[${nm}님]`, qaRow.r[C.memo], qaRow.r[C.grade])); rowsToMark.push(qaRow.sheetRow); } }
   // 제목의 <작품>은 &lt;&gt;로 이스케이프(슬랙이 <...>를 링크로 오해하지 않게). 회차는 epStr만(F는 회차 아님).
-  const epLabel = epStr ? `${epStr}화 ` : "";
+  // 회차를 모를 수 있다(시트에 회차 열이 없다). 그 경우 배치명으로 적는다.
+  const BATCH_KO = { "再提出･追話": "재제출·추가화", "再提出・追話": "재제출·추가화", "初回分": "초회분" };
+  const epLabel = epStr ? `${epStr}화 ` : (batchNote ? `${BATCH_KO[batchNote] || batchNote} ` : "");
   const body = [
     `&lt;${w.koTitle}&gt; ${epLabel}고객 번역 검수 완료되었습니다.`,
     "추가 제출은 불필요합니다.",
