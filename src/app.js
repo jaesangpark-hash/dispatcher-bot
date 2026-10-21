@@ -5343,6 +5343,74 @@ async function dmOwner(text) {
   try { const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID }); if (dm.channel?.id) return await app.client.chat.postMessage({ channel: dm.channel.id, text, ...SENDER }); } catch (e) { console.error("[retake-watch] DM 실패:", e?.message ?? e); }
 }
 
+// ── 초도검수 전 원문 OCR 주입 점검 (I열 LQA 반영일 하루 전, 중일만) ──
+// 검수회차리스트에서 내일 LQA 반영 예정인 중일 작품을 찾아 probe(무료)로 상태를 재고,
+// 채울 칸이 있으면 승인 버튼과 함께 DM한다. 돈이 드는 주입은 버튼을 눌러야 돈다.
+const PREINJECT_HOUR = Number(process.env.PREINJECT_HOUR ?? 10);
+const REVIEW_LIST_SHEET = "1lK_oxk4kVXylOE8PgSqyqQZgptMP9Q7IFQyA9pXn4sE";
+const REVIEW_LIST_TAB = "검수회차리스트";
+let _preInjectDate = null;
+async function checkPreInjectOCR() {
+  try {
+    if (!SOURCE_INJECT_READY()) return;
+    const now = new Date();
+    const kh = Number(now.toLocaleString("en-US", { timeZone: "Asia/Seoul", hour: "2-digit", hour12: false }));
+    const kd = now.toLocaleDateString("en-CA", { timeZone: "Asia/Seoul" });
+    if (kh < PREINJECT_HOUR || _preInjectDate === kd) return;
+    _preInjectDate = kd;
+    const tomorrow = new Date(Date.parse(kd) + 86400000).toISOString().slice(0, 10);
+
+    const rows = await readRangeRO(REVIEW_LIST_SHEET, `${REVIEW_LIST_TAB}!A2:W3000`);
+    const isoOf = (x) => { const m = String(x || "").match(/(\d{4})[.\-\s]+(\d{1,2})[.\-\s]+(\d{1,2})/); return m ? `${m[1]}-${String(m[2]).padStart(2, "0")}-${String(m[3]).padStart(2, "0")}` : null; };
+    // 중일 판별은 시트 작품명의 '(중일' 표기를 쓴다(재상 님 확인 — TOTUS 태그보다 정확).
+    const targets = (rows || []).filter((r) =>
+      String(r[15] || "").toUpperCase() !== "TRUE" &&      // P 완료 여부
+      /\(중일/.test(String(r[1] || "")) &&                  // B 작품명
+      String(r[0] || "").trim() &&                          // A PIVO
+      isoOf(r[8]) === tomorrow);                            // I LQA 작업 반영 버전일
+    if (!targets.length) return;
+
+    for (const r of targets) {
+      const pivo = String(r[0]).trim(), title = String(r[1]).trim();
+      const volume = parseInt(String(r[2] || "").trim(), 10) || 20;   // C 초도 분량
+      const eps = Array.from({ length: Math.min(volume, 30) }, (_, i) => String(i + 1));
+      // 초도검수는 식번검을 우선하고 없으면 번역검수를 읽는다 → 같은 순서로 대상을 잡는다
+      const { ok, errors } = await resolveInjectTargets({ pivo, episodes: eps, stage: "auto" });
+      if (!ok.length) { await dmOwner(`🈶 *원문 주입 점검* — ${title} (PV-${pivo})\n대상 회차를 못 찾았어: ${errors.slice(0, 3).map((e) => `${e.episode}화 ${e.error}`).join(" / ")}`); continue; }
+      const pr = await injectProbe(ok.map((t) => t.taskUuid));
+      if (pr.error) { await dmOwner(`🈶 *원문 주입 점검* — ${title}\nprobe 실패: ${pr.error}`); continue; }
+      const by = new Map(pr.tasks.map((t) => [t.taskUuid, t]));
+      const go = [], skip = [];
+      let fill = 0, dang = 0;
+      for (const t of ok) {
+        const c = (by.get(t.taskUuid) || {}).counts || {};
+        dang += c.dangling || 0;
+        if (by.get(t.taskUuid)?.injectable && (c.targets || 0) > 0) { go.push(t); fill += c.targets; }
+        else skip.push(`${t.episode}화(${(c.dangling || 0) > 0 ? `dangling ${c.dangling}` : (by.get(t.taskUuid)?.blockedReason || "채울 칸 0").slice(0, 30)})`);
+      }
+      const head = `🈶 *초도검수 전 원문 주입* — ${title} (PV-${pivo})\n• 검수 예정 ${tomorrow} · 초도 ${volume}화 · 단계 ${ok[0].stage}`;
+      if (!go.length) {
+        await dmOwner(`${head}\n• 주입할 게 없어 (${skip.slice(0, 6).join(", ")}${skip.length > 6 ? " …" : ""})${dang ? `\n• ★dangling ${dang}칸 — AIA 재배정 요청 필요` : ""}`);
+        continue;
+      }
+      const id = `srcinj_${++srcInjectSeq}`;
+      pendingSrcInject.set(id, { targets: go, force: false, projectName: title, pivo, createdAt: Date.now() });
+      const dm = await app.client.conversations.open({ users: DISPATCHER_USER_ID });
+      await app.client.chat.postMessage({
+        channel: dm.channel.id, ...SENDER,
+        text: "원문 주입 확인",
+        blocks: [
+          { type: "section", text: { type: "mrkdwn", text: `${head}\n• 주입 대상 ${go.length}화 · 채울 칸 ${fill}개 · 약 $${(go.length * 0.2).toFixed(1)}${skip.length ? `\n• 제외 ${skip.length}화: ${skip.slice(0, 5).join(", ")}${skip.length > 5 ? " …" : ""}` : ""}${dang ? `\n• ★dangling ${dang}칸 — AIA 재배정 요청 필요` : ""}` } },
+          { type: "actions", elements: [
+            { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 주입" }, value: id, action_id: "srcinj_confirm" },
+            { type: "button", style: "danger", text: { type: "plain_text", text: "넘기기" }, value: id, action_id: "srcinj_cancel" },
+          ] },
+        ],
+      });
+    }
+  } catch (e) { console.error("[preInjectOCR]", e?.message ?? e); }
+}
+
 async function handleRetakeWatch({ message, client }) {
   try {
     const ts = message.ts;
@@ -9173,7 +9241,7 @@ async function tick() {
   if (_tickRunning) return;
   _tickRunning = true;
   try {
-    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkDemoProposal().catch((e) => console.error("[demo] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkLearnedAudit().catch((e) => console.error("[learned-audit] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkCostRateScrum().catch((e) => console.error("[costrate-scrum] tick 오류:", e?.message ?? e)); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkMissedMentions().catch((e) => console.error("[missed] tick 오류:", e?.message ?? e)); await checkSetjipSurvey().catch((e) => console.error("[setjip-survey] tick 오류:", e?.message ?? e)); await checkSetjipDeadline(); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
+    await checkScheduled(); await checkNag(); await checkInitiative(); await checkDailyReport(); await checkDailyDistill().catch((e) => console.error("[distill] tick 오류:", e?.message ?? e)); await checkDailyFollowupScan().catch((e) => console.error("[followup-scan] tick 오류:", e?.message ?? e)); await checkDemoProposal().catch((e) => console.error("[demo] tick 오류:", e?.message ?? e)); await checkFirstDeliveryQA().catch((e) => console.error("[1차납품QA] tick 오류:", e?.message ?? e)); await checkLearnedAudit().catch((e) => console.error("[learned-audit] tick 오류:", e?.message ?? e)); await checkPendingPrune(); await checkDeliveryTodayReport(); await checkQuoteSyncDiff(); await checkWeeklyScrum(); await checkWeeklyScrumDiff(); await checkCostRateScrum().catch((e) => console.error("[costrate-scrum] tick 오류:", e?.message ?? e)); await checkDailyNoticePost(); await checkDeliveryNotes(); await checkOneTimeDeliveryNotes(); await checkKpFbWeekly(); await checkSikjaHandover(); await checkMissedMentions().catch((e) => console.error("[missed] tick 오류:", e?.message ?? e)); await checkSetjipSurvey().catch((e) => console.error("[setjip-survey] tick 오류:", e?.message ?? e)); await checkSetjipDeadline(); await checkPreInjectOCR().catch((e) => console.error("[preinject-ocr] tick 오류:", e?.message ?? e)); await checkSetjipTaskCompletion(); await detectSetjipRevisionForward(); await checkSetjipTokenAutoIssue().catch((e) => console.error("[setjip-token-auto] tick 오류:", e?.message ?? e)); await tickReviewFollowup(app.client).catch((e) => console.error("[reviewFollowup] tick 오류:", e?.message ?? e)); await checkKuaikanCookie().catch((e) => console.error("[kuaikan-watch] tick 오류:", e?.message ?? e)); await checkResupplyWatcher().catch((e) => console.error("[resupply-watch] tick 오류:", e?.message ?? e)); await checkDeliveryCheckReviewDue().catch((e) => console.error("[delivery-check-review] tick 오류:", e?.message ?? e)); await checkPendingFinalize().catch((e) => console.error("[finalize-retry] tick 오류:", e?.message ?? e));
   } finally {
     _tickRunning = false;
   }
