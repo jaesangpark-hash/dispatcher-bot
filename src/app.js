@@ -46,6 +46,7 @@ import { findLatestDeliveryExcel, parseDeliveryNoticeTab, buildNoticeText, findU
 import { collectTargets as collectSikjaHandover, buildMessage as buildSikjaHandoverMsg, buildLinkReply as buildSikjaHandoverLinks, markSent as markSikjaHandoverSent, syncNewWorks as syncSikjaHandoverWorks, refreshTrackingRow as refreshSikjaTrackingRow, HANDOVER_CHANNEL as SIKJA_HANDOVER_CHANNEL } from "./sikjaHandover.js";
 import * as XLSX from "xlsx";
 import vm from "node:vm";
+import { resolveMany as resolveInjectTargets, probe as injectProbe, createJob as injectCreateJob, jobStatus as injectJobStatus, summarizeProbe, SOURCE_INJECT_READY } from "./sourceInject.js";
 
 // 설정집 작성 요청 스레드에서 작품(uuid/PIVO/원제) 식별 → TOTUS 최신 xlsx 다운로드 → 첨부 공유.
 // run_setjip_review(검수 트리거+파일 동시 공유)·share_setjip_file(파일만) 공용 헬퍼.
@@ -280,6 +281,7 @@ const DISPATCHER_PROMPT = [
   "★'이관' 라우팅(2026-10-05 실사고 — 도구 설명만으론 계속 틀렸다): '이관'이라는 말이 나오면 **기본은 transfer_kuaikan_files**(쿠아이칸 원본 파일을 PIVO로 올리는 것)다. '원본 이관해', '이관해', '○○ N화 이관', '미친개 55화 이관해' — 전부 transfer_kuaikan_files. 작품명·회차만 있으면 바로 부르고, 둘 중 빠진 것만 한 줄로 되묻는다. ★run_wongo_update는 **'수급 원본 공유해'**(재상 님 지정 트리거)이거나 '원고수급 미발송 전송/돌려줘'처럼 **시트의 미발송 알림을 보내라**는 말일 때만 쓴다 — '이관'이라는 단어만 보고 이쪽을 고르지 마라. 이 도구는 확인 버튼 없이 즉시 슬랙 발송까지 하므로 잘못 부르면 되돌릴 수 없다(실제로 '원본 이관해'에 이게 돌아 엉뚱한 안내가 나갔다).",
   "★'피드백' 라우팅(자주 헷갈림): propose_retake=클라이언트 수정요청(리테이크)을 번역가에게 일본어로 전달 / share_feedback=검수 퀄리티 등급(총평·번역가·LG 등급+코멘트) 공유. 맥락에 리테이크 BOT 메시지(작품·리테이크화수·수정내용·프로젝트URL)가 있거나 '번역가에게/리테이크/수정 전달'이면 → propose_retake. 명시적 '검수 등급/퀄리티/총평 공유'만 → share_feedback. 애매하면 리테이크 BOT 메시지 유무로 판단(있으면 propose_retake). ★'1-3화 번역 피드백/피드백 초안'처럼 초도 범위 회차가 붙으면 리테이크가 아니라 share_feedback이다(리테이크는 '121화'처럼 특정 회차로 온다). 되묻지 말고 바로 share_feedback(batch 생략=初回分)을 부르고, 작업기록에서 못 찾았다고 돌아올 때만 되물어라. 한일은 KP평가 없어 share_feedback 불가→propose_retake(판정은 작업기록(中日) 탭에 그 작품 행이 있는지로 — 제목·프로젝트명 생김새로 추측하지 말 것).",
   "- propose_retake(work,episode,fix): 제목·번역가채널·cc·식자검수에디터 자동(중일·한일). fix는 *일본어로만*(한국어 사유는 일역, 예 '「楽」が旧字体になっていたため新字体に修正'), 가능하면 '오류원문->수정문'; 작품/화수/수정은 맥락의 리테이크 BOT 메시지에서 옮긴다. ★한 리테이크 알림에 화수가 여럿(예 '121, 123')이면 화수마다 이 도구를 나눠 부르지 말고 episode에 콤마로 합쳐('121,123') **한 번만** 호출—fix도 화수별 내용이 다르면 '121話：...\\n123話：...'처럼 한 문자열에 줄바꿈으로 합친다(회차별 성격이 달라도 마찬가지). 나눠 부르면 참고 에디터가 화수별로 하나씩만 잡혀 사용자가 혼란스러워한다. 게이트형(버튼)—'보냈다' 단정·내용 지어내기 금지. share_feedback(work,episode,batch): 중일 전용, 등급·코멘트는 시트값 그대로(임의변경·지어내기 금지, 받는이 APM·CC 재상 님). ★배치: 1-3화 등 초회분이면 batch 생략(初回分 기본), '재제출/추가분/再提出/追話'이거나 4화 이상 후속분이면 batch='再提出追話'로 그 배치 등급·코멘트를 고른다. 회차(예 '4')는 사용자가 말한 그대로 episode에 — **다만 회차는 선택이다. 작업기록 시트엔 회차 열이 아예 없으므로(F열은 初回分/再提出･追話 두 값뿐) '몇 화냐'고 되묻지 말 것.** '재제출·추가화'처럼 배치만 오면 episode 없이 batch='再提出追話'로 바로 부르고, 날짜(예 '2026/10/20')가 같이 오면 date에 넣어 그 배치를 특정한다. 회차 없이 부르면 제목에 '재제출·추가화'가 들어간다. 초안은 ✏️수정 모달로 본문(문구·코멘트·등급) 손볼 수 있음.",
+  "- 원문 OCR 주입('○○ 1-3화 원문 주입해줘/원문 넣어줘/OCR 돌려줘'): propose_source_injection(pivo, episodes). PIVO ID와 회차만 주면 식번검(OTC0024) 완료 최신본을 자동으로 고른다 — 작품명만 있으면 먼저 PIVO를 확인해서 되묻는다. 게이트형(버튼)이라 '주입했다' 단정 금지. 작업자가 편집 중(PROCESSING)인 사본은 거절되는데, 주입값이 나중에 통째로 덮이기 때문이라 force는 작업자가 에디터를 닫은 걸 확인했을 때만 쓴다. 회차당 약 $0.2라 범위를 넓게 잡지 말 것. 결과가 needs_remap이면 AIA에 재배정을 따로 요청해야 한다.",
   "- 완결 작품 처리('○○ 완결 작품 처리해줘/완결처리'): propose_totus_complete(work나 pivo). 프로젝트명 뒤 '(완)' + 상태 완료를 한 번에(게이트). 이미 (완) 있으면 상태만. '처리했다' 단정 금지.",
   "- TOTUS 프로젝트 이름/상태 변경: propose_totus_project(work나 pivo + action 또는 name). action=hold(홀드)/unhold/process/pause/complete(완료)/cancel(취소), name=새 프로젝트명. '○○ 홀드/완료/취소해줘', '○○ 프로젝트명 △△로' 류. 한 번에 하나(상태 or 이름). 게이트형(버튼)—'바꿨다' 단정 금지. (검수 후 가제→FIX의 TOTUS 부분; 납품·출판사 시트 변경은 별도.)",
   "- 1차 납품 고객검수: first_delivery_qa — 스케쥴 시트 1차 납품 행 × TOTUS 고객검수(OTC0025) 대조. '고객검수 끝난 거 있어?'·'1차 납품 확인할 거' 류. 매일 오전 10시에도 자동으로 DM이 간다. ★코멘트 본문은 API가 없어 못 읽으니 '무슨 코멘트인지' 물으면 에디터 링크를 주고 직접 보시라고 해라(지어내지 말 것).",
@@ -391,6 +393,7 @@ class PersistMap extends Map {
 const pendingEdits = new PersistMap("edits", { ttlMs: DRAFT_TTL_MS });        // changeId → { sheetId, tab, items[], newValue, clearing, ... }
 const pendingTotusDates = new PersistMap("totus", { ttlMs: DRAFT_TTL_MS });   // changeId → { items[], deliveryDate, reason, work, ... }
 const pendingTotusProj = new PersistMap("totusproj", { ttlMs: DRAFT_TTL_MS }); // id → { projectUuid, projectName, change, label, createdAt }
+const pendingSrcInject = new PersistMap("srcinject", { ttlMs: DRAFT_TTL_MS }); // id → { targets:[{taskUuid,episode,...}], force, createdAt }
 const pendingSends = new PersistMap("sends", { ttlMs: DRAFT_TTL_MS });        // sendId → { target, text, createdAt }
 const pendingFeedback = new PersistMap("feedback", { ttlMs: DRAFT_TTL_MS });  // fbId → { channel, text, koTitle, episode, rowsToMark, ... }
 // 툰식이가 먼저 답글을 단 스레드 — 이후 그 스레드의 후속 댓글은 멘션 없이도 브레인이 받는다(2026-09-30,
@@ -414,6 +417,7 @@ let setjipSeq = 0;
 let editSeq = pendingEdits.maxSeq();
 let totusDateSeq = pendingTotusDates.maxSeq();
 let totusProjSeq = pendingTotusProj.maxSeq();
+let srcInjectSeq = pendingSrcInject.maxSeq();
 setjipSeq = pendingSetjip.maxSeq();
 const TOTUS_ACTION_KO = { hold: "홀드", unhold: "홀드 해제", process: "진행", pause: "일시정지", complete: "완료", cancel: "취소" };
 let sendSeq = pendingSends.maxSeq();
@@ -4314,6 +4318,62 @@ const apmTools = createSdkMcpServer({
         } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("propose_source_injection",
+      "원문(중국어) OCR 주입 — 중일 회차의 Totus 에디터 원문 칸이 비었거나 깨졌을 때 원본 이미지에서 중국어를 읽어 채우도록 '제안'한다(게이트형: 미리보기+✅). 그동안 AIA에 '○○ 1-3화 번역검수 에디터에 OCR 부탁드립니다'라고 요청하던 것. PIVO ID와 회차만 주면 식번검(OTC0024) 중 완료된 최신 사본을 자동으로 고른다. 먼저 /probe로 채울 칸 수와 가능 여부를 세어 보여주고, ✅를 눌러야 실제 주입이 돈다. 절대 '주입했다'고 단정하지 말 것. ★작업자가 에디터를 열어둔(PROCESSING) 사본은 거절된다 — 주입값이 나중에 통째로 덮이기 때문. 비용은 회차당 약 $0.2.",
+      {
+        pivo: z.string().describe("PIVO ID(숫자)"),
+        episodes: z.string().describe("회차. 단일 '4', 복수 '1,2,3', 범위 '1-3' 모두 가능"),
+        force: z.boolean().optional().describe("PROCESSING 사본에도 강행(기본 false). 작업자가 에디터를 닫은 걸 확인했을 때만 true"),
+      },
+      async ({ pivo, episodes, force }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const ctx = currentCtx;
+          if (!SOURCE_INJECT_READY()) return { content: [{ type: "text", text: JSON.stringify({ error: "SOURCE_INJECTION_API_KEY가 .env에 없음 — AIA에서 키를 받아 넣어야 한다." }) }] };
+          const eps = [];
+          for (const part of String(episodes).split(/[,\s]+/).filter(Boolean)) {
+            const m = part.match(/^(\d+)\s*[-~]\s*(\d+)$/);
+            if (m) { for (let i = +m[1]; i <= +m[2] && eps.length < 30; i++) eps.push(String(i)); }
+            else if (/^\d+$/.test(part)) eps.push(part);
+          }
+          if (!eps.length) return { content: [{ type: "text", text: JSON.stringify({ error: `회차를 못 읽음: '${episodes}'` }) }] };
+          if (eps.length > 30) return { content: [{ type: "text", text: JSON.stringify({ error: "한 번에 30회차까지" }) }] };
+
+          const { ok, errors } = await resolveInjectTargets({ pivo, episodes: eps });
+          if (!ok.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, errors, msg: "주입할 대상을 못 찾음. 사유를 그대로 전해라." }) }] };
+
+          const pr = await injectProbe(ok.map((t) => t.taskUuid));
+          if (pr.error) return { content: [{ type: "text", text: JSON.stringify({ error: `probe 실패: ${pr.error}` }) }] };
+          const byUuid = new Map(pr.tasks.map((t) => [t.taskUuid, t]));
+          const lines = [], go = [];
+          let targets = 0;
+          for (const t of ok) {
+            const p = byUuid.get(t.taskUuid) || {};
+            lines.push(`• ${t.episode}화 — ${summarizeProbe({ ...p, task: { ...(p.task || {}), episode: t.episode } })}`);
+            if (p.injectable || force) { go.push(t); targets += p.counts?.targets || 0; }
+          }
+          for (const e of errors) lines.push(`• ${e.episode}화 — ✗ ${e.error}`);
+          if (!go.length) return { content: [{ type: "text", text: JSON.stringify({ proposed: false, lines, msg: "주입 가능한 회차가 없음. 위 사유를 그대로 전해라." }) }] };
+
+          const id = `srcinj_${++srcInjectSeq}`;
+          pendingSrcInject.set(id, { targets: go, force: !!force, projectName: ok[0].projectName, pivo: String(pivo), createdAt: Date.now() });
+          const cost = (go.length * 0.2).toFixed(1);
+          if (ctx?.client && ctx?.channel) {
+            await ctx.client.chat.postMessage({
+              channel: ctx.channel, thread_ts: ctx.ts, ...SENDER, text: "원문 주입 확인",
+              blocks: [
+                { type: "section", text: { type: "mrkdwn", text: `🈶 *원문 OCR 주입 확인*\n• 작품: ${ok[0].projectName} (PV-${pivo})\n• 대상: 식번검 최신 완료본 ${go.length}건 · 채울 칸 ${targets}개\n• 예상 비용 약 $${cost} · 소요 ${Math.ceil(go.length * 2)}분 내외${force ? "\n• ⚠️ force — PROCESSING 사본도 강행" : ""}\n\n${lines.join("\n")}\n\n진행할까요? (에디터에 실제 기록)` } },
+                { type: "actions", elements: [
+                  { type: "button", style: "primary", text: { type: "plain_text", text: "✅ 주입" }, value: id, action_id: "srcinj_confirm" },
+                  { type: "button", style: "danger", text: { type: "plain_text", text: "취소" }, value: id, action_id: "srcinj_cancel" },
+                ] },
+              ],
+            });
+          }
+          return { content: [{ type: "text", text: JSON.stringify({ proposed: true, count: go.length, targets, skipped: errors.length, note: "확인 버튼을 보냈음. ✅를 눌러야 주입된다. 주입했다고 말하지 말 것." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("compute",
       "복잡한 계산은 암산하지 말고 이 도구로 JS 코드를 실행해 정확히 계산한다. 다행 합계·환율 변환·정산·통계·CSV 집계 등 숫자 계산은 반드시 이걸로. 첨부된 CSV/엑셀/텍스트 원문은 코드 안에서 `attachments`(배열 [{name,text}])로 바로 접근(전체 데이터, 다시 옮겨적지 말 것). 결과는 마지막 식이거나 `result` 변수에 담는다. 파일·네트워크 접근 없음(순수 계산), 5초 제한.",
       { code: z.string().describe("실행할 JS. attachments[i].text로 첨부 원문 접근. 예: const rows=attachments[0].text.trim().split('\\n').map(r=>r.split(',')); result = rows.slice(1).reduce((s,r)=>s+Number(r[2]||0),0);") },
@@ -4774,7 +4834,7 @@ function startSession() {
       allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
-        "mcp__apm__send_message", "mcp__apm__edit_posted_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__setjip_reference_files", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__get_file_order", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_task_retake", "mcp__apm__totus_product_price", "mcp__apm__propose_totus_price_edit", "mcp__apm__first_delivery_qa", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
+        "mcp__apm__send_message", "mcp__apm__edit_posted_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__setjip_reference_files", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__get_file_order", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_source_injection", "mcp__apm__propose_task_retake", "mcp__apm__totus_product_price", "mcp__apm__propose_totus_price_edit", "mcp__apm__first_delivery_qa", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
         "mcp__apm__query_schedule", "mcp__apm__collab_digest", "mcp__apm__compute", "mcp__apm__translation_guide",
         "mcp__apm__add_reminder", "mcp__apm__schedule_reminder", "mcp__apm__list_reminders", "mcp__apm__complete_reminder",
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
@@ -6101,6 +6161,68 @@ app.action("proj_confirm", async ({ ack, body, client }) => {
 app.action("proj_cancel", async ({ ack, body, client }) => {
   await ack();
   pendingTotusProj.delete(body.actions?.[0]?.value);
+  await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
+});
+
+// ── 원문 OCR 주입 확인/취소 (실제 주입 API 호출은 여기서만) ──
+app.action("srcinj_confirm", async ({ ack, body, client }) => {
+  await ack();
+  const id = body.actions?.[0]?.value;
+  const chan = body.channel?.id, thread = body.message?.thread_ts || body.message?.ts;
+  const reply = (t) => client.chat.postMessage({ channel: chan, thread_ts: thread, text: t, ...SENDER }).catch(() => {});
+  if (body.user?.id !== DISPATCHER_USER_ID) return reply("권한 없는 사용자예요.");
+  const p = pendingSrcInject.getFresh(id);
+  if (!p) return reply("⌛ 만료됐거나 이미 처리된 요청이에요.");
+  pendingSrcInject.delete(id);
+  if (Date.now() - p.createdAt > EDIT_TTL_MS) return reply("⌛ 확인 시간이 지나 취소됐어요. 다시 요청해줘.");
+
+  const uuids = p.targets.map((t) => t.taskUuid);
+  const created = await injectCreateJob(uuids, p.force);
+  if (created.error) {
+    const blocked = (created.body?.blocked || []).map((b) => `• ${b.reason}`).join("\n");
+    return reply(`❌ 주입 접수 실패: ${created.error}${blocked ? `\n${blocked}` : ""}`);
+  }
+  await reply(`🈶 주입 시작 — ${p.projectName} ${p.targets.length}건. 회차당 1.5~2.5분이고 동시 2건까지라 다 끝나면 알려줄게.`);
+
+  // 폴링 — 회차당 최대 2.5분 + 여유. 서버 재시작(interrupted)이면 그 사실을 그대로 알린다.
+  const epOf = (u) => p.targets.find((t) => t.taskUuid === u)?.episode ?? "?";
+  const deadline = Date.now() + Math.min(45, p.targets.length * 3 + 5) * 60 * 1000;
+  let last = null;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 30000));
+    const st = await injectJobStatus(created.jobId);
+    if (st.error) continue;                       // 일시 오류는 다음 주기에 다시
+    last = st;
+    if (st.status !== "running") break;
+  }
+  if (!last) return reply("⚠️ 진행 상황을 못 읽었어. 잡 ID: " + created.jobId);
+  if (last.status === "running") return reply(`⏳ 아직 도는 중이야(시간 초과로 지켜보기만 멈춤). 잡 ID: ${created.jobId}`);
+
+  const lines = [];
+  for (const t of last.tasks || []) {
+    const ep = epOf(t.taskUuid);
+    if (t.status === "done") {
+      const inj = t.injection || {};
+      lines.push(`• ${ep}화 ✅ 채움 ${inj.filled ?? "?"}/${inj.targets ?? "?"}`
+        + (inj.readFailed ? ` · 읽기실패 ${inj.readFailed}` : "")
+        + ` · 원문 칸 ${t.before?.chinese ?? "?"} → ${t.after?.chinese ?? "?"}`);
+    } else if (t.status === "needs_remap") {
+      lines.push(`• ${ep}화 ⚠️ 일부만 채움 — 원본 연결 끊긴 칸 ${t.after?.dangling ?? "?"}개 남음. AIA에 재배정 요청 필요 (task ${t.taskUuid})`);
+    } else if (t.status === "no_source") {
+      lines.push(`• ${ep}화 ✗ 원문 칸 자체가 없음 — Totus 전처리 재실행 필요`);
+    } else {
+      lines.push(`• ${ep}화 ✗ ${t.status}${t.error ? ` — ${t.error}` : ""}`);
+    }
+  }
+  const head = last.status === "interrupted"
+    ? "⚠️ 서버 재시작으로 중단됨 — 끝나지 못한 회차는 다시 요청하면 돼(멱등이라 안전)."
+    : `🈶 주입 완료 — ${p.projectName}`;
+  await reply(`${head}\n${lines.join("\n")}\n\n작업자가 에디터를 열어뒀었다면 새로고침을 안내해줘.`);
+});
+
+app.action("srcinj_cancel", async ({ ack, body, client }) => {
+  await ack();
+  pendingSrcInject.delete(body.actions?.[0]?.value);
   await client.chat.postMessage({ channel: body.channel?.id, thread_ts: body.message?.thread_ts || body.message?.ts, text: "취소했어요.", ...SENDER }).catch(() => {});
 });
 
