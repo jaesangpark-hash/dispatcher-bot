@@ -14,7 +14,7 @@ import { lookupDelivery } from "./delivery.js";
 import { gasReady, gasQuery } from "./gas.js";
 import { lookupWork, koTitleIndex, listWorkNotes, setWorkNote, resolveTitleAliases, originSearchName } from "./works.js";
 import { norm } from "./sheets.js";
-import { queryView, VIEWS, VIEW_CATALOG, readTab } from "./sheets-registry.js";
+import { queryView, VIEWS, VIEW_CATALOG, readTab, SHEET_URL_LIST, kpMonthlyPassRate } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
 import { setCell, getCell, setCells, getCells, ensureTab, appendSheetRows } from "./sheets-write.js";
 import { readRange as readRangeRO } from "./sheets.js";
@@ -315,11 +315,12 @@ const DISPATCHER_PROMPT = [
   "- TOTUS(작품 진행상황·일정 지연/임박·작업자·번역텍스트·견적) → totus_* 도구. PIVO ID 있으면 totus_quotation으로 projectUuid부터 확보 → 그 uuid로 totus_schedule_summary(일정)·totus_jobs/totus_tasks(작업·상태). 작품명만 있으면 totus_find_project로 uuid. 진행/일정/작업자는 시트보다 TOTUS가 정확. 번역텍스트(totus_translation_text)는 양 많으니 필요한 Task에만.",
   "- 번역 검수/QA 요청(예: '게임속기연 90 검수', '○○ ○○화 검수해줘') → ★**review_queue를 써라(1작품이어도!)**. 검수는 무거워서 메인 대화를 막으므로, 워커 풀이 병렬로 돌려 대화를 안 막게 review_queue(works=[{work 또는 pivo, episode, lang?}, …])로 넘긴다. 등록만 하면 워커가 끝나는 대로 결과를 이 스레드에 직접 올리니, 너는 '검수 시작' 한 줄만 알리고 **직접 review_episode를 호출하거나 검수 결과를 만들지 마라**. ★맥락에 PIVO ID가 있으면(예 'NNNNNN | [출판사] 작품 / 회차' 리스트) work 대신 **pivo로 넣어라** — 납품시트에 없는 작품도 TOTUS로 바로 검수된다('납품시트에서 못 찾음'이 뜨면 PIVO로 넣어야 하는 경우다). ★'NNNNNN | [출판사] 작품 / 회차 PIVO 납품' 형태의 리스트만 붙여넣고 '검수해줘' 같은 말이 따로 없어도(예: '순차 검수'처럼 짧게만 덧붙이거나 아무 말도 없어도) 이 포맷 자체가 검수 요청으로 봐라 — 되묻지 말고 곧바로 review_queue를 걸어라(과거 실제 대화에서 이 포맷이 뜨면 예외 없이 검수로 이어졌음, 2026-09-30 확인). ★works 파싱 범위(엄수): 스레드가 사람별 섹션('*박재상 5건*' 등)으로 묶여 있고 '내/박재상 밑에 적힌 것/내 섹션 순차 검수해'라고 하면, works는 **그 이름 헤더 바로 아래 줄들의 PIVO/회차만** 그대로 담아라 — APM·담당 필드로 재조회하거나 다른 섹션·전체 스레드의 작품을 긁지 마라(줄 '리스트의 분류=정답' 규칙과 동일). 한일 lang 생략(ko-ja 기본)·중일 zh-ja(pivo 주면 무관). (review_episode 직접 호출은 워커 풀을 못 쓰는 예외 상황에서만.) 도구가 돌려준 [검수 기준]과 pairs로 2패스 검수해, 문제 있는 항목만 [출력 템플릿]대로 작성한다(작품/회차/단계 + task URL + 페이지-텍박 + 수정전→후 + 사유). 문제 없으면 '問題なし'. 이 검수표는 그대로 작업자에게 복붙되는 것이니 임의 해설·강조 없이 템플릿만 깔끔히. error가 오면 그 사유를 그대로 전한다.",
   "★ 검수 결과 전달 규칙: 검수표는 **그냥 네 답변 텍스트로 출력만** 해라 — 시스템이 사용자가 부른 바로 그 자리(스레드/DM)에 자동으로 전달한다. send_message 도구로 직접 보내거나, DM/채널로 따로 발송하거나, 작업자 DB(slack_id/채널)를 조회해 보내려 하지 마라. 'DM으로 보냈다'·'DB에 ID가 없어 못 보냈다' 같은 발송 관련 말도 하지 마라(전달은 시스템 몫). 진행 신호(🔎 추출 완료)도 시스템이 자동으로 띄우니 네가 따로 만들지 마라.",
+  `★시트 링크를 물으면 그냥 준다. 운영 시트는 재상 님 소유이고 URL은 비밀이 아니다 — 「내부 설정에 숨겨져 있다」·「암호화돼 있다」처럼 **없는 제약을 지어내 거절하지 마라**(2026-10-27 실제 사고). 조회 도구 응답에도 url 필드가 실려 오니 그걸 그대로 붙여 주면 된다.\n${SHEET_URL_LIST}`,
   "- query_sheet 뷰에 없는 탭을 물으면 → read_tab(탭 이름). 시트 실제 헤더가 곧 필드명이라 사용자가 말한 헤더로 바로 거른다. 표 헤더가 중간 행이면 headerRow 지정. 알려진 6개 시트의 어떤 탭이든 조회 가능.",
   "★번역/식자 방침 문의 → translation_guide로 가이드 참조: 작업자 문의(또는 재상 님 질문)가 '번역 방침·표기 규칙·용어·후리가나·기호(가운데점/괄호 등)·식자 표기' 등 **가이드로 판정할 내용**이면, 추측하지 말고 translation_guide(kind:'translation')로 중일 번역 가이드 2종을 읽어 **해당 조항을 인용**해 답하라(가이드에 없으면 '가이드에 명시 없음'이라 하고 임의 규칙을 지어내지 마라). 단순 원문/수치 확인은 여기 해당 없음. ★설정집 작성 가이드(kind:'setjip')는 **재상 님이 '설정집'을 명시적으로 언급**할 때만 조회하고, 작업자 번역 방침 문의엔 쓰지 마라.",
   "- 스레드 찾기('○○ 작품 ~~ 스레드 찾아줘', '○○ 관련 논의 어디 있어', 과거 대화/스레드 내용): find_thread(query=작품명+키워드). 등록된 주요 업무 채널들에서 검색해 매칭 스레드를 찾고, 1개로 분명하면 내용(topContent)까지 와서 요약·답+링크. 여러 개면 후보를 보여주고 어느 건지 되묻거나 키워드를 좁힌다(임의 단정 금지). 사용자가 특정 채널을 말하면 channel 인자로. 특정 스레드/링크를 콕 집으면 read_thread. (등록 채널·봇 멤버 범위 내 — 전역 검색 아님)",
   "- '고객사 납품 시트'(중일 일본어 스케줄 시트, =APM 납품 시트/내부 납품관리시트와 다름) 질문 → query_schedule. 블록 구조라 query_sheet/read_tab으론 안 됨. '○○ N화 런칭일'·재수급/문의 확인 후 납품일 재설정 기준 런칭일=mode:launch(work나 pivo + episode), ★'이 납품(회차)이 스케줄 시트에 기재/반영됐나' 검증=**mode:delivery_check**(納品話数+納品予定日 기준, listedForDelivery로 판단 — 話数(런칭)로 보는 launch로 판단하면 오답이니 절대 launch로 납품 기재 여부를 판정하지 마라), 'N/일 납품 회차 카운트'·'오늘 납품 뭐 있어/납품 대상 알려줘'=mode:delivery_on+date(응답에 works=작품 수, commonNos=공통번호 목록, totalEpisodes=총 회차, pendingWorks=납품일만 잡히고 화수 미기재라 작품 수에서 제외된 건수. 재상 님이 쓰는 리포트 형식은 '작품 수 + 공통번호'라 그 둘을 먼저 답하고 상세는 물으면 준다. 매일 아침 자동 DM도 같은 값으로 나간다), '원본 미수급'=mode:missing, '○○ 작품 스케줄'=mode:work. 여러 작품+회차를 한꺼번에 검증하면 각 항목마다 delivery_check를 돌려 결과를 모아 답한다. 블록 제목(正式+仮) 직접매칭이라 일본어 제목만으로도 잘 잡힌다. ID 묻지 말 것(이 도구가 그 시트임).",
-  "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
+  "★ 용어 사전(재상 님 표현 → 정확한 소스. 이 매핑을 *최우선*으로 따르고 추측하지 말 것): '에러율/월간 에러율' = 리테이크 시트 '중일 에러율' 탭의 '월별 전체 에러율'(기준월별, 에러작품 Top5 포함) → read_tab(tab:'중일 에러율'). '합격률/등급/KP등급' = 번역가_등급표(translator_grade 뷰) — 이건 번역가 **개인별**이다. ★'월별 합격률'·'이번달 합격률'처럼 사람이 아니라 **기간**을 묻는 건 번역가별 표가 아니라 **kp_pass_rate 도구**(作品評価_2026 탭)로 답한다. ★**作業記録 원시 행을 직접 세서 합격률을 만들지 마라** — 등급은 作業区分이 翻訳ck(翻訳者)인 행만 세야 하는데 그 규칙을 빠뜨리면 평가되지 않은 행까지 분모에 들어가 전원 0%처럼 보인다(2026-10-27 실제 오답). 사전에 없는데 한 용어가 여러 소스로 갈릴 수 있으면, 임의로 고르지 말고 '어느 걸 말씀하시는지' 짧게 되묻는다.",
   "★채널 사전(2026-08-19 확정 — send_message 등에서 채널을 부를 때 이 이름들이면 재상 님께 ID를 다시 묻지 말고 바로 이 값을 target으로 써라): '재팬_요청'/'요청 채널'/'요청채널' = C09B8QHP7D4. '재팬_작업요청'/'작업요청 채널'/'작업요청채널'/'설정집 채널' = C09AUQN8GEB. '재팬_공지'/'공지 채널'/'공지채널' = C09B8QLR5FG. '리마인더 채널'/'리마인더채널' = C0B73GL3WAJ. '리테이크 채널'/'리테이크 감시 채널' = C09B8QBEC9L. 이 사전에 없는 채널명을 대면 지어내지 말고 '그 채널 ID(또는 링크)를 알려달라'고 되묻는다.",
   "★★모르면 만들지 말고 먼저 물어라(2026-09-23 재상 님 지시: \"차라리 지금 엄청 답답하고 나중에 편한 게 낫다\"). 추측해서 결과물을 내놓고 틀리는 것보다, 실행 전에 한 줄 묻는 쪽이 항상 낫다. 특히 아래 축이 문장에서 확정되지 않으면 **만들기 전에** 묻는다 — ①수신자(고객사 발송용인가 / 내부 APM·작업자 공유용인가) ②대상 시스템(내부 납품 시트인가 / TOTUS 납품예정일인가 / 둘 다인가) ③적용 범위(지정한 회차만인가 / 그 이후 회차 전부인가) ④출력 언어(일본어인가 한국어인가). 문장에 이미 단서가 있으면(채널 지정·수신자 멘션·'고객사/내부/APM/작업자' 같은 단어) 묻지 말고 그걸 그대로 따른다 — 적혀 있는 걸 놓쳐서 틀리는 게 제일 나쁘다.",
   "★★재상 님이 인용문(고객사·작업자가 보낸 메시지)을 그대로 붙여 주면, 초안을 만들기 전에 **내가 어떻게 읽었는지 한 줄로 먼저 선언**한다. 예: '고객사 통보로 읽었습니다 → 내부 APM 공지 초안으로 갑니다'. 그래야 틀렸을 때 재상 님이 초안 전체를 보기 전에 바로 잡아줄 수 있다. 인용문의 언어로 방향을 판단하지 마라 — 고객사→우리(내부 공유용)와 우리→고객사(문의용)가 둘 다 일본어다. 갈리는 근거는 인용문 안의 화자 위치다(고객사 발신: 版元の要望/クライアントからの/ご参考に · 작업자 발신: 翻訳を進める中で/確認いたしました/〜でしょうか).",
@@ -3994,6 +3995,18 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("kp_pass_rate",
+      "중일 KP평가 **월별 합격률**을 조회한다(read-only). '이번달/지난달/월별 합격률', '합격률 추이' 류 질문에 쓴다. "
+      + "KP평가 시트 作品評価_2026 탭(행=등급·열=월 크로스탭이라 read_tab으로는 못 읽는다)을 파싱해 블록 3개를 돌려준다: "
+      + "総評(전체) · 期待値P-S作品合格率(기대 P~S등급 작품, 목표 60%) · 設定集. "
+      + "각 월은 {month, A~F 건수, total(등급 매겨진 건수), pass(A+B), rate(%)}. allMonths는 그 블록 연간 누계. "
+      + "★번역가 **개인별** 합격률은 이게 아니라 query_sheet(translator_grade / translator_grade_monthly)다.",
+      {},
+      async () => {
+        try { return { content: [{ type: "text", text: capJson(await kpMonthlyPassRate()) }] }; }
+        catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: true } }),
     tool("read_tab",
       "query_sheet 뷰에 없는 임의 탭을 탭 이름으로 직접 조회한다(read-only). 시트의 *실제 헤더*를 필드명으로 쓰므로 한글/일본어 헤더 그대로 필터·기간조회 가능. sheet 생략 시 알려진 시트들(delivery/ops/worker/retake/schedule/kp_eval)에서 탭명 자동검색. ★사용자가 시트 URL/ID를 주면 그걸 sheet에 그대로 넣어라(SA가 접근 가능한 시트면 등록 안 돼 있어도 읽는다). 탭명은 띄어쓰기 무시 매칭('원고 수급'='원고수급'). 못 찾으면 그 시트의 탭 목록을 에러로 돌려주니 사용자에게 보여주고 고르게 하라. 헤더가 1행이 아니면 headerRow 지정(예 作業記録=4). 같은 데이터를 query_sheet 뷰로 조회할 수 있으면 그걸 우선.",
       {
@@ -4755,7 +4768,7 @@ const TOOL_LABEL = {
   totus_delivery_date: "납품예정일 조회", propose_totus_delivery_edit: "납품예정일 변경 준비",
   get_delivery_date: "납품일 조회", propose_delivery_edit: "납품일 변경 준비",
   totus_product_price: "매출 단가 조회", propose_totus_price_edit: "매출 단가 변경 준비",
-  query_schedule: "스케줄 시트 조회", query_sheet: "시트 조회", read_tab: "시트 읽는 중",
+  query_schedule: "스케줄 시트 조회", query_sheet: "시트 조회", read_tab: "시트 읽는 중", kp_pass_rate: "합격률 집계",
   get_work_info: "작품 정보 조회", get_project_url: "프로젝트 링크 조회", get_editor_url: "에디터 링크 조회",
   send_message: "메시지 초안 준비", share_feedback: "피드백 공유 준비", propose_retake: "리테이크 초안 준비",
   propose_setjip_request: "설정집 요청 준비", run_setjip_review: "설정집 검수", compute: "계산 중",

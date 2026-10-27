@@ -35,6 +35,24 @@ const SHEETS = {
   kp_eval: "1jd9lOvHwCXqsSYE9vQbSqcbxO9B9sryD5_dWHJhlm4U",    // 중일 KP 평가표
 };
 
+// ── 시트 링크 ────────────────────────────────────────────────────
+// ★시트 URL은 비밀이 아니다. 재상 님이 소유한 운영 시트들이고 봇은 그 링크를 그대로 건네면 된다.
+//   2026-10-27: 시트 ID가 도구 응답에 전혀 실리지 않아, 봇이 「암호화/숨김 처리라 노출이 안 된다」고
+//   없는 제약을 지어내 답한 일이 있었다. 그래서 아래를 모든 조회 응답과 도구 설명에 실어 둔다.
+const SHEET_LABELS = {
+  delivery: "납품·이관(납품관리시트_Japan)",
+  ops:      "운영통합(출판사 드라이브 링크·배정 현황 등)",
+  worker:   "작업자 매핑·작업자 DB",
+  retake:   "리테이크 현황",
+  schedule: "고객사 납품 스케줄 시트",
+  kp_eval:  "KP평가(中日) — 作業記録·등급표·作品評価",
+};
+export const sheetUrlOf = (id) => (id ? `https://docs.google.com/spreadsheets/d/${id}/edit` : null);
+export const SHEET_URLS = Object.fromEntries(Object.entries(SHEETS).map(([k, id]) => [k, sheetUrlOf(id)]));
+export const SHEET_URL_LIST = Object.entries(SHEETS)
+  .map(([k, id]) => `- ${k} = ${SHEET_LABELS[k] ?? k}: ${sheetUrlOf(id)}`)
+  .join("\n");
+
 // ── 조회 뷰 명부 ─────────────────────────────────────────────────
 // cols: {필드명: 0-indexed 컬럼}. key: 작품명 매칭에 쓸 필드(들). desc: 봇 프롬프트용 설명.
 export const VIEWS = {
@@ -178,7 +196,7 @@ export async function queryView(viewKey, { needle = null, limit = 20, where = nu
     objs = out;
   }
   const matched = objs.length;
-  return { view: viewKey, matched, returned: Math.min(matched, limit), rows: objs.slice(0, limit) };
+  return { view: viewKey, sheet: v.sheet, tab: v.range.split("!")[0], url: SHEET_URLS[v.sheet], matched, returned: Math.min(matched, limit), rows: objs.slice(0, limit) };
 }
 
 // ── 범용 탭 조회 (VIEWS 미등록 탭도 탭명으로 직접) ───────────────────
@@ -246,7 +264,60 @@ export async function readTab({ sheet = null, tab, headerRow = 1, where = null, 
     objs = out;
   }
   const alias = Object.keys(SHEETS).find((a) => SHEETS[a] === sheetId) || sheetId;
-  return { sheet: alias, tab: resolvedTab, headerRow: hi + 1, headers: headers.filter(Boolean), matched: objs.length, returned: Math.min(objs.length, limit), rows: objs.slice(0, limit) };
+  return { sheet: alias, tab: resolvedTab, url: sheetUrlOf(sheetId), headerRow: hi + 1, headers: headers.filter(Boolean), matched: objs.length, returned: Math.min(objs.length, limit), rows: objs.slice(0, limit) };
 }
 
 export const VIEW_CATALOG = Object.entries(VIEWS).map(([k, v]) => `- ${k} (탭 "${v.range.split("!")[0]}"): ${v.desc} (필드: ${Object.keys(v.cols).join(", ")})`).join("\n");
+
+// ── KP 월별 합격률 (kp_eval 시트 作品評価_2026 탭) ─────────────────
+// 이 탭은 블록 3개(■総評 / ■期待値P-S作品合格率 / ■設定集)가 세로로 쌓인 크로스탭이다.
+// 행=KP등급(A~F)·열=월 구조라 readTab의 「헤더 1행 + 행 객체」로는 못 읽는다 —
+// 2026-10-27 봇이 「피벗이라 열 방향 데이터를 못 읽는다」고 답하고 포기한 게 이 탭이다.
+// 그래서 여기서 결정적으로 파싱해 {블록 → 월 → 등급분포·합격률}로 돌려준다.
+// ★합격률은 시트의 #DIV/0! 를 그대로 옮기지 않고 合格数/総計로 직접 계산한다.
+export async function kpMonthlyPassRate() {
+  const token = await getToken();
+  const tab = "作品評価_2026";
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEETS.kp_eval}/values/${encodeURIComponent(tab)}`;
+  const j = await (await fetch(url, { headers: { Authorization: `Bearer ${token}` } })).json();
+  if (j.error) throw new Error(`시트 읽기 실패: ${j.error.message}`);
+  const values = j.values || [];
+  const num = (x) => { const n = Number(String(x ?? "").replace(/[^0-9.-]/g, "")); return Number.isFinite(n) ? n : 0; };
+  const blocks = [];
+  let cur = null;
+  for (const row of values) {
+    const head = String(row?.[0] ?? "").trim();
+    if (head.startsWith("■")) { cur = { block: head.replace(/^■s*/, ""), months: null, rows: {} }; blocks.push(cur); continue; }
+    if (!cur) continue;
+    if (head === "KP評価") { cur.months = row.slice(1).map((m) => String(m ?? "").trim().replace(/月$/, "")); continue; }
+    if (!cur.months || !head) continue;
+    cur.rows[head] = row.slice(1);
+  }
+  // 블록마다 월별로 접는다. 등급행이 없는 블록(구분선 등)은 버린다.
+  const out = [];
+  for (const b of blocks) {
+    const r = b.rows;
+    if (!r["総計"]) continue;
+    const mk = (i, m) => {
+      const total = num(r["総計"]?.[i]);
+      const pass = r["合格数"] ? num(r["合格数"][i]) : num(r["A"]?.[i]) + num(r["B"]?.[i]);
+      return {
+        month: m, A: num(r["A"]?.[i]), B: num(r["B"]?.[i]), C: num(r["C"]?.[i]),
+        D: num(r["D"]?.[i]), E: num(r["E"]?.[i]), F: num(r["F"]?.[i]),
+        total, pass, rate: total ? Math.round((pass / total) * 1000) / 10 : null,
+      };
+    };
+    const monthsOut = [];
+    let totalCol = null;
+    monthsFor: for (let i = 0; i < (b.rows["総計"] || []).length; i++) {
+      const m = (b.months && b.months[i]) ?? "";
+      if (!m) continue monthsFor;
+      const e = mk(i, m);
+      if (m === "総計" || m === "총계") { totalCol = e; continue monthsFor; }
+      if (e.total === 0) continue monthsFor;   // 평가 0건인 달은 생략
+      monthsOut.push(e);
+    }
+    out.push({ block: b.block, months: monthsOut, allMonths: totalCol });
+  }
+  return { sheet: "kp_eval", tab, url: SHEET_URLS.kp_eval, note: "rate=합격률(%). 합격=A+B등급. total=등급이 매겨진 건수", blocks: out };
+}
