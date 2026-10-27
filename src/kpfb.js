@@ -125,10 +125,12 @@ async function judgeClusters(clusters, rules, ask) {
 - 아래 changelog(프롬프트 파일 docstring)에 "채택하지 않은 것"으로 명시된 영역(효과음, 캐릭터 말투·어미,
   개행 위치, 조사 は/が 뉘앙스)은 근거와 함께 배제 결정이 내려진 것이다 → "반려". 결정을 되집지 마라.
 - "신규"·"보강"일 때 patch는 프롬프트에 그대로 붙여넣을 수 있는 실제 문구(한국어 규칙문 + 일본어 예시)여야 한다.
+- proposal은 **판정과 무관하게 항상** 쓴다 — 이 패턴을 규칙으로 만든다면 무슨 규칙이 되는지 한 줄.
+  반려·기존으로 접을 때도 "무엇을 하려다 접었는지"가 사람 눈에 보여야 한다.
 - 확신 없으면 "기존" 또는 "반려"로. 매주 도는 잡이므로 진짜 패턴이면 다음 주에 또 올라온다.
 
 JSON 배열만 출력:
-[{"n":1,"verdict":"신규|보강|기존|반려","target":"STYLE_SYSTEM_ZH의 어느 항목(신규면 '신규 h항' 등)","reason":"한국어 2문장 이내","patch":"실제 삽입/수정 문구(기존·반려면 빈 문자열)"}]
+[{"n":1,"verdict":"신규|보강|기존|반려","target":"STYLE_SYSTEM_ZH의 어느 항목(신규면 '신규 h항' 등)","proposal":"규칙으로 만든다면 무슨 규칙인지 한 줄(40자 내외)","reason":"왜 그 판정인지 한국어 **한 문장**(80자 내외)","patch":"실제 삽입/수정 문구(기존·반려면 빈 문자열)"}]
 
 === 라이브 프롬프트(윤문 ZH) ===
 ${rules.style_zh || "(조회 실패)"}
@@ -152,10 +154,12 @@ async function fetchPromptRules(base, apiKey) {
 
 // 메인 — 신규 FB 수집 → 분류 → 임계 → 판정 → 발송 본문. 발송할 게 없으면 text=null.
 // 상태(seen) 갱신은 분류까지 성공한 건만 반영한다(중간 실패 시 다음 주에 다시 본다).
-export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.now() } = {}) {
+export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.now(), replayDays = 0, dryRun = false } = {}) {
   const st = loadKpFbState();
+  // dryRun이면 seen·lastRun을 쓰지 않는다 — 미리보기가 다음 주 정규 실행을 굶기면 안 된다.
+  const save = () => { if (!dryRun) saveKpFbState(st); };
   const seen = new Set(st.seen || []);
-  const bootstrap = !st.lastRun;
+  const bootstrap = !st.lastRun && replayDays <= 0;
   const cutoff = kstDay(now - BOOTSTRAP_DAYS * 86400000);
 
   let items = [];
@@ -166,7 +170,10 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
   if (!items.length) return { text: quietReport("⚠️ 실행 실패", null, ["FB 시트를 읽지 못했어요. 시트 권한이나 탭 이름을 확인해 주세요."]), reason: "FB 시트 읽기 실패", stats: null };
 
   // 첫 실행: 과거 전량이 "신규"로 보이므로 최근 BOOTSTRAP_DAYS만 분석하고 나머지는 본 것으로 처리.
-  let fresh = items.filter((x) => !seen.has(x.uuid));
+  let fresh = replayDays > 0
+    ? items.filter((x) => x.date >= kstDay(now - replayDays * 86400000))   // 재생: seen 무시
+    : items.filter((x) => !seen.has(x.uuid));
+  if (replayDays > 0) console.log(`[kpfb] 재생 모드 — 최근 ${replayDays}일 ${fresh.length}건(seen 무시${dryRun ? ", 상태 미기록" : ""})`);
   if (bootstrap) {
     const old = fresh.filter((x) => x.date < cutoff);
     fresh = fresh.filter((x) => x.date >= cutoff);
@@ -185,7 +192,7 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
     to: fresh.reduce((a, x) => (a > x.date ? a : x.date), ""),
   };
   if (!fresh.length) {
-    st.lastRun = kstDay(now); st.silentWeeks = (st.silentWeeks || 0) + 1; st.seen = [...seen].slice(-SEEN_CAP); saveKpFbState(st);
+    st.lastRun = kstDay(now); st.silentWeeks = (st.silentWeeks || 0) + 1; st.seen = [...seen].slice(-SEEN_CAP); save();
     return { text: quietReport("제안 없음", stats, ["지난주 새로 들어온 KP 피드백이 없었어요."]), reason: "신규 FB 없음", stats };
   }
 
@@ -222,7 +229,7 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
       verdicts = await judgeClusters(clusters, rules, ask);
     } catch (e) {
       console.error("[kpfb] 판정 단계 실패:", e?.message ?? e);
-      st.lastRun = kstDay(now); st.seen = [...seen].slice(-SEEN_CAP); saveKpFbState(st);
+      st.lastRun = kstDay(now); st.seen = [...seen].slice(-SEEN_CAP); save();
       return { text: quietReport("⚠️ 실행 실패", stats, [`판정 단계에서 멈췄어요 — ${e?.message ?? e}`, "엔진 /prompt-rules 조회가 되는지 확인이 필요합니다."]), reason: `판정 실패: ${e?.message ?? e}`, stats };
     }
   }
@@ -238,38 +245,40 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
   st.lastRun = kstDay(now);
   st.seen = [...seen].slice(-SEEN_CAP);
   st.silentWeeks = actionable.length ? 0 : (st.silentWeeks || 0) + 1;
-  saveKpFbState(st);
+  save();
 
   // 제안이 없으면 조용히(주간 "이상 없음" DM은 노이즈). 단 몇 주 연속 조용하면 생존신고 한 줄.
   if (!actionable.length) {
-    // ★왜 제안이 없는지까지 적는다 — 종전엔 "조용함"과 "고장"이 구분되지 않았다.
-    //   판정별로 접어서 보여주면, 반려가 계속 쌓일 때 판정 기준 쪽을 의심할 수 있다.
+    // ★클러스터마다 ①무엇을 규칙으로 만들려 했는지 ②왜 접었는지(한 줄) 만 본문에 싣고,
+    //   근거가 된 KP 코멘트 원문은 작품명과 함께 스레드 답글로 전부 내린다.
+    //   종전엔 판정 사유를 통째로 붙여 길기만 하고, 정작 무슨 코멘트를 보고 판단했는지가 없었다
+    //   (2026-10-27 재상 님 지적).
+    const label = (v) => (v === "기존" ? "이미 덮고 있음" : v);
     const body = [];
     if (!clusters.length) {
       body.push(`FB ${stats.new}건을 봤지만 임계(${MIN_ITEMS}건·${MIN_WORKS}작품)를 넘는 반복 패턴이 없었어요.`);
     } else {
-      const byVerdict = new Map();
+      body.push(`클러스터 ${clusters.length}건을 봤고 프롬프트를 고칠 건 없었어요. 근거 코멘트는 스레드에 전부 붙입니다.`);
       for (const v of verdicts) {
-        if (!byVerdict.has(v.verdict)) byVerdict.set(v.verdict, []);
-        byVerdict.get(v.verdict).push(v);
-      }
-      body.push(`클러스터 ${clusters.length}건을 판정했는데 고칠 건 없었어요.`);
-      for (const [verdict, vs] of byVerdict) {
+        const c = v.cluster || {};
+        const works = Array.isArray(c.works) ? c.works : [];
         body.push("");
-        body.push(`*${verdict === "기존" ? "이미 프롬프트가 덮고 있음" : verdict}* — ${vs.length}건`);
-        for (const v of vs) {
-          const c = v.cluster || {};
-          const works = Array.isArray(c.works) ? c.works : [];
-          body.push(`· ${c.category ?? "?"} (${(c.items || []).length}건/${works.length}작품) — ${flat(v.reason) || "사유 없음"}`);
-        }
+        body.push(`*${c.category ?? "?"}* — ${(c.items || []).length}건/${works.length}작품 · ${label(v.verdict)}`);
+        body.push(`· 만들려던 규칙: ${flat(v.proposal) || "(미기재)"}`);
+        body.push(`· 접은 이유: ${flat(v.reason) || "사유 없음"}`);
       }
     }
     if (nearMiss.length) body.push("", `_임계 미달(관찰만): ${nearMiss.map((c) => `${c.category} ${c.items.length}건/${c.works.length}작품`).join(", ")}_`);
     if (st.silentWeeks >= HEARTBEAT_WEEKS) {
-      body.push("", `_${st.silentWeeks}주 연속 제안 없음 — 판정 기준이 과하게 깐깐한 건 아닌지 반려 사유를 한 번 보셔도 좋겠어요._`);
-      st.silentWeeks = 0; saveKpFbState(st);
+      body.push("", `_${st.silentWeeks}주 연속 제안 없음 — 판정이 과하게 깐깐한 건 아닌지 근거를 한 번 보셔도 좋겠어요._`);
+      st.silentWeeks = 0; save();
     }
-    return { text: quietReport("제안 없음", stats, body), reason: `제안 없음(클러스터 ${clusters.length}, 판정 ${verdicts.map((v) => v.verdict).join("/") || "-"})`, stats, verdicts };
+    return {
+      text: quietReport("제안 없음", stats, body),
+      thread: evidenceMessages(verdicts),
+      reason: `제안 없음(클러스터 ${clusters.length}, 판정 ${verdicts.map((v) => v.verdict).join("/") || "-"})`,
+      stats, verdicts,
+    };
   }
 
   const lines = [
@@ -290,7 +299,7 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
   if (skipped.length) lines.push(`_수정 불필요: ${skipped.map((v) => `${v.cluster.category}(${v.verdict})`).join(", ")}_`);
   if (nearMiss.length) lines.push(`_임계 미달(관찰만): ${nearMiss.map((c) => `${c.category} ${c.items.length}건/${c.works.length}작품`).join(", ")}_`);
   lines.push(`_반영 여부는 <@${KPFB_APPROVERS.join("> 또는 <@")}> 가 정해 주세요 — 말씀 주시면 prompts_customer_fb.py에 적용하고 회귀 테스트까지 돌립니다._`);
-  return { text: lines.join("\n"), reason: "제안 발송", stats, verdicts };
+  return { text: lines.join("\n"), thread: evidenceMessages(verdicts), reason: "제안 발송", stats, verdicts };
 }
 
 // 제안이 없을 때도 한 줄은 보낸다(2026-10-27 재상 님 지정 — 종전엔 조용히 끝나서
@@ -303,5 +312,32 @@ function quietReport(title, stats, body) {
   return ["🧪 *KP FB 주간 프롬프트 점검* — " + title, headline(stats), ...(body && body.length ? ["", ...body] : [])].join("\n");
 }
 
+// 판정 근거가 된 KP 코멘트를 클러스터별로 전부 적는다(작품명 + 제출 번역문 → 고객사 수정 요청).
+// 한 메시지에 다 넣으면 슬랙이 접어버리니 길이로 끊어 여러 답글로 돌려준다.
+const EV_CHARS = Number(process.env.KPFB_EVIDENCE_CHARS ?? 2800);
+function evidenceMessages(verdicts) {
+  const out = [];
+  let buf = [];
+  const flush = () => { if (buf.length) { out.push(buf.join("\n")); buf = []; } };
+  const push = (line) => {
+    if (buf.join("\n").length + line.length + 1 > EV_CHARS) flush();
+    buf.push(line);
+  };
+  for (const v of verdicts || []) {
+    const c = v.cluster || {};
+    const items = c.items || [];
+    if (!items.length) continue;
+    push(`*${c.category ?? "?"}* — 근거 ${items.length}건`);
+    for (const x of items) {
+      const ja = String(x.ja || "").replace(/\s+/g, " ").slice(0, 70);
+      const fb = String(x.fb || "").replace(/\s+/g, " ").slice(0, 90);
+      push(`· [${x.work || "?"}] ${ja} → ${fb}`);
+    }
+    push("");
+  }
+  flush();
+  return out;
+}
+
 // 드라이런 하네스용 내부 노출(운영 경로에선 안 씀) — 판정 단계만 따로 검증할 수 있게.
-export { judgeClusters as _judgeClusters, fetchPromptRules as _fetchPromptRules, quietReport as _quietReport };
+export { judgeClusters as _judgeClusters, fetchPromptRules as _fetchPromptRules, quietReport as _quietReport, evidenceMessages as _evidenceMessages, classifyBatch as _classifyBatch };

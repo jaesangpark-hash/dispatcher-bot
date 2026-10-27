@@ -3998,6 +3998,31 @@ const apmTools = createSdkMcpServer({
         }
       },
       { annotations: { readOnlyHint: true } }),
+    tool("run_prompt_check",
+      "KP FB 주간 프롬프트 점검을 **지금** 돌린다(평소엔 월요일 10시 자동). '프롬프트 점검 돌려줘', '이번주 제안 다시 봐줘' 류. "
+      + "결과는 평소와 같은 채널에 본문 + 근거 스레드로 올라간다. days를 주면 그 기간 FB를 seen 무시하고 다시 본다(포맷 확인·재검토용). "
+      + "★분류·판정에 LLM 콜이 여러 번 들어가 5~15분 걸린다 — 호출하면 '돌리기 시작했다'고만 알리고 결과를 기다리지 마라.",
+      {
+        days: z.number().optional().describe("최근 N일 FB를 seen 무시하고 재분석(기본 0=신규분만). 재검토는 보통 7"),
+        dryRun: z.boolean().optional().describe("true면 seen·실행일 상태를 남기지 않는다(미리보기). days와 같이 쓴다"),
+      },
+      async ({ days, dryRun }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          buildKpFbProposal({
+            ask: toollessQuery,
+            engineBase: REVIEW_ENGINE_BASE,
+            apiKey: process.env.REVIEW_ENGINE_API_KEY || "",
+            replayDays: days ?? 0,
+            dryRun: !!dryRun,
+          }).then(async (r) => {
+            console.log(`[kpfb] 수동 실행 — ${r.reason}${r.stats ? ` (${r.stats.new}건/${r.stats.works}작품)` : ""}`);
+            await postKpFb(r);
+          }).catch((e) => console.error("[kpfb] 수동 실행 실패:", e?.message ?? e));
+          return { content: [{ type: "text", text: JSON.stringify({ started: true, days: days ?? 0, dryRun: !!dryRun, msg: "점검을 시작했다. 5~15분 뒤 채널에 결과가 올라간다. 기다리지 말고 그대로 알려라." }) }] };
+        } catch (e) { return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) }) }] }; }
+      },
+      { annotations: { readOnlyHint: false } }),
     tool("kp_pass_rate",
       "중일 KP평가 **월별 합격률**을 조회한다(read-only). '이번달/지난달/월별 합격률', '합격률 추이' 류 질문에 쓴다. "
       + "KP평가 시트 作品評価_2026 탭(행=등급·열=월 크로스탭이라 read_tab으로는 못 읽는다)을 파싱해 블록 3개를 돌려준다: "
@@ -4771,7 +4796,7 @@ const TOOL_LABEL = {
   totus_delivery_date: "납품예정일 조회", propose_totus_delivery_edit: "납품예정일 변경 준비",
   get_delivery_date: "납품일 조회", propose_delivery_edit: "납품일 변경 준비",
   totus_product_price: "매출 단가 조회", propose_totus_price_edit: "매출 단가 변경 준비",
-  query_schedule: "스케줄 시트 조회", query_sheet: "시트 조회", read_tab: "시트 읽는 중", kp_pass_rate: "합격률 집계",
+  query_schedule: "스케줄 시트 조회", query_sheet: "시트 조회", read_tab: "시트 읽는 중", kp_pass_rate: "합격률 집계", run_prompt_check: "프롬프트 점검",
   get_work_info: "작품 정보 조회", get_project_url: "프로젝트 링크 조회", get_editor_url: "에디터 링크 조회",
   send_message: "메시지 초안 준비", share_feedback: "피드백 공유 준비", propose_retake: "리테이크 초안 준비",
   propose_setjip_request: "설정집 요청 준비", run_setjip_review: "설정집 검수", compute: "계산 중",
@@ -9175,12 +9200,33 @@ async function _handleManualTransferDuplicateReply({ text, channel, threadTs, cl
 
 // ── KP 고객사 FB 주간 프롬프트 점검(2026-09-08, 재상 님 지정: 주 1회 월요일 오전) ──────
 // 신규 코멘트(comment_uuid 미처리분)만 LLM으로 번역문↔수정문 대조 → 반복 패턴만 추려 라이브 프롬프트와
-// 대조 → 고칠 값어치가 있는 것만 DM. 제안이 없으면 침묵(몇 주 연속 조용하면 kpfb.js가 생존신고 한 줄).
+// 대조 → 판정 결과를 매주 채널에 보고한다(제안이 없어도 「왜 없는지」까지 적는다, 2026-10-27).
 // 수집 대상 시트가 매일 동기화되므로 요일만 맞으면 되고, 실패해도 다음 주에 같은 신규분을 다시 본다.
 const KPFB_HOUR = Number(process.env.KPFB_HOUR ?? 10);      // 오전 10시(KST) 이후 첫 tick
 const KPFB_DOW = Number(process.env.KPFB_DOW ?? 1);          // 1=월요일
 // KP FB 프롬프트 점검 결과를 올릴 채널(2026-10-27 재상 님 지정 — 한일웹툰-와타나베-에리나님).
 const KPFB_CHANNEL = process.env.KPFB_CHANNEL || "C039RLP93FS";
+
+// 본문 + 근거 스레드 발송. 주간 잡과 수동 실행(run_prompt_check)이 같은 경로를 쓴다.
+async function postKpFb(r, channel = KPFB_CHANNEL) {
+  if (!r?.text) return null;
+  const mentions = KPFB_APPROVERS.map((u) => `<@${u}>`).join(" ");
+  const body = `${mentions}\n${r.text}`;
+  try {
+    const posted = await app.client.chat.postMessage({ channel, text: body, unfurl_links: false });
+    // 근거 코멘트는 본문을 밀어내지 않게 스레드로 내린다(판정당 수십 건이라 본문에 넣으면 슬랙이 접는다).
+    for (const msg of (r.thread || [])) {
+      try {
+        await app.client.chat.postMessage({ channel, thread_ts: posted.ts, text: msg, unfurl_links: false });
+      } catch (e) { console.error("[kpfb] 근거 답글 실패:", e?.message ?? e); break; }
+    }
+    return posted.ts;
+  } catch (e) {
+    console.error("[kpfb] 채널 발송 실패 — DM으로 폴백:", e?.message ?? e);
+    await dmOwner(body);
+    return null;
+  }
+}
 
 async function checkKpFbWeekly() {
   try {
@@ -9207,15 +9253,7 @@ async function checkKpFbWeekly() {
       console.log(`[kpfb] ${today} — ${r.reason}${r.stats ? ` (신규 ${r.stats.new}건/${r.stats.works}작품)` : ""}`);
       // ★DM이 아니라 채널로 보낸다(2026-10-27 재상 님 지정). 제안이 없는 주에도 반드시 한 줄 나가므로
       //   "이번주에 왜 안 왔지"를 사람이 확인하러 갈 일이 없어야 한다. 승인자 둘을 머리에 멘션한다.
-      if (!r.text) return;
-      const mentions = KPFB_APPROVERS.map((u) => `<@${u}>`).join(" ");
-      const body = `${mentions}\n${r.text}`;
-      try {
-        await app.client.chat.postMessage({ channel: KPFB_CHANNEL, text: body, unfurl_links: false });
-      } catch (e) {
-        console.error("[kpfb] 채널 발송 실패 — DM으로 폴백:", e?.message ?? e);
-        await dmOwner(body);
-      }
+      await postKpFb(r);
     }).catch((e) => console.error("[kpfb] 본체 실패:", e?.message ?? e));
   } catch (e) { console.error("[kpfb] 실패:", e?.message ?? e); }
 }
