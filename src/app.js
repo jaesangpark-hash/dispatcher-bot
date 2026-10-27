@@ -5731,7 +5731,13 @@ async function handleSetjipCheck({ message, client }) {
   // ★「設定集チェック」를 안 써도, xlsx를 올리며 국가설정만 적으면 검수 요청으로 본다.
   //   실측(2026-10-05): 재상 님도 작업자에게 안내하면서 「(파일) @툰식이 日本設定」로 보내셨고
   //   트리거가 없어 브레인으로 샜다. 작업자는 더 짧게 쓸 가능성이 크다.
-  if (!isSetjipRequest(text) && !(xlsx && parseSetting(text))) return false;
+  // ★국가설정이 없으면 원칙적으로 반응하지 않는다(작업자 요청, 2026-10-27).
+  //   전에는 「設定集チェック」만 들어가면 발동해, 「設定集チェックの結果を確認しました」 같은
+  //   평범한 대화에도 「国家設定を一緒に書いてください」가 튀어나갔다.
+  //   예외는 트리거+xlsx 뿐이다 — 파일까지 올렸으면 검수 의도가 분명하니 설정을 되물어 준다.
+  const trig = isSetjipRequest(text);
+  const hasSetting = !!parseSetting(text);
+  if (!((hasSetting && (trig || xlsx)) || (trig && xlsx))) return false;
   // 멘션을 달면 app.message와 app_mention이 둘 다 뜬다 — 먼저 잡은 쪽만 처리한다
   if (processed.has("sj:" + message.ts)) return true;
   processed.add("sj:" + message.ts);
