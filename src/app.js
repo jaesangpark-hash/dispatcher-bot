@@ -18,7 +18,7 @@ import { queryView, VIEWS, VIEW_CATALOG, readTab, SHEET_URL_LIST, kpMonthlyPassR
 import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
 import { setCell, getCell, setCells, getCells, ensureTab, appendSheetRows } from "./sheets-write.js";
 import { readRange as readRangeRO } from "./sheets.js";
-import { buildKpFbProposal } from "./kpfb.js";
+import { buildKpFbProposal, KPFB_APPROVERS } from "./kpfb.js";
 import { buildFeedback, FEEDBACK_SHEET_ID, FEEDBACK_SHARE_RANGE } from "./feedback.js";
 import { buildRetake } from "./retake.js";
 import { appendFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -150,7 +150,10 @@ const _KUAIKAN_REFRESH_SCRIPT = path.resolve(_APP_DIR, "../tools/kuaikan-cookie-
 
 // 사용 허용 = 재상(소유자) + APM들. 소유자만 = 변경·발송·리마인더(쓰기/개인기능). 그 외(APM)는 조회·검수만.
 const OWNER_ID = DISPATCHER_USER_ID;
-const ALLOWED_USERS = new Set([OWNER_ID, ...APM_USER_IDS.split(",").map((s) => s.trim()).filter(Boolean)]);
+// ★KP FB 프롬프트 제안의 반영 승인은 재상 + 와타나베 에리나 둘 다 가능(2026-10-27 지정).
+//   채널에서 승인 멘션이 와도 봇이 무시하지 않도록 허용 목록에 함께 넣는다.
+const KPFB_APPROVER_IDS = (process.env.KPFB_APPROVERS || "U04463JR4HH,U075B3S7VPD").split(",").map((s) => s.trim()).filter(Boolean);
+const ALLOWED_USERS = new Set([OWNER_ID, ...APM_USER_IDS.split(",").map((s) => s.trim()).filter(Boolean), ...KPFB_APPROVER_IDS]);
 // 요청자 Slack ID → 이름. 턴 맥락에 [요청자: 이름]으로 주입해 '내/내가'를 봇이 정확히 알게 한다.
 const USER_NAMES = { [OWNER_ID]: "박재상", "U07E0QPL8MV": "서주원", "U05CE8HFA6B": "정태영" };
 let currentUser = null;   // 지금 처리 중인 턴의 요청자 Slack ID (재상 전용 가드용)
@@ -9176,6 +9179,9 @@ async function _handleManualTransferDuplicateReply({ text, channel, threadTs, cl
 // 수집 대상 시트가 매일 동기화되므로 요일만 맞으면 되고, 실패해도 다음 주에 같은 신규분을 다시 본다.
 const KPFB_HOUR = Number(process.env.KPFB_HOUR ?? 10);      // 오전 10시(KST) 이후 첫 tick
 const KPFB_DOW = Number(process.env.KPFB_DOW ?? 1);          // 1=월요일
+// KP FB 프롬프트 점검 결과를 올릴 채널(2026-10-27 재상 님 지정 — 한일웹툰-와타나베-에리나님).
+const KPFB_CHANNEL = process.env.KPFB_CHANNEL || "C039RLP93FS";
+
 async function checkKpFbWeekly() {
   try {
     if (!BRAIN_ON) return;
@@ -9199,7 +9205,17 @@ async function checkKpFbWeekly() {
       apiKey: process.env.REVIEW_ENGINE_API_KEY || "",
     }).then(async (r) => {
       console.log(`[kpfb] ${today} — ${r.reason}${r.stats ? ` (신규 ${r.stats.new}건/${r.stats.works}작품)` : ""}`);
-      if (r.text) await dmOwner(r.text);
+      // ★DM이 아니라 채널로 보낸다(2026-10-27 재상 님 지정). 제안이 없는 주에도 반드시 한 줄 나가므로
+      //   "이번주에 왜 안 왔지"를 사람이 확인하러 갈 일이 없어야 한다. 승인자 둘을 머리에 멘션한다.
+      if (!r.text) return;
+      const mentions = KPFB_APPROVERS.map((u) => `<@${u}>`).join(" ");
+      const body = `${mentions}\n${r.text}`;
+      try {
+        await app.client.chat.postMessage({ channel: KPFB_CHANNEL, text: body, unfurl_links: false });
+      } catch (e) {
+        console.error("[kpfb] 채널 발송 실패 — DM으로 폴백:", e?.message ?? e);
+        await dmOwner(body);
+      }
     }).catch((e) => console.error("[kpfb] 본체 실패:", e?.message ?? e));
   } catch (e) { console.error("[kpfb] 실패:", e?.message ?? e); }
 }

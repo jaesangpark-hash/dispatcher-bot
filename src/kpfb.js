@@ -34,6 +34,9 @@ const BATCH = Number(process.env.KPFB_BATCH ?? 25);          // 1콜당 대조 �
 const CLASSIFY_MODEL = process.env.KPFB_CLASSIFY_MODEL || "claude-haiku-4-5-20251001";
 const MAX_NEW = Number(process.env.KPFB_MAX_NEW ?? 400);     // 폭주 방어(시트 대량 재적재 등)
 const SEEN_CAP = 6000;                                       // seen 목록 상한(오래된 것부터 버림)
+// 제안 수신·반영 승인 주체(2026-10-27 재상 님 지정). 채널 발송 시 이 사람들을 멘션하고,
+// 「반영할까요」에 답할 수 있는 사람도 같다.
+export const KPFB_APPROVERS = (process.env.KPFB_APPROVERS || "U04463JR4HH,U075B3S7VPD").split(",").map((s) => s.trim()).filter(Boolean);
 const HEARTBEAT_WEEKS = Number(process.env.KPFB_HEARTBEAT_WEEKS ?? 4);   // 이 주 수만큼 조용하면 생존신고 1줄
 
 // 분류 택소노미 — 집계 가능하게 고정 목록으로 받는다. 자유 서술로 받으면 같은 유형이 매주 다른 이름으로
@@ -160,7 +163,7 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
     try { items.push(...(await readKpItems(tab))); }
     catch (e) { console.error(`[kpfb] ${tab} 읽기 실패:`, e?.message ?? e); }
   }
-  if (!items.length) return { text: null, reason: "FB 시트 읽기 실패", stats: null };
+  if (!items.length) return { text: quietReport("⚠️ 실행 실패", null, ["FB 시트를 읽지 못했어요. 시트 권한이나 탭 이름을 확인해 주세요."]), reason: "FB 시트 읽기 실패", stats: null };
 
   // 첫 실행: 과거 전량이 "신규"로 보이므로 최근 BOOTSTRAP_DAYS만 분석하고 나머지는 본 것으로 처리.
   let fresh = items.filter((x) => !seen.has(x.uuid));
@@ -183,7 +186,7 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
   };
   if (!fresh.length) {
     st.lastRun = kstDay(now); st.silentWeeks = (st.silentWeeks || 0) + 1; st.seen = [...seen].slice(-SEEN_CAP); saveKpFbState(st);
-    return { text: null, reason: "신규 FB 없음", stats };
+    return { text: quietReport("제안 없음", stats, ["지난주 새로 들어온 KP 피드백이 없었어요."]), reason: "신규 FB 없음", stats };
   }
 
   // 분류
@@ -193,7 +196,7 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
     try { classified.push(...(await classifyBatch(chunk, ask, `KP FB 분류 ${i / BATCH + 1}`))); }
     catch (e) { console.error("[kpfb] 분류 실패(이 배치는 다음 주로 미룸):", e?.message ?? e); }
   }
-  if (!classified.length) return { text: null, reason: "분류 전량 실패", stats };
+  if (!classified.length) return { text: quietReport("⚠️ 실행 실패", stats, ["신규 FB는 있었는데 분류가 전량 실패했어요. 모델 호출 쪽을 봐야 합니다."]), reason: "분류 전량 실패", stats };
   for (const x of classified) seen.add(x.uuid);   // 분류까지 성공한 건만 본 것으로 처리
 
   // 클러스터링 — 일반화 가능한 것만, 임계(건수·작품수) 통과분만 판정에 올린다.
@@ -220,7 +223,7 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
     } catch (e) {
       console.error("[kpfb] 판정 단계 실패:", e?.message ?? e);
       st.lastRun = kstDay(now); st.seen = [...seen].slice(-SEEN_CAP); saveKpFbState(st);
-      return { text: null, reason: `판정 실패: ${e?.message ?? e}`, stats };
+      return { text: quietReport("⚠️ 실행 실패", stats, [`판정 단계에서 멈췄어요 — ${e?.message ?? e}`, "엔진 /prompt-rules 조회가 되는지 확인이 필요합니다."]), reason: `판정 실패: ${e?.message ?? e}`, stats };
     }
   }
   try {
@@ -239,11 +242,34 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
 
   // 제안이 없으면 조용히(주간 "이상 없음" DM은 노이즈). 단 몇 주 연속 조용하면 생존신고 한 줄.
   if (!actionable.length) {
-    if (st.silentWeeks >= HEARTBEAT_WEEKS) {
-      st.silentWeeks = 0; saveKpFbState(st);
-      return { text: `🧪 *KP FB 프롬프트 점검* — 최근 ${HEARTBEAT_WEEKS}주간 프롬프트를 고칠 만한 반복 패턴 없었어요.\n_최근 주 신규 FB ${stats.new}건 / ${stats.works}작품 · 임계 ${MIN_ITEMS}건·${MIN_WORKS}작품_`, reason: "생존신고", stats, verdicts };
+    // ★왜 제안이 없는지까지 적는다 — 종전엔 "조용함"과 "고장"이 구분되지 않았다.
+    //   판정별로 접어서 보여주면, 반려가 계속 쌓일 때 판정 기준 쪽을 의심할 수 있다.
+    const body = [];
+    if (!clusters.length) {
+      body.push(`FB ${stats.new}건을 봤지만 임계(${MIN_ITEMS}건·${MIN_WORKS}작품)를 넘는 반복 패턴이 없었어요.`);
+    } else {
+      const byVerdict = new Map();
+      for (const v of verdicts) {
+        if (!byVerdict.has(v.verdict)) byVerdict.set(v.verdict, []);
+        byVerdict.get(v.verdict).push(v);
+      }
+      body.push(`클러스터 ${clusters.length}건을 판정했는데 고칠 건 없었어요.`);
+      for (const [verdict, vs] of byVerdict) {
+        body.push("");
+        body.push(`*${verdict === "기존" ? "이미 프롬프트가 덮고 있음" : verdict}* — ${vs.length}건`);
+        for (const v of vs) {
+          const c = v.cluster || {};
+          const works = Array.isArray(c.works) ? c.works : [];
+          body.push(`· ${c.category ?? "?"} (${(c.items || []).length}건/${works.length}작품) — ${flat(v.reason) || "사유 없음"}`);
+        }
+      }
     }
-    return { text: null, reason: `제안 없음(클러스터 ${clusters.length}, 판정 ${verdicts.map((v) => v.verdict).join("/") || "-"})`, stats, verdicts };
+    if (nearMiss.length) body.push("", `_임계 미달(관찰만): ${nearMiss.map((c) => `${c.category} ${c.items.length}건/${c.works.length}작품`).join(", ")}_`);
+    if (st.silentWeeks >= HEARTBEAT_WEEKS) {
+      body.push("", `_${st.silentWeeks}주 연속 제안 없음 — 판정 기준이 과하게 깐깐한 건 아닌지 반려 사유를 한 번 보셔도 좋겠어요._`);
+      st.silentWeeks = 0; saveKpFbState(st);
+    }
+    return { text: quietReport("제안 없음", stats, body), reason: `제안 없음(클러스터 ${clusters.length}, 판정 ${verdicts.map((v) => v.verdict).join("/") || "-"})`, stats, verdicts };
   }
 
   const lines = [
@@ -263,9 +289,19 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
   const skipped = verdicts.filter((v) => v.verdict === "기존" || v.verdict === "반려");
   if (skipped.length) lines.push(`_수정 불필요: ${skipped.map((v) => `${v.cluster.category}(${v.verdict})`).join(", ")}_`);
   if (nearMiss.length) lines.push(`_임계 미달(관찰만): ${nearMiss.map((c) => `${c.category} ${c.items.length}건/${c.works.length}작품`).join(", ")}_`);
-  lines.push("_반영하려면 말씀만 주세요 — prompts_customer_fb.py에 제가 적용하고 회귀 테스트까지 돌립니다._");
+  lines.push(`_반영 여부는 <@${KPFB_APPROVERS.join("> 또는 <@")}> 가 정해 주세요 — 말씀 주시면 prompts_customer_fb.py에 적용하고 회귀 테스트까지 돌립니다._`);
   return { text: lines.join("\n"), reason: "제안 발송", stats, verdicts };
 }
 
+// 제안이 없을 때도 한 줄은 보낸다(2026-10-27 재상 님 지정 — 종전엔 조용히 끝나서
+// "이번주에 왜 안 왔지"를 매번 확인해야 했다). 침묵보다 짧은 보고가 낫다.
+function headline(stats) {
+  if (!stats) return "_신규 FB 집계 실패_";
+  return `_신규 FB ${stats.new}건 / ${stats.works}작품${stats.from ? ` (${stats.from}~${stats.to})` : ""} · 임계 ${MIN_ITEMS}건·${MIN_WORKS}작품_`;
+}
+function quietReport(title, stats, body) {
+  return ["🧪 *KP FB 주간 프롬프트 점검* — " + title, headline(stats), ...(body && body.length ? ["", ...body] : [])].join("\n");
+}
+
 // 드라이런 하네스용 내부 노출(운영 경로에선 안 씀) — 판정 단계만 따로 검증할 수 있게.
-export { judgeClusters as _judgeClusters, fetchPromptRules as _fetchPromptRules };
+export { judgeClusters as _judgeClusters, fetchPromptRules as _fetchPromptRules, quietReport as _quietReport };
