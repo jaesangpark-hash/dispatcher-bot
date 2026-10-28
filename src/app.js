@@ -184,8 +184,25 @@ const CHANNEL_POLICY = (() => {
 })();
 // 재상 전용(변경·발송·리마인더) 가드: APM이 호출하면 거부 content 반환, 재상이면 null
 const ownerOnly = () => (currentUser && currentUser !== OWNER_ID)
-  ? { content: [{ type: "text", text: JSON.stringify({ denied: true, error: "이 기능(납품예정일·시트 변경/삭제, 슬랙 발송, 리마인더)은 재상 님만 쓸 수 있어요. 조회·검수·링크·원본파일은 도와드릴 수 있어요." }) }] }
+  ? { content: [{ type: "text", text: JSON.stringify({ denied: true, error: "이 기능(슬랙 발송, 리마인더 등)은 재상 님만 쓸 수 있어요. 중일 납품일·납품예정일·담당APM 변경과 조회·검수·링크·원본파일은 도와드릴 수 있어요." }) }] }
   : null;
+// 재상 + 허용 APM, 단 **중일만**. 납품일·납품예정일·담당APM 변경을 APM 두 분(서주원·정태영)에게
+// 연다(2026-10-28 재상 님 지시). 한일은 재상 전용으로 남긴다 — 요청 범위가 중일이었다.
+//   lang: "zh-ja" | "ko-ja" | null(=모름). 모르면 막는다 — 어느 쪽인지 모른 채 쓰게 두면
+//   한일까지 열리는 셈이 된다.
+const zhJaWriteOnly = (lang) => {
+  if (!currentUser || currentUser === OWNER_ID) return null;
+  if (!ALLOWED_USERS.has(currentUser)) {
+    return { content: [{ type: "text", text: JSON.stringify({ denied: true, error: "이 기능은 재상 님과 담당 APM만 쓸 수 있어요." }) }] };
+  }
+  if (lang === "zh-ja") return null;
+  return { content: [{ type: "text", text: JSON.stringify({
+    denied: true,
+    error: lang === "ko-ja"
+      ? "한일 납품일·납품예정일 변경은 재상 님만 할 수 있어요. 중일은 바꿔드릴 수 있어요."
+      : "중일인지 한일인지 확인이 안 돼서 변경을 멈췄어요. 중일이면 그렇게 말씀해 주세요(한일은 재상 님만 가능).",
+  }) }] };
+};
 // 재상 + 허용 APM. 매출 단가 변경처럼 APM에게도 연 기능에 쓴다(2026-09-29).
 const allowedOnly = () => (currentUser && !ALLOWED_USERS.has(currentUser))
   ? { content: [{ type: "text", text: JSON.stringify({ denied: true, error: "이 기능은 재상 님과 담당 APM만 쓸 수 있어요." }) }] }
@@ -267,7 +284,7 @@ const DISPATCHER_PROMPT = [
   "★명단·목록을 다룰 때(2026-09-21 사고 후 추가): ①read_thread 결과에 truncated나 「…자가 더 있는데 잘렸음」 표시가 있으면 **네가 본 것이 전부가 아니다** — 「N명 전원 확인했다」고 절대 단정하지 말고, 잘렸다는 사실을 먼저 알리고 필요한 메시지를 다시 달라고 하거나 범위를 좁혀 다시 읽어라. 실제로 28명 명단이 15명에서 잘린 줄 모르고 '전원 확인, 한 명도 없음'이라 답했는데 잘린 뒷부분에 해당자가 5명 있었다. ②「여기 있는 리스트」처럼 링크를 주면 ★지목된 메시지★ 표시가 붙은 메시지가 대상이다 — 스레드 안의 다른 비슷한 목록을 임의로 고르지 마라. ③명단이 이름이 아니라 **채널 ID(<#C…>)나 이메일**로 적혀 있으면, 시트(배정 현황 등)와 대조하기 전에 **작업자 DB(worker_db, 이름·이메일·유저ID·채널ID)로 이름을 먼저 해석**하라. 변환이 귀찮다고 이름이 적힌 다른 목록으로 갈아타면 안 된다.",
   "★★답변 위치 / '여기'의 뜻(중요·엄수): 네 답변 텍스트는 시스템이 **사용자가 너를 부른 바로 그 자리(그 스레드/DM)에 자동으로** 올린다. 그래서 '여기/이 스레드에 답해·멘션해·써줘·달아줘'는 send_message도, 스레드 링크(‘링크 복사’ 값)도 **전혀 필요 없다** — 그냥 답변 텍스트 안에 내용(필요하면 <@멘션>)을 넣기만 하면 그 자리에 달린다. **절대 '스레드 링크를 붙여달라'고 되묻지 마라(넌 이미 그 스레드에 답하고 있다).** send_message는 오직 *지금 이 자리가 아닌 다른 채널/다른 스레드/DM*으로 보낼 때만 쓴다(그때만 받는 곳/링크가 필요). '담당 APM 멘션해'도 마찬가지 — '△△ 채널로 보내라'는 말이 없으면 그냥 이 스레드 답변에 <@APM>을 넣어라(#재팬_apm-alerts 등 다른 채널로 임의 발송하지 말 것).",
   "★작업자 채널의 원본 파일순서 기능(2026-09-17 신설): 지정된 작업자 개인 채널에서 ★작업자가 툰식이를 멘션하고(멘션 없는 메시지엔 일절 반응하지 않는다 — 2026-09-18 오탐 제보 후 변경) 「「アンデッド・スカージ」「12話」ファイル順がおかしい」처럼 작품명과 회차를 말하면, 툰식이가 그 작품의 파일 순서를 점검하고 확인 버튼을 눌러야 반영한다(순서 반영 + 회차 확정까지). 작품명은 반드시 필요하다 — 본문에 없으면 스레드 부모 메시지에서 찾고, 그래도 없으면 작업자에게 작품명을 되묻는다(추측해서 진행하지 않는다). 회차 표기는 「12話」「12〜14話」「1,2,3話」 어느 쪽이든 되고, 서식이 정해져 있지는 않다. 본인이 담당하지 않는 회차는 대상 외다. 파일명 변경·추가·삭제는 불가(TOTUS에 해당 API가 없다). 자동 판정이 틀렸거나 애매해서 못 고른 회차는 「順番が違う」 버튼 → 순서 수정 모달에서 작업자가 직접 순서를 정한다(파일마다 ⋯ 메뉴로 上へ/下へ/先頭へ/末尾へ. Slack에 드래그 요소가 없어서 이 방식이다). 거기서도 안 되면 담당 PM 안내. 작업자가 「使い方」「説明」류로 물으면 고정 매뉴얼이 자동으로 나간다. ★재상 님이 작업자 채널에서 '이 기능을 작업자에게 설명해줘'라고 하면, 이 문단의 내용만 근거로 **일본어**로 설명하라 — 없는 기능(파일명 변경·되돌리기 등)을 지어내지 말 것. 스레드에서 불렀으면 그 스레드에 답하고, 작업자가 읽을 글이므로 정중한 です・ます체로 쓴다.",
-  "사용자 권한: 재상 님 외에 APM 두 분도 너에게 말을 건다(같은 '툰식이'로 똑같이 친절하게 응대). 단 '변경·발송·리마인더'(납품예정일/시트 변경·삭제, 슬랙 메시지 발송, 리마인더 등록·조회·완료)는 재상 님 전용이다. APM 분이 그런 요청을 하면 해당 도구가 거부(denied)를 돌려주는데, 그때는 '그건 재상 님만 할 수 있어요. 대신 조회·검수·링크·원본파일은 도와드릴게요'처럼 부드럽게 안내한다. 조회·검수·링크·원본 파일은 모두에게 열려 있다.",
+  "사용자 권한: 재상 님 외에 APM 두 분(서주원·정태영)도 너에게 말을 건다(같은 '툰식이'로 똑같이 친절하게 응대). ★APM 두 분도 **중일** 납품일(시트 G열)·납품예정일(TOTUS)·담당APM(시트 D열) 변경을 할 수 있다(2026-10-28). 한일 변경과 '발송·리마인더'(슬랙 메시지 발송, 리마인더 등록·조회·완료)는 재상 님 전용이다. APM 분이 그런 요청을 하면 해당 도구가 거부(denied)를 돌려주는데, 그때는 '그건 재상 님만 할 수 있어요. 대신 조회·검수·링크·원본파일은 도와드릴게요'처럼 부드럽게 안내한다. 조회·검수·링크·원본 파일은 모두에게 열려 있다.",
   "내부 구현은 답변에 드러내지 않는다 — 도구명·뷰명(예: translator_grade, query_sheet)이나 '어느 탭·필드에서 어떤 로직으로 가져왔는지'를 괄호로 달거나 설명하지 말 것. 그건 나와 봇만 아는 내부 사정이다. 결과만 자연스럽게 말하고, 사용자가 직접 '어디서 가져왔어?'라고 물을 때만 출처를 짧게 답한다.",
   "강조 기호(**굵게)를 남용하지 않는다 — 정말 핵심 한두 군데만. 평소엔 일반 텍스트로. 표·불릿·헤더도 꼭 필요할 때만.",
   "★★길이(최우선·엄수): 분석·비교·요약·조회 응답의 *첫 답변은 최대 5줄*로 끝낸다. 표·카테고리 헤더(①②③)·소제목·긴 불릿나열 전부 금지(사용자가 '표로/자세히'라고 명시할 때만 허용). 여러 대상을 비교하면 *대상당 딱 1줄*. 정말 핵심 변화·결론만 남기고 세부(개별 기능·컬럼명·형식 변화 등)는 전부 버린다. 마지막 줄은 '자세히 볼래?'로 닫고, 사용자가 '자세히/상세/전체/표로'라 할 때만 펼친다. 길게 나열하려는 충동을 눌러라 — 짧은 게 기본이자 정답이다. (예: '박재상: 툰식이 개발중→운영중, 문의봇 연동 첫 달성. 나머지 3명 미기재. 자세히 볼래?' 이 정도 길이)",
@@ -2573,7 +2590,7 @@ const apmTools = createSdkMcpServer({
       },
       async ({ work, episode, new_date, changes, lang }) => {
         try {
-          const _d = ownerOnly(); if (_d) return _d;
+          const _d = zhJaWriteOnly(lang ?? "zh-ja"); if (_d) return _d;
           const tasks = (Array.isArray(changes) && changes.length) ? changes : (episode && new_date != null ? [{ episode, new_date }] : []);
           if (!tasks.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: "회차·날짜가 없음. episode+new_date 또는 changes 배열이 필요." }) }] };
           const CLEAR_RE = /^(삭제|지움|지워|지우기|비우기|비움|없음|빈칸|clear|none|empty)$/i;
@@ -2617,7 +2634,7 @@ const apmTools = createSdkMcpServer({
       },
       async ({ work, new_apm, episode, scope, lang, force }) => {
         try {
-          const _d = ownerOnly(); if (_d) return _d;
+          const _d = zhJaWriteOnly(lang ?? "zh-ja"); if (_d) return _d;
           const L = lang ?? "zh-ja";
           const name = String(new_apm ?? "").trim();
           if (!name) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: "새 APM 이름이 없음." }) }] };
@@ -2690,6 +2707,11 @@ const apmTools = createSdkMcpServer({
           const fp = await findProject(work);
           const proj = (fp?.data || [])[0];
           if (!proj?.uuid) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 프로젝트를 TOTUS에서 못 찾음. 작품명 표기 확인 필요.` }) }] };
+          // ★중일/한일은 프로젝트명 태그로 갈린다 — 중일 "[Piccoma중일]" · 한일 "[카카오픽코마]".
+          //   APM 두 분에게는 중일만 열려 있으므로 여기서 한 번 더 막는다(도구 진입 시점엔
+          //   어느 작품인지 몰라 판단할 수 없다).
+          const _zh = /중일/.test(String(proj.프로젝트 || ""));
+          const _g = zhJaWriteOnly(_zh ? "zh-ja" : "ko-ja"); if (_g) return _g;
           const jp = await jobProcesses(proj.uuid);
           const all = (jp?.data || []).flatMap((o) => o.JOB목록 || []);
           const projName = String(proj.프로젝트 || work).replace(/\[[^\]]*\]\s*/g, "").trim();
