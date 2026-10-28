@@ -4882,6 +4882,7 @@ function startSession() {
         "mcp__apm__remember", "mcp__apm__forget", "mcp__apm__list_learned",
         "mcp__apm__list_distill", "mcp__apm__approve_distill", "mcp__apm__reject_distill",
         "mcp__apm__check_totalk_mentions", "mcp__apm__transfer_kuaikan_files",
+        "mcp__apm__kp_pass_rate", "mcp__apm__run_prompt_check",
         "WebSearch"],
     },
   });
