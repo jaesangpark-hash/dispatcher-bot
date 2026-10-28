@@ -269,8 +269,8 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
         const sec = [
           `*${c.category ?? "?"}*  ·  ${(c.items || []).length}건 / ${works.length}작품  ·  ${label(v.verdict)}`,
           "",
-          `만들려던 규칙 — ${flat(v.proposal) || "(미기재)"}`,
-          `접은 이유 — ${flat(v.reason) || "사유 없음"}`,
+          `만들려던 규칙 — ${deJargon(v.proposal) || "(미기재)"}`,
+          `접은 이유 — ${deJargon(v.reason) || "사유 없음"}`,
         ];
         const ev = evidenceLines(c);
         if (ev.length) sec.push("", ...ev);
@@ -296,8 +296,8 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
     const sec = [
       `*${v.verdict === "신규" ? "신규 규칙" : "기존 규칙 보강"}  ·  ${c.category}*  ·  ${c.items.length}건 / ${c.works.length}작품`,
       "",
-      `대상 — ${flat(v.target) || "STYLE_SYSTEM_ZH"}`,
-      `판단 — ${flat(v.reason)}`,
+      `대상 — ${deJargon(v.target) || "STYLE_SYSTEM_ZH"}`,
+      `판단 — ${deJargon(v.reason)}`,
     ];
     if (flat(v.patch)) sec.push("", "```" + String(v.patch).trim() + "```");
     const ev = evidenceLines(c);
@@ -337,7 +337,33 @@ function render({ title, stats, lead, sections = [], footer = [] }) {
   }
   if (footer.length) blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: footer.join("\n") }] });
   const text = [head, ...secs, ...(footer.length ? [footer.map((f) => "_" + f + "_").join("\n")] : [])].join("\n\n");
+  if (jargonHits) { console.log(`[kpfb] 내부 기호 치환 ${jargonHits}곳`); jargonHits = 0; }
   return { text, blocks };
+}
+
+// ★판정 문구에 섞여 나오는 내부 기호를 발송 직전에 걷어낸다(2026-10-28 재상 님 지정).
+//   판정 프롬프트에서 '항목 기호 금지'라고 못박아도 모델이 계속 쓴다 — 11건 중 7건에
+//   a항·h·i항·changelog ⑤·⑦ 류가 섞여 나왔다. 읽는 사람은 엔진 프롬프트 원문을 본 적이
+//   없으니 기호만 보면 무슨 말인지 알 수 없다. 모델을 믿지 말고 여기서 확정적으로 바꾼다.
+let jargonHits = 0;
+const JARGON = [
+  [/\bSTYLE_SYSTEM_(?:ZH|KO)\b/g, "윤문 스타일 규칙"],
+  [/changelog\s*[\u2460-\u2473][\s\u00b7,\u2460-\u2473]*/gi, "과거 결정 이력"],
+  [/changelog/gi, "과거 결정 이력"],
+  [/\(\s*[\u2460-\u2473][\s\u00b7,\u2460-\u2473]*\)/g, ""],      // 사례(⑥) 처럼 괄호로 단 번호
+  [/\s*[\u2460-\u2473][\s\u00b7,\u2460-\u2473]*\ubc88?/g, ""],   // ⑧번 처럼 남은 번호
+  [/PASS\s*1\s*\/\s*PASS\s*2/gi, "오역·오탈자 검수 단계"],
+  [/\bPASS\s*[12]\b/gi, "앞 단계 검수"],
+  [/신규\s*(?<![a-zA-Z])[a-z]항/g, "신규 항목"],
+  [/(?<![a-zA-Z])(?:[a-z]\s*[·,]\s*)*[a-z]항/g, "기존 규칙"],
+];
+function deJargon(s) {
+  const before = flat(s);
+  let t = before;
+  for (const [re, to] of JARGON) t = t.replace(re, to);
+  t = t.replace(/\s{2,}/g, " ").replace(/\s+([,.)\]])/g, "$1").trim();
+  if (t !== before) jargonHits++;
+  return t;
 }
 
 // 판정 근거가 된 KP 코멘트를 **최대 3건**만 클러스터 바로 아래 붙인다(2026-10-28 재상 님 지정).
@@ -366,4 +392,4 @@ function evidenceLines(cluster) {
 }
 
 // 드라이런 하네스용 내부 노출(운영 경로에선 안 씀) — 판정 단계만 따로 검증할 수 있게.
-export { judgeClusters as _judgeClusters, fetchPromptRules as _fetchPromptRules, render as _render, evidenceLines as _evidenceLines, classifyBatch as _classifyBatch };
+export { judgeClusters as _judgeClusters, fetchPromptRules as _fetchPromptRules, render as _render, evidenceLines as _evidenceLines, classifyBatch as _classifyBatch, deJargon as _deJargon };
