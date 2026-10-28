@@ -9208,11 +9208,23 @@ const KPFB_DOW = Number(process.env.KPFB_DOW ?? 1);          // 1=월요일
 // KP FB 프롬프트 점검 결과를 올릴 채널(2026-10-27 재상 님 지정 — 한일웹툰-와타나베-에리나님).
 const KPFB_CHANNEL = process.env.KPFB_CHANNEL || "C039RLP93FS";
 
-// 본문 + 근거 스레드 발송. 주간 잡과 수동 실행(run_prompt_check)이 같은 경로를 쓴다.
+// 본문 블록 발송. 주간 잡과 수동 실행(run_prompt_check)이 같은 경로를 쓴다.
 async function postKpFb(r, channel = KPFB_CHANNEL) {
   if (!r?.text) return null;
   const mentions = KPFB_APPROVERS.map((u) => `<@${u}>`).join(" ");
   const body = `${mentions}\n${r.text}`;
+  // ★블록으로 보내야 클러스터 사이에 구분선이 들어가 문단이 눈으로 끊긴다(2026-10-28 재상 님 지적:
+  //   한 덩어리 텍스트라 줄바꿈·문단 구분이 없어 못 읽겠다). text 는 알림 미리보기와 폴백용.
+  const blocks = r.blocks ? JSON.parse(JSON.stringify(r.blocks)) : null;
+  if (blocks?.[0]?.text?.text) blocks[0].text.text = `${mentions}\n${blocks[0].text.text}`;
+  if (blocks) {
+    try {
+      const posted = await app.client.chat.postMessage({ channel, text: body, blocks, unfurl_links: false });
+      return posted.ts;
+    } catch (e) {
+      console.error("[kpfb] 블록 발송 실패 — 평문으로 재시도:", e?.message ?? e);
+    }
+  }
   try {
     const posted = await app.client.chat.postMessage({ channel, text: body, unfurl_links: false });
     return posted.ts;
