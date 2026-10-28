@@ -58,7 +58,7 @@ function saveKpFbState(st) {
   try { writeFileSync(STATE_PATH, JSON.stringify(st)); } catch (e) { console.error("[kpfb] 상태 저장 실패:", e?.message ?? e); }
 }
 
-// 시트 → 항목. 컬럼: A comment_created_date / C sub(번역문) / D comment_uuid / F comment(FB) / G tag / I project
+// 시트 → 항목. 컬럼: A 작성일 / B origin(원문) / C sub(번역문) / D uuid / F comment(FB) / G tag / I project / J job(화수)
 async function readKpItems(tab) {
   const rows = await readRange(OPS_SHEET_ID, `${tab}!A2:M6000`);
   return (rows || []).map((r) => ({
@@ -68,6 +68,7 @@ async function readKpItems(tab) {
     fb: flat(r[5]).replace(/^【KP-FB】\s*/, ""),
     tag: flat(r[6]),
     work: workOf(r[8]),
+    ep: (String(r[9] ?? "").match(/^\s*0*(\d+)/) || [])[1] || "",   // J열 job "001_第一话…" → 화수
     lang: /한일/.test(tab) ? "ko" : "zh",
   })).filter((x) => x.uuid && x.fb);
 }
@@ -128,9 +129,12 @@ async function judgeClusters(clusters, rules, ask) {
 - proposal은 **판정과 무관하게 항상** 쓴다 — 이 패턴을 규칙으로 만든다면 무슨 규칙이 되는지 한 줄.
   반려·기존으로 접을 때도 "무엇을 하려다 접었는지"가 사람 눈에 보여야 한다.
 - 확신 없으면 "기존" 또는 "반려"로. 매주 도는 잡이므로 진짜 패턴이면 다음 주에 또 올라온다.
+- ★reason은 **읽는 사람이 프롬프트 원문을 모른다는 전제**로 쓴다. "a항"·"h항"·"i항" 같은 내부 항목 기호를
+  절대 쓰지 말고, 그 항목이 **무엇을 검수하는지 풀어서** 적어라(예: "a항으로 커버" → "반복되는 지시어·명사를
+  생략하라는 기존 규칙이 이미 덮는다"). 기호를 쓰면 팀에서 무슨 말인지 알 수 없다.
 
 JSON 배열만 출력:
-[{"n":1,"verdict":"신규|보강|기존|반려","target":"STYLE_SYSTEM_ZH의 어느 항목(신규면 '신규 h항' 등)","proposal":"규칙으로 만든다면 무슨 규칙인지 한 줄(40자 내외)","reason":"왜 그 판정인지 한국어 **한 문장**(80자 내외)","patch":"실제 삽입/수정 문구(기존·반려면 빈 문자열)"}]
+[{"n":1,"verdict":"신규|보강|기존|반려","target":"STYLE_SYSTEM_ZH의 어느 항목(신규면 '신규 h항' 등)","proposal":"규칙으로 만든다면 무슨 규칙인지 한 줄(40자 내외)","reason":"왜 그 판정인지 한국어 **한 문장**(80자 내외, 항목 기호 금지·검수 내용을 풀어서)","patch":"실제 삽입/수정 문구(기존·반려면 빈 문자열)"}]
 
 === 라이브 프롬프트(윤문 ZH) ===
 ${rules.style_zh || "(조회 실패)"}
@@ -266,6 +270,7 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
         body.push(`*${c.category ?? "?"}* — ${(c.items || []).length}건/${works.length}작품 · ${label(v.verdict)}`);
         body.push(`· 만들려던 규칙: ${flat(v.proposal) || "(미기재)"}`);
         body.push(`· 접은 이유: ${flat(v.reason) || "사유 없음"}`);
+        for (const line of evidenceLines(c)) body.push(line);
       }
     }
     if (nearMiss.length) body.push("", `_임계 미달(관찰만): ${nearMiss.map((c) => `${c.category} ${c.items.length}건/${c.works.length}작품`).join(", ")}_`);
@@ -275,7 +280,6 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
     }
     return {
       text: quietReport("제안 없음", stats, body),
-      thread: evidenceMessages(verdicts),
       reason: `제안 없음(클러스터 ${clusters.length}, 판정 ${verdicts.map((v) => v.verdict).join("/") || "-"})`,
       stats, verdicts,
     };
@@ -292,14 +296,14 @@ export async function buildKpFbProposal({ ask, engineBase, apiKey, now = Date.no
     lines.push(`· 대상: ${flat(v.target) || "STYLE_SYSTEM_ZH"}`);
     lines.push(`· 판단: ${flat(v.reason)}`);
     if (flat(v.patch)) lines.push("```" + String(v.patch).trim() + "```");
-    lines.push(`· 근거: ${c.items.slice(0, 2).map((x) => `[${x.work}] ${x.change}`).join(" / ")}`);
+    for (const line of evidenceLines(c)) lines.push(line);
     lines.push("");
   }
   const skipped = verdicts.filter((v) => v.verdict === "기존" || v.verdict === "반려");
   if (skipped.length) lines.push(`_수정 불필요: ${skipped.map((v) => `${v.cluster.category}(${v.verdict})`).join(", ")}_`);
   if (nearMiss.length) lines.push(`_임계 미달(관찰만): ${nearMiss.map((c) => `${c.category} ${c.items.length}건/${c.works.length}작품`).join(", ")}_`);
   lines.push(`_반영 여부는 <@${KPFB_APPROVERS.join("> 또는 <@")}> 가 정해 주세요 — 말씀 주시면 prompts_customer_fb.py에 적용하고 회귀 테스트까지 돌립니다._`);
-  return { text: lines.join("\n"), thread: evidenceMessages(verdicts), reason: "제안 발송", stats, verdicts };
+  return { text: lines.join("\n"), reason: "제안 발송", stats, verdicts };
 }
 
 // 제안이 없을 때도 한 줄은 보낸다(2026-10-27 재상 님 지정 — 종전엔 조용히 끝나서
@@ -312,32 +316,19 @@ function quietReport(title, stats, body) {
   return ["🧪 *KP FB 주간 프롬프트 점검* — " + title, headline(stats), ...(body && body.length ? ["", ...body] : [])].join("\n");
 }
 
-// 판정 근거가 된 KP 코멘트를 클러스터별로 전부 적는다(작품명 + 제출 번역문 → 고객사 수정 요청).
-// 한 메시지에 다 넣으면 슬랙이 접어버리니 길이로 끊어 여러 답글로 돌려준다.
-const EV_CHARS = Number(process.env.KPFB_EVIDENCE_CHARS ?? 2800);
-function evidenceMessages(verdicts) {
-  const out = [];
-  let buf = [];
-  const flush = () => { if (buf.length) { out.push(buf.join("\n")); buf = []; } };
-  const push = (line) => {
-    if (buf.join("\n").length + line.length + 1 > EV_CHARS) flush();
-    buf.push(line);
-  };
-  for (const v of verdicts || []) {
-    const c = v.cluster || {};
-    const items = c.items || [];
-    if (!items.length) continue;
-    push(`*${c.category ?? "?"}* — 근거 ${items.length}건`);
-    for (const x of items) {
-      const ja = String(x.ja || "").replace(/\s+/g, " ").slice(0, 70);
-      const fb = String(x.fb || "").replace(/\s+/g, " ").slice(0, 90);
-      push(`· [${x.work || "?"}] ${ja} → ${fb}`);
-    }
-    push("");
-  }
-  flush();
+// 판정 근거가 된 KP 코멘트를 **최대 3건**만 클러스터 바로 아래 붙인다(2026-10-28 재상 님 지정).
+// 전부 붙이면 길어서 안 읽히고, 스레드로 내리면 본문만 보고는 판단이 안 된다.
+// 한 줄 = [작품명 N화] 제출 번역문 → 고객사 수정 요청. 그 자체가 수정 전후 요약이 된다.
+const EV_MAX = Number(process.env.KPFB_EVIDENCE_MAX ?? 3);
+const cut = (x, n) => { const t = String(x || "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n) + "…" : t; };
+function evidenceLines(cluster) {
+  const items = (cluster?.items || []).slice(0, EV_MAX);
+  if (!items.length) return [];
+  const out = items.map((x) => `   · [${x.work || "?"}${x.ep ? " " + Number(x.ep) + "화" : ""}] ${cut(x.ja, 46)} → ${cut(x.fb, 56)}`);
+  const rest = (cluster.items || []).length - items.length;
+  if (rest > 0) out.push(`   · …외 ${rest}건`);
   return out;
 }
 
 // 드라이런 하네스용 내부 노출(운영 경로에선 안 씀) — 판정 단계만 따로 검증할 수 있게.
-export { judgeClusters as _judgeClusters, fetchPromptRules as _fetchPromptRules, quietReport as _quietReport, evidenceMessages as _evidenceMessages, classifyBatch as _classifyBatch };
+export { judgeClusters as _judgeClusters, fetchPromptRules as _fetchPromptRules, quietReport as _quietReport, evidenceLines as _evidenceLines, classifyBatch as _classifyBatch };

@@ -9215,12 +9215,6 @@ async function postKpFb(r, channel = KPFB_CHANNEL) {
   const body = `${mentions}\n${r.text}`;
   try {
     const posted = await app.client.chat.postMessage({ channel, text: body, unfurl_links: false });
-    // 근거 코멘트는 본문을 밀어내지 않게 스레드로 내린다(판정당 수십 건이라 본문에 넣으면 슬랙이 접는다).
-    for (const msg of (r.thread || [])) {
-      try {
-        await app.client.chat.postMessage({ channel, thread_ts: posted.ts, text: msg, unfurl_links: false });
-      } catch (e) { console.error("[kpfb] 근거 답글 실패:", e?.message ?? e); break; }
-    }
     return posted.ts;
   } catch (e) {
     console.error("[kpfb] 채널 발송 실패 — DM으로 폴백:", e?.message ?? e);
