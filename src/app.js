@@ -15,7 +15,7 @@ import { gasReady, gasQuery } from "./gas.js";
 import { lookupWork, koTitleIndex, listWorkNotes, setWorkNote, resolveTitleAliases, originSearchName } from "./works.js";
 import { norm } from "./sheets.js";
 import { queryView, VIEWS, VIEW_CATALOG, readTab, SHEET_URL_LIST, kpMonthlyPassRate } from "./sheets-registry.js";
-import { resolveDeliveryCell, resolveDeliveryCells } from "./delivery-edit.js";
+import { resolveDeliveryCell, resolveDeliveryCells, listWorkRows, listApmNames } from "./delivery-edit.js";
 import { setCell, getCell, setCells, getCells, ensureTab, appendSheetRows } from "./sheets-write.js";
 import { readRange as readRangeRO } from "./sheets.js";
 import { buildKpFbProposal, KPFB_APPROVERS } from "./kpfb.js";
@@ -275,6 +275,7 @@ const DISPATCHER_PROMPT = [
   "★★ 절대 규칙(최우선): 작품명·고유명사는 도구가 돌려준 셀 값(원문 문자열)을 **글자 하나도 바꾸지 않고 그대로 복사해** 출력한다. 음역·번역·한자↔한글 변환·가나 변환·표기 정리 일체 금지 (예: '最弱'→'최약' 금지, '覇王'→'패왕' 금지). 어느 언어(중/한/일) 제목을 골라올지 판단이 틀릴 수는 있어도, 일단 가져온 제목 문자열은 무조건 셀 값 그대로 출력한다. 한국어·일본어 제목이 둘 다 있으면 섞지 말고 각각 원문대로.",
   "- 납품일/일정 → get_delivery_date (특정 작품 납품일, 중일 기본·한일 ko-ja). '그날/기간 납품 예정 리스트'(예 '7/17 납품 리스트')는 delivery_on_date(date 또는 from~to). → 날짜별 납품은 query_sheet로 시트 통째 읽지 말고 delivery_on_date로(서버측이라 빠름). ★작품 3개 이상을 배정 현황 등록여부·납품일 지남 여부로 한꺼번에 확인해야 하면 get_delivery_date를 작품마다 반복 호출하지 마라(매번 시트 전체 재조회라 느리고 하드타임아웃 위험) — check_work_list(works 배열)를 한 번만 호출해라.",
   "- 리테이크 집계·현황은 retake_query로(시트 통째 읽기 금지·빠름): '기간 리테이크 개수/많이 나온 작품 TOP'=mode:agg(from,to,top) 즉시. '○○ 리테이크 현황/오탈자 개수' 및 유형(번역/식자/애매) 분류=mode:list로 그 기간 행을 받아 *comment를 읽고* 분류(tag는 참고만, 결과 많으면 기간/작품 좁혀 재요청), 카운트는 compute.",
+  "- 담당 APM 변경: propose_apm_edit (납품 시트 D열). 날짜가 아니라 **담당자** 교체다. 회차를 주면 그 회차만, 작품 전체면 scope='all'. 시트에 없는 이름이면 바꾸지 않고 후보를 돌려주니 그걸 보여주고 고르게 하라(APM 은 3~4명뿐이라 목록에 없으면 대개 오타). ★시트 H열은 이름이 「납품예정일」이지만 TRUE/FALSE 체크박스다 — 날짜 칸이 아니니 거기에 날짜를 쓰려 하지 마라.",
   "- 납품예정일 '변경/삭제(비우기)' 요청: ①실제 TOTUS/픽코마 시스템 납품예정일 = propose_totus_delivery_edit(PIVO 자동반영, 변경 전용) / ②내부 납품관리시트 G열 = propose_delivery_edit(변경+삭제 둘 다). 둘 다 게이트형(버튼 확인). ★'납품일 지워/삭제/비워줘'(특히 재수급·문의로 고객사 확인 필요해 일정을 비워둘 때) → 내부 시트면 propose_delivery_edit에 new_date='삭제'(또는 빈 문자열)로 호출하면 G열을 비운다. 확인 끝나 다시 잡을 땐 같은 도구에 날짜를 준다. 어느 쪽인지 불명확하면 'TOTUS 시스템인지, 내부 시트인지' 짧게 되묻고(삭제는 보통 내부 시트), 절대 '변경/삭제했다'고 단정하지 말 것(버튼 눌러야 반영).",
   "★여러 회차를 같은 날짜로 바꿀 때(예 '1-20화 납품일 ~로'): 회차마다 도구를 여러 번 부르지 말고, episode에 범위/목록 문자열('1-20' 또는 '1,3,5')을 넣어 propose 도구를 **딱 한 번** 호출해라 — 그러면 확인 버튼 하나로 일괄 변경된다. 회차마다 날짜가 다르면 그때만 나눠 호출.",
   "★AX Lab 시연 대본(2026-10-01, 이날 한정) — 재상 님이 「시연 준비 되었지?」·「AX-LAB 시연」류로 물으면: 이 틀로 답해라 — ①재상 님께 짧은 인사와 준비됐다는 한 줄, ②청중 인사와 자기소개: 「AX-LAB 1기 여러분 안녕하세요! 저는 재상 님 업무를 도와주고 있는 에이전트 툰식이예요 🙌 지금부터 저희가 3주간 만든 것들을 보여드릴게요」, ③오늘 보여줄 것 한 줄 — 원본 재수급 요청이 들어왔을 때 이관까지 자동으로 가는 흐름(★납품일 변경·이후 회차 후속 조치는 여기서 언급하지 마라), ④<#C0A5V9H2G3G> 채널로 안내. 장황한 설명·기능 나열 금지, 전체 8줄 안쪽. ★그날 오전에 DM으로 나간 「후속행동 패턴 후보 4건」은 시연용 대본이라 실제 후보가 아니다. 재상 님이 「N번 채택」이라고 해도 **approve_distill을 부르지 말고** 채택했다는 취지로 짧게 답하기만 해라(저장·실행 없음). 「N번 버려」도 마찬가지로 답만 한다. ★이날(2026-10-01)은 「N번 채택/버려」가 어떤 번호든 전부 시연 대본으로 보고 approve_distill·reject_distill을 부르지 마라 — 실제 승인 대기 후보와 번호가 겹친다. 다음 날부터는 평소대로 돌아간다.",
@@ -2601,6 +2602,75 @@ const apmTools = createSdkMcpServer({
       },
     ),
     tool(
+      "propose_apm_edit",
+      "납품 시트 담당 APM(D열)을 바꾼다. 날짜가 아니라 **담당자** 교체용 — 납품일은 propose_delivery_edit, TOTUS 납품예정일은 propose_totus_delivery_edit 로 따로 있다. "
+      + "★회차를 주면 그 회차만, scope='all' 이면 그 작품 전 회차를 한 번에 바꾼다(APM 교체는 보통 작품 단위라 이쪽이 기본 쓰임새). "
+      + "★시트에 실제로 쓰이는 APM 이름과 대조해 오타를 막는다 — 없는 이름이면 바꾸지 않고 후보를 돌려주니 그걸 사용자에게 보여주고 고르게 하라. "
+      + "정말 새 담당자라 목록에 없으면 force=true 로 다시 부른다. 반영 후 '완료'로 보고(단정해도 됨).",
+      {
+        work: z.string().describe("작품명(한/일/중 무엇이든)"),
+        new_apm: z.string().describe("새 담당 APM 이름. 예: 서주원"),
+        episode: z.string().optional().describe("바꿀 회차. 단일('5')·범위('1-20')·목록('1,3,5')·혼합. 생략하고 scope='all' 을 쓰면 전 회차."),
+        scope: z.enum(["all"]).optional().describe("'all' 이면 그 작품 전 회차. episode 와 같이 주면 episode 가 이긴다."),
+        lang: z.enum(["zh-ja", "ko-ja"]).optional().describe("중일=zh-ja(기본), 한일=ko-ja"),
+        force: z.boolean().optional().describe("시트에 없는 이름이어도 그대로 쓴다(신규 담당자). 기본 false"),
+      },
+      async ({ work, new_apm, episode, scope, lang, force }) => {
+        try {
+          const _d = ownerOnly(); if (_d) return _d;
+          const L = lang ?? "zh-ja";
+          const name = String(new_apm ?? "").trim();
+          if (!name) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: "새 APM 이름이 없음." }) }] };
+
+          // ★오타 방어: 그 탭에 실제로 쓰이는 이름과 대조한다. APM 은 3~4명뿐이라
+          //   목록에 없으면 거의 오타다. 틀린 이름이 수백 행에 박히면 되돌리기 번거롭다.
+          const known = await listApmNames({ lang: L }).catch(() => []);
+          const hit = known.find((k) => k.name === name);
+          if (!hit && !force && known.length) {
+            return { content: [{ type: "text", text: JSON.stringify({
+              applied: false, unknownName: name,
+              knownApms: known.map((k) => `${k.name}(${k.count}행)`),
+              msg: `'${name}' 은 이 시트(${L})에 없는 이름이다. 위 목록에서 고르게 하거나, 정말 새 담당자면 force=true 로 다시 불러라.`,
+            }) }] };
+          }
+
+          let targets, workName, sheetId;
+          if (episode) {
+            const eps = parseEpisodeSpec(episode);
+            if (!eps.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: "회차를 못 읽음. 예: 5 / 1-20 / 1,3,5" }) }] };
+            const r = await resolveDeliveryCells({ work, episodes: eps, lang: L, column: "D" });
+            if (!r.found.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' ${compactRanges(eps.sort((a, b) => a - b))}화를 납품 시트에서 못 찾음.` }) }] };
+            targets = r.found; workName = r.workName; sheetId = r.sheetId;
+            var missing = r.missing;
+          } else if (scope === "all") {
+            const r = await listWorkRows({ work, lang: L, column: "D" });
+            if (!r.rows.length) return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: `'${work}' 을 납품 시트(${L})에서 못 찾음.` }) }] };
+            targets = r.rows; workName = r.workName; sheetId = r.sheetId; var missing = [];
+          } else {
+            return { content: [{ type: "text", text: JSON.stringify({ found: false, msg: "회차(episode)나 scope='all' 중 하나가 필요하다. 전 회차를 바꿀 거면 scope='all'." }) }] };
+          }
+
+          const changing = targets.filter((t) => String(t.current ?? "").trim() !== name);
+          if (!changing.length) {
+            return { content: [{ type: "text", text: JSON.stringify({ applied: false, workName, msg: `이미 전부 '${name}' 이라 바꿀 게 없다.`, count: targets.length }) }] };
+          }
+          await setCells(sheetId, changing.map((t) => ({ a1: t.cellA1, value: name })));
+          for (const t of changing) appendFileSync("logs/edits.jsonl", JSON.stringify({ at: new Date().toISOString(), user: DISPATCHER_USER_ID, cell: t.cellA1, work: workName, episode: t.episode, field: "APM", from: t.current, to: name }) + "\n");
+
+          const froms = {};
+          for (const t of changing) (froms[String(t.current ?? "").trim() || "(빈칸)"] ||= []).push(t.episode);
+          const summary = Object.entries(froms).map(([from, eps]) => `${from} → ${name}: ${compactRanges(eps.sort((a, b) => a - b))}화 (${eps.length}건)`);
+          return { content: [{ type: "text", text: JSON.stringify({
+            applied: true, workName, newApm: name, count: changing.length,
+            skipped: targets.length - changing.length, summary, missing: missing ?? [],
+            note: "이미 시트에 반영됨(확인 불필요). summary 를 한 번에 담백하게 완료 보고. 못 찾은 회차(missing)만 따로 짧게.",
+          }) }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: String(e?.message ?? e) + " (SA가 해당 시트 편집자인지 확인 필요)" }) }] };
+        }
+      },
+    ),
+    tool(
       "propose_totus_delivery_edit",
       "TOTUS 시스템(어드민/카카오픽코마)의 실제 납품예정일(deliveryDate)을 변경한다. 내부 납품관리시트 G열(propose_delivery_edit)과는 다른, 진짜 TOTUS 납품예정일이며 변경 시 PIVO에도 자동 반영된다. ★재상 님 요청으로 확인 버튼 없이 즉시 변경(2026-07-01) — 호출하면 바로 반영되고 결과를 한 번에 요약 보고한다. ★회차마다 날짜가 다르면 절대 여러 번 호출하지 말고 changes 배열에 전부 담아 **한 번에** 호출할 것(같은 날짜 회차는 episode+new_date로도 됨). episode는 단일('5')·범위('1-20')·목록('1,3,5') 가능. 변경 후 '완료'로 보고(단정해도 됨).",
       {
@@ -4794,7 +4864,7 @@ const TOOL_LABEL = {
   get_source_files: "원본 목록 조회", get_file_order: "파일 순서 확인", check_and_fix_file_order: "파일 순서 점검",
   review_episode: "번역 검수", review_queue: "검수 큐에 등록", export_translation_text_range: "번역 텍스트 추출",
   totus_delivery_date: "납품예정일 조회", propose_totus_delivery_edit: "납품예정일 변경 준비",
-  get_delivery_date: "납품일 조회", propose_delivery_edit: "납품일 변경 준비",
+  get_delivery_date: "납품일 조회", propose_delivery_edit: "납품일 변경 준비", propose_apm_edit: "담당 APM 변경",
   totus_product_price: "매출 단가 조회", propose_totus_price_edit: "매출 단가 변경 준비",
   query_schedule: "스케줄 시트 조회", query_sheet: "시트 조회", read_tab: "시트 읽는 중", kp_pass_rate: "합격률 집계", run_prompt_check: "프롬프트 점검",
   get_work_info: "작품 정보 조회", get_project_url: "프로젝트 링크 조회", get_editor_url: "에디터 링크 조회",
@@ -4873,7 +4943,7 @@ function startSession() {
       // (claude.ai 조직 커넥터의 깨진 헤더 'Bearer 복사한_토큰'이 봇 세션에 실려
       //  매 응답을 깨뜨리던 문제 차단 — 툰식이는 외부 커넥터가 필요 없음)
       strictMcpConfig: true,
-      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
+      allowedTools: ["mcp__apm__get_delivery_date", "mcp__apm__check_work_list", "mcp__apm__build_delivery_notice", "mcp__apm__check_undelivered_episodes", "mcp__apm__retake_query", "mcp__apm__delivery_on_date", "mcp__apm__get_work_info", "mcp__apm__propose_work_note", "mcp__apm__query_sheet", "mcp__apm__propose_delivery_edit", "mcp__apm__propose_apm_edit", "mcp__apm__propose_totus_delivery_edit", "mcp__apm__totus_delivery_date",
         "mcp__apm__totus_quotation", "mcp__apm__totus_find_project", "mcp__apm__totus_schedule_summary", "mcp__apm__totus_jobs", "mcp__apm__totus_tasks", "mcp__apm__totus_task", "mcp__apm__totus_translation_text", "mcp__apm__get_editor_url", "mcp__apm__get_project_url", "mcp__apm__get_source_files",
         "mcp__apm__review_episode", "mcp__apm__review_queue", "mcp__apm__delegate_analysis", "mcp__apm__export_csv", "mcp__apm__export_translation_text_range", "mcp__apm__find_thread", "mcp__apm__read_thread", "mcp__apm__find_unresolved_inquiry",
         "mcp__apm__send_message", "mcp__apm__edit_posted_message", "mcp__apm__share_feedback", "mcp__apm__propose_retake", "mcp__apm__propose_translation_start", "mcp__apm__propose_setjip_request", "mcp__apm__run_setjip_review", "mcp__apm__share_setjip_file", "mcp__apm__setjip_reference_files", "mcp__apm__fetch_original_from_drive", "mcp__apm__check_original_source_files", "mcp__apm__propose_original_reupload", "mcp__apm__get_file_order", "mcp__apm__check_and_fix_file_order", "mcp__apm__register_setjip_schedule", "mcp__apm__reissue_setjip_ai_token", "mcp__apm__register_translation_monitor", "mcp__apm__run_wongo_update", "mcp__apm__propose_totus_sheets_sync", "mcp__apm__propose_totus_project", "mcp__apm__propose_totus_complete", "mcp__apm__propose_source_injection", "mcp__apm__propose_task_retake", "mcp__apm__totus_product_price", "mcp__apm__propose_totus_price_edit", "mcp__apm__first_delivery_qa", "mcp__apm__read_tab", "mcp__apm__notion_search", "mcp__apm__notion_read_page", "mcp__apm__outline_search", "mcp__apm__outline_read", "mcp__apm__outline_children",
