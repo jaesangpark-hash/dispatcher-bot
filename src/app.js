@@ -5217,7 +5217,15 @@ async function handle({ text, channel, ts, threadTs, inThread, user, client, say
 // ── 워치 채널 자동 링크 ──────────────────────────────────────────
 // 박재상/문의봇이 워치 채널에 남긴 메시지에 '한국어 타이틀 정확일치'가 있으면 프로젝트 링크를 자동 답글.
 // 메시지에 '재수급' 언급이 있으면 원본 링크(driveLink)도 함께. 작품명 없으면 침묵. (읽기 전용·선제 액션)
-const WORK_LINK_WATCH = new Set((process.env.WORK_LINK_WATCH_CHANNELS || "C09B8QHP7D4,C06SUD5AFE1,C0A5V9H2G3G").split(",").map((s) => s.trim()).filter(Boolean));   // C0A5V9H2G3G 추가(2026-09-30, 재상 님 지정 — 시뮬레이션/테스트 채널)
+const WORK_LINK_WATCH = new Set((process.env.WORK_LINK_WATCH_CHANNELS || "C09B8QHP7D4,C06SUD5AFE1,C0A5V9H2G3G,C0C8BNULS2F").split(",").map((s) => s.trim()).filter(Boolean));   // C0A5V9H2G3G 추가(2026-09-30, 재상 님 지정 — 시뮬레이션/테스트 채널) · C0C8BNULS2F 추가(2026-10-29)
+// 채널별 예외. 기본 규칙은 「박재상·문의봇 글만 / 스레드 위치 무관 / 프로젝트 링크만」이다.
+// 카카오엔터_중일_원고_이슈는 글쓴이가 전부 고객사(일한 현지화팀) 쪽이라 작성자 제한을 풀어야 하고,
+// 대신 **엄마 스레드에만** 반응한다 — 댓글마다 붙으면 오가는 대화를 덮는다(재상 님 지정 2026-10-29).
+// APM 이름 → Slack ID. feedback.js·retake.js·sikjaHandover.js 와 같은 표(여기선 멘션용으로만 쓴다).
+const APM_SLACK_IDS = { "서주원": "U07E0QPL8MV", "정태영": "U05CE8HFA6B", "박재상": "U04463JR4HH" };
+const WORK_LINK_POLICY = {
+  C0C8BNULS2F: { anyAuthor: true, rootOnly: true, withApm: true },
+};
 const INQUIRY_BOT_ID = process.env.INQUIRY_BOT_ID || "B0AL3E0RNCW";   // 문의봇(inquirybot)
 const RESUPPLY_RE = /재수급|재\s*수급|원본\s*다시|원고\s*다시|다시\s*수급/;
 // ★2026-07-13 고객사(Kuaikan/Shenzhen Yuerong 공동제작) 합의: 이 두 출판사 작품은 원본 관련 이슈(작화 실수·
@@ -5227,31 +5235,85 @@ const REPORT_TO_CLIENT_PUBLISHERS = new Set(["Kuaikan Comics（直取引）_2", 
 const ORIGIN_ISSUE_RE = /재수급|원본|작화\s*(실수|미스|오류)|스토리\s*모순/;
 let SELF_BOT_USER = null;   // 툰식이 자신의 Slack user id(멘션 시 app_mention이 처리하도록 자동링크 스킵)
 let SELF_BOT_ID = null;     // 툰식이 자신의 bot_id — SENDER(표시명 커스터마이즈)로 올린 메시지는 message.user가 비어있고 bot_id만 있어서 별도로 필요
-async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
+// 작품을 가리키는 키를 확실한 순서대로 뽑는다(재상 님 지정 2026-10-29): PIVO ID > 프로젝트 URL > 한국어 타이틀.
+// 앞으로 고객사에 URL 첨부를 요청하지 않기로 해서 URL 은 없을 수 있다 — PIVO 가 주 경로다.
+// ★슬랙 볼드가 라벨 중간에 끼어 온다 — 실제 본문이 `*PIVO ID :* 186051` 꼴이라
+//   마크다운 기호를 걷어낸 사본에서 찾아야 한다(2026-10-29 실측).
+const stripMd = (s) => String(s ?? "").replace(/[*_~`]/g, "");
+const PIVO_IN_TEXT = /(?:PIVO\s*ID|PV)\s*[-:：]?\s*(\d{5,7})/i;
+const PROJECT_UUID_IN_TEXT = /workProgressManagementDetail\/?\?id=([0-9a-fA-F-]{36})/;
+
+async function handleWorkLinkWatch({ text, channel, ts, threadTs, client, policy = {} }) {
   try {
     if (!text || processed.has("wl:" + ts)) return;
     if (SELF_BOT_USER && text.includes(`<@${SELF_BOT_USER}>`)) return;   // 툰식이 멘션이면 app_mention(브레인)이 처리
     processed.add("wl:" + ts);
     const idx = await koTitleIndex();
     const tn = norm(text);
-    const hits = idx.filter((x) => x.koNorm && x.koNorm.length >= 2 && tn.includes(x.koNorm));
-    if (!hits.length) return;                                 // 한국어 타이틀 정확일치 없으면 침묵
-    hits.sort((a, b) => b.koNorm.length - a.koNorm.length);   // 가장 구체적인(긴) 제목
-    const hit = hits[0];
+
+    // ① PIVO ID — 가장 확실. 시트에 그 PIVO 가 있으면 제목 매칭을 건너뛴다.
+    let hit = null, via = null;
+    const pivoM = stripMd(text).match(PIVO_IN_TEXT);
+    if (pivoM) {
+      hit = idx.find((x) => String(x.pivoId || "").trim() === pivoM[1]) || null;
+      if (hit) via = `PIVO ${pivoM[1]}`;
+      else {
+        // 시트에 없어도 PIVO 는 확실한 키다 — TOTUS 로 확인하고, 거기서 받은 프로젝트명으로
+        // 시트를 한 번 더 되짚어 작품명·담당 APM 을 복구한다(재상 님 지정 2026-10-29).
+        hit = { koTitle: null, pivoId: pivoM[1], apm: null }; via = `PIVO ${pivoM[1]}`;
+        try {
+          const proj = ((await projectByPivo(pivoM[1]))?.data || [])[0];
+          const projName = String(proj?._detail?.["프로젝트"] || proj?.name || "").trim();
+          if (proj?.uuid) hit.projectUuid = proj.uuid;
+          if (projName) {
+            // TOTUS 프로젝트명은 「[PRJ-…] [PV-…] [Piccoma중일] 日本語(한국어)」 꼴이라 한국어 작품명이 들어 있다.
+            const pn = norm(projName);
+            const byName = idx.filter((x) => x.koNorm && x.koNorm.length >= 2 && pn.includes(x.koNorm))
+              .sort((a, b) => b.koNorm.length - a.koNorm.length)[0];
+            if (byName) { hit = { ...byName, projectUuid: hit.projectUuid }; via = `PIVO ${pivoM[1]} → 프로젝트명 일치`; }
+            else { hit.koTitle = projName.replace(/^\s*(\[[^\]]*\]\s*)+/, "").trim() || null; via = `PIVO ${pivoM[1]}(시트 미등록·TOTUS 이름)`; }
+          } else via = `PIVO ${pivoM[1]}(TOTUS 미확인)`;
+        } catch (e) { console.warn("[worklink] PIVO 조회 실패:", e?.message ?? e); via = `PIVO ${pivoM[1]}(조회 실패)`; }
+      }
+    }
+    // ② 본문에 프로젝트 URL 이 이미 있으면 그 uuid 를 그대로 쓴다(조회 불필요·오탐 없음).
+    const uuidM = text.match(PROJECT_UUID_IN_TEXT);
+    if (!hit && uuidM) { hit = { koTitle: null, pivoId: null, apm: null, projectUuid: uuidM[1] }; via = "URL"; }
+    // ③ 한국어 타이틀 정확일치 — 종전 경로.
+    if (!hit) {
+      const hits = idx.filter((x) => x.koNorm && x.koNorm.length >= 2 && tn.includes(x.koNorm));
+      if (!hits.length) return;                                 // 아무 키도 못 찾으면 침묵
+      hits.sort((a, b) => b.koNorm.length - a.koNorm.length);   // 가장 구체적인(긴) 제목
+      hit = hits[0]; via = "제목";
+    }
+    if (uuidM && !hit.projectUuid) hit = { ...hit, projectUuid: uuidM[1] };
     const wantSrc = RESUPPLY_RE.test(text);
     // ★한 스레드에 같은 작품 링크는 한 번만(2026-09-30). 중복 방지가 메시지 단위라, 스레드 안에서 작품명이
     // 다시 나올 때마다 같은 링크를 또 붙이고 있었다(실사고: 재수급 스레드에서 2번 발송).
     // 단 전에 원본 링크 없이 프로젝트만 붙였는데 이번엔 재수급 문의라면, 원본을 더해 한 번 더 보낸다.
-    const wlKey = `${channel}|${threadTs || ts}|${hit.koTitle}`;
+    const wlKey = `${channel}|${threadTs || ts}|${hit.koTitle || hit.pivoId || hit.projectUuid}`;
     const wlPrev = workLinkPosted.get(wlKey);
     if (wlPrev && (!wantSrc || wlPrev.src)) return;
     let urlLine = "🔗 프로젝트: (TOTUS에서 못 찾음)";
-    try {
-      const fp = await findProject(hit.pivoId || hit.koTitle);
-      const proj = (fp?.data || [])[0];
-      if (proj?.uuid) urlLine = `🔗 프로젝트: https://admin.totus.pro/ko/workProgressManagementDetail/?id=${proj.uuid}`;
-    } catch { /* 조회 실패 시 안내 유지 */ }
-    const lines = [`📁 *${hit.koTitle}*`, urlLine];
+    // 본문에 URL 이 있었으면 그 uuid 를 그대로 쓴다 — 다시 조회하면 오탐 여지만 생긴다.
+    if (hit.projectUuid) urlLine = `🔗 프로젝트: https://admin.totus.pro/ko/workProgressManagementDetail/?id=${hit.projectUuid}`;
+    else {
+      try {
+        const fp = await findProject(hit.pivoId || hit.koTitle);
+        const proj = (fp?.data || [])[0];
+        if (proj?.uuid) urlLine = `🔗 프로젝트: https://admin.totus.pro/ko/workProgressManagementDetail/?id=${proj.uuid}`;
+      } catch { /* 조회 실패 시 안내 유지 */ }
+    }
+    const head = hit.koTitle ? `📁 *${hit.koTitle}*` : `📁 *PV-${hit.pivoId || "?"}*`;
+    const lines = [head, urlLine];
+    // 담당 APM 멘션 — 이 채널은 문의가 재상 님께만 오므로 담당자를 같이 깨운다(정책 withApm).
+    if (policy.withApm) {
+      const apmName = String(hit.apm || "").trim();
+      const apmId = APM_SLACK_IDS[apmName];
+      if (apmId) lines.push(`👤 담당 APM: <@${apmId}>`);
+      else if (apmName) lines.push(`👤 담당 APM: ${apmName} (Slack ID 미매핑)`);
+      else lines.push("👤 담당 APM: 시트에서 확인 안 됨");
+    }
     if (wantSrc) lines.push(hit.driveLink ? `📦 원본: ${hit.driveLink}` : `📦 원본: 시트에 링크 없음 — ${hit.originSearchSite || hit.publisher || "출판사"}에서 원제 「${hit.zhTitle || "?"}」로 검색`);
     if (ORIGIN_ISSUE_RE.test(text) && REPORT_TO_CLIENT_PUBLISHERS.has(hit.publisher || "")) {
       lines.push(`⚠️ *${hit.publisher}* 소속 — 원본 관련 이슈는 내부에서 조용히 처리해도 고객사에 개별 보고 대상이에요(재수급까지 안 가는 사소한 작화/스토리 건도 포함). 잊지 말고 공유하세요.`);
@@ -5261,7 +5323,7 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client }) {
     // ★여기서 스레드를 등록하지 않는다(2026-09-30 재상 님 지정). 이 답글은 대화가 아니라 선제 링크 투척이라,
     // 등록해버리면 사람이 툰식이를 부른 적도 없는 스레드의 작업자↔APM 대화에까지 끼어든다(실사고: 재수급
     // 완료 보고 "납품일 확인 부탁 드립니다"에 툰식이가 답해버림). 등록은 브레인이 실제로 사람에게 답했을 때만.
-    console.log(`[worklink] ${hit.koTitle} → 프로젝트${wantSrc ? "+원본" : ""} (ch=${channel})`);
+    console.log(`[worklink] ${hit.koTitle || `PV-${hit.pivoId || "?"}`} → 프로젝트${wantSrc ? "+원본" : ""}${policy.withApm ? "+APM" : ""} (ch=${channel}, via=${via})`);
     // 문의봇 구조화 재수급 요청이면 → 고객사 보낼 일본어 재수급 초안(복붙용)도 자동 첨부
     if (/재수급\s*사유\s*[:：]/.test(text)) {
       try {
@@ -6046,11 +6108,17 @@ app.message(async ({ message, say, client }) => {
   }
   // 워치 채널 자동 링크 — 박재상 or 문의봇 메시지에서 작품명 감지 → 프로젝트/원본 링크(선제)
   if (WORK_LINK_WATCH.has(message.channel)) {
+    const pol = WORK_LINK_POLICY[message.channel] || {};
     const edited = message.subtype && !["file_share", "bot_message"].includes(message.subtype);   // 편집·삭제 제외
     const fromOwner = message.user === OWNER_ID;
     const fromInquiry = message.bot_id === INQUIRY_BOT_ID;   // 문의봇만(툰식이 자신 제외)
-    if (!edited && (fromOwner || fromInquiry) && message.text) {
-      await handleWorkLinkWatch({ text: message.text, channel: message.channel, ts: message.ts, threadTs: message.thread_ts, client });
+    // anyAuthor 라도 툰식이 자신의 글에는 절대 반응하지 않는다 — 자기 답글에 또 답글을 다는 루프가 된다.
+    const isSelf = (SELF_BOT_USER && message.user === SELF_BOT_USER) || (SELF_BOT_ID && message.bot_id === SELF_BOT_ID);
+    const authorOk = pol.anyAuthor ? !isSelf : (fromOwner || fromInquiry);
+    // rootOnly: 엄마 스레드(최상위)만. 댓글(thread_ts 가 있고 ts 와 다름)은 건너뛴다.
+    const rootOk = pol.rootOnly ? (!message.thread_ts || message.thread_ts === message.ts) : true;
+    if (!edited && authorOk && rootOk && message.text) {
+      await handleWorkLinkWatch({ text: message.text, channel: message.channel, ts: message.ts, threadTs: message.thread_ts, client, policy: pol });
     }
     // 문의봇 '작업 관련 문의'의 원문 링크 메시지면 → 원문(이미지) 자동 해석 답글(내부에서 유형·이미지 게이트)
     if (!edited && fromInquiry) await handleInquiryInterpret({ message, client });

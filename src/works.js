@@ -84,7 +84,8 @@ export async function koTitleIndex() {
   for (const r of rows) {
     const ko = String(r[2] || "").trim();
     if (!ko) continue;
-    idx.push({ koTitle: ko, koNorm: norm(ko), pivoId: r[8] || null, driveLink: r[7] || null, publisher: r[6] || null, zhTitle: r[1] || null, originSearchSite: originSearchName(r[6]) });
+    // A열(r[0])이 담당 APM — listWorkNotes 와 같은 열이다. 워치 채널 자동링크가 멘션에 쓴다.
+    idx.push({ koTitle: ko, koNorm: norm(ko), pivoId: r[8] || null, driveLink: r[7] || null, publisher: r[6] || null, zhTitle: r[1] || null, originSearchSite: originSearchName(r[6]), apm: r[0] || null });
   }
   _koIdx = idx; _koIdxAt = Date.now();
   return idx;
