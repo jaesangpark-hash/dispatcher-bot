@@ -5263,7 +5263,8 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client, policy
         hit = { koTitle: null, pivoId: pivoM[1], apm: null }; via = `PIVO ${pivoM[1]}`;
         try {
           const proj = ((await projectByPivo(pivoM[1]))?.data || [])[0];
-          const projName = String(proj?._detail?.["프로젝트"] || proj?.name || "").trim();
+          // ★TOTUS 는 「프로젝트」를 **최상위**에 준다(_detail 안이 아니다, 2026-10-29 실측).
+          const projName = String(proj?.["프로젝트"] || proj?._detail?.["프로젝트"] || proj?.name || "").trim();
           if (proj?.uuid) hit.projectUuid = proj.uuid;
           if (projName) {
             // TOTUS 프로젝트명은 「[PRJ-…] [PV-…] [Piccoma중일] 日本語(한국어)」 꼴이라 한국어 작품명이 들어 있다.
@@ -5271,7 +5272,16 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client, policy
             const byName = idx.filter((x) => x.koNorm && x.koNorm.length >= 2 && pn.includes(x.koNorm))
               .sort((a, b) => b.koNorm.length - a.koNorm.length)[0];
             if (byName) { hit = { ...byName, projectUuid: hit.projectUuid }; via = `PIVO ${pivoM[1]} → 프로젝트명 일치`; }
-            else { hit.koTitle = projName.replace(/^\s*(\[[^\]]*\]\s*)+/, "").trim() || null; via = `PIVO ${pivoM[1]}(시트 미등록·TOTUS 이름)`; }
+            else {
+              // ★접두 꼬리표를 먼저 걷어낸다 — 「[카카오픽코마]」처럼 접두에 한글이 있어서
+              //   이름 전체로 보면 한국어 판별이 항상 참이 된다(2026-10-29 실측).
+              const bareName = projName.replace(/^\s*(\[[^\]]*\]\s*)+/, "").trim();
+              hit.koTitle = bareName || null;
+              // 완결작까지 넣어도 못 찾았는데 제목부에 한국어가 아예 없으면 **번역 미개시**다
+              // (재상 님 확인 2026-10-29). 담당 APM 이 없는 게 정상이라 그렇게 적어 준다.
+              hit.notStarted = !/[가-힣]/.test(bareName);
+              via = `PIVO ${pivoM[1]}(시트 미등록·TOTUS 이름${hit.notStarted ? "·번역 미개시" : ""})`;
+            }
           } else via = `PIVO ${pivoM[1]}(TOTUS 미확인)`;
         } catch (e) { console.warn("[worklink] PIVO 조회 실패:", e?.message ?? e); via = `PIVO ${pivoM[1]}(조회 실패)`; }
       }
@@ -5312,6 +5322,7 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client, policy
       const apmId = APM_SLACK_IDS[apmName];
       if (apmId) lines.push(`👤 담당 APM: <@${apmId}>`);
       else if (apmName) lines.push(`👤 담당 APM: ${apmName} (Slack ID 미매핑)`);
+      else if (hit.notStarted) lines.push("👤 담당 APM: — 번역 미개시 작품으로 보여요(TOTUS에 한국어 타이틀 없음)");
       else lines.push("👤 담당 APM: 시트에서 확인 안 됨");
     }
     if (wantSrc) lines.push(hit.driveLink ? `📦 원본: ${hit.driveLink}` : `📦 원본: 시트에 링크 없음 — ${hit.originSearchSite || hit.publisher || "출판사"}에서 원제 「${hit.zhTitle || "?"}」로 검색`);

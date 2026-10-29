@@ -6,6 +6,11 @@ import { setCell } from "./sheets-write.js";
 
 const MASTER = "1_ytcJGNcLjcmmED8_zLXpWj7BEpqMthdGn12zOKDWUA";
 const RANGE = "출판사 드라이브 링크!A:I";
+// 완결작은 위 시트에서 빠지고 별도 탭으로 간다(재상 님 확인 2026-10-29). 컬럼이 어긋난다 —
+// A~D·G·H 는 같지만 E=화수 F=출판사드라이브 I=비고 라서 **PIVO ID(마스터 I열)에 해당하는 칸이 없다**.
+// 그래서 완결작은 제목으로만 찾는다. 완결작도 TOTUS 프로젝트명에 한국어 타이틀이 들어 있어
+// (한국어 없이 원제만 있으면 그건 번역 미개시 작품이다) PIVO→TOTUS→이름→제목 매칭으로 이어진다.
+const DONE_RANGE = "완결작!A:I";
 // B 중국어 원제도 넣는다(2026-10-08) — 재상 님은 이관·조회를 시킬 때 중국어 원제를 그대로
 // 주는데(「ID: 143925 全民转职：无职的我终结了神明！」) 여기 없어서 제목으로는 한 번도 안 잡혔다.
 const TITLE_COLS = [1, 2, 3, 4]; // B 중국어, C 한국어, D 일본어가제, E FIX일본어
@@ -79,14 +84,25 @@ export async function lookupWork(queryRaw) {
 let _koIdx = null, _koIdxAt = 0;
 export async function koTitleIndex() {
   if (_koIdx && Date.now() - _koIdxAt < 600000) return _koIdx;
-  const rows = (await readRange(MASTER, RANGE)).slice(1);
+  // 완결작 탭 로드 실패가 본 인덱스를 죽이면 안 된다 — 실패해도 마스터만으로 돌린다.
+  const [rowsAll, doneAll] = await Promise.all([
+    readRange(MASTER, RANGE),
+    readRange(MASTER, DONE_RANGE).catch((e) => { console.warn("[koTitleIndex] 완결작 탭 로드 실패:", e?.message ?? e); return []; }),
+  ]);
   const idx = [];
-  for (const r of rows) {
+  const push = (r, done) => {
     const ko = String(r[2] || "").trim();
-    if (!ko) continue;
+    if (!ko) return;
     // A열(r[0])이 담당 APM — listWorkNotes 와 같은 열이다. 워치 채널 자동링크가 멘션에 쓴다.
-    idx.push({ koTitle: ko, koNorm: norm(ko), pivoId: r[8] || null, driveLink: r[7] || null, publisher: r[6] || null, zhTitle: r[1] || null, originSearchSite: originSearchName(r[6]), apm: r[0] || null });
-  }
+    // 완결작 탭엔 PIVO ID 칸이 없어 pivoId 는 null 이다(제목으로만 찾힌다).
+    idx.push({
+      koTitle: ko, koNorm: norm(ko), pivoId: done ? null : (r[8] || null),
+      driveLink: r[7] || null, publisher: r[6] || null, zhTitle: r[1] || null,
+      originSearchSite: originSearchName(r[6]), apm: r[0] || null, completed: done,
+    });
+  };
+  for (const r of rowsAll.slice(1)) push(r, false);
+  for (const r of doneAll.slice(1)) push(r, true);
   _koIdx = idx; _koIdxAt = Date.now();
   return idx;
 }
