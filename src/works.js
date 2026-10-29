@@ -80,6 +80,31 @@ export async function lookupWork(queryRaw) {
   return { found: false, query: queryRaw, ...(near.length ? { candidates: cand(near) } : {}) };
 }
 
+// ── 글로벌팀(카카오엔터 일한 현지화) 이관 대상 ────────────────────────────
+// 「[카카오엔터] 중일 -> 일한 작품 리스트」. 이 작품들은 중일 쪽 이슈가 일한 현지화에도 영향을 줘서,
+// 재상 님이 글로벌팀에 공유할지 매번 판단해야 한다(재상 님 지정 2026-10-29).
+// A=PIVO ID, C=중일 한국어 타이틀, D=일한(카카오엔터) 제목, E=비고.
+const GLOBAL_HANDOFF_SHEET = "1ZSc0xMCv2vb98ONmyIELmEc_Uh8JoqL_aM5ULyjaUbQ";
+const GLOBAL_HANDOFF_RANGE = "시트1!A:E";
+let _ghIdx = null, _ghAt = 0;
+export async function globalHandoffIndex() {
+  if (_ghIdx && Date.now() - _ghAt < 600000) return _ghIdx;
+  let rows = [];
+  try { rows = (await readRange(GLOBAL_HANDOFF_SHEET, GLOBAL_HANDOFF_RANGE)).slice(1); }
+  catch (e) { console.warn("[globalHandoff] 시트 로드 실패:", e?.message ?? e); return _ghIdx || []; }
+  const idx = [];
+  for (const r of rows) {
+    const pivoId = String(r[0] || "").trim();
+    const koTitle = String(r[2] || "").trim();
+    if (!/^\d+$/.test(pivoId) && !koTitle) continue;
+    idx.push({ pivoId: /^\d+$/.test(pivoId) ? pivoId : null, koTitle: koTitle || null,
+      koNorm: koTitle ? norm(koTitle) : null, jaKoTitle: String(r[3] || "").trim() || null,
+      note: String(r[4] || "").trim() || null });
+  }
+  _ghIdx = idx; _ghAt = Date.now();
+  return idx;
+}
+
 // 한국어 타이틀 인덱스(재수급 감지용) — koTitle 정확일치 스캔. 10분 캐시.
 let _koIdx = null, _koIdxAt = 0;
 export async function koTitleIndex() {

@@ -12,7 +12,7 @@ import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import { lookupDelivery } from "./delivery.js";
 import { gasReady, gasQuery } from "./gas.js";
-import { lookupWork, koTitleIndex, listWorkNotes, setWorkNote, resolveTitleAliases, originSearchName } from "./works.js";
+import { lookupWork, koTitleIndex, globalHandoffIndex, listWorkNotes, setWorkNote, resolveTitleAliases, originSearchName } from "./works.js";
 import { norm } from "./sheets.js";
 import { queryView, VIEWS, VIEW_CATALOG, readTab, SHEET_URL_LIST, kpMonthlyPassRate } from "./sheets-registry.js";
 import { resolveDeliveryCell, resolveDeliveryCells, listWorkRows, listApmNames } from "./delivery-edit.js";
@@ -5224,7 +5224,8 @@ const WORK_LINK_WATCH = new Set((process.env.WORK_LINK_WATCH_CHANNELS || "C09B8Q
 // APM 이름 → Slack ID. feedback.js·retake.js·sikjaHandover.js 와 같은 표(여기선 멘션용으로만 쓴다).
 const APM_SLACK_IDS = { "서주원": "U07E0QPL8MV", "정태영": "U05CE8HFA6B", "박재상": "U04463JR4HH" };
 const WORK_LINK_POLICY = {
-  C0C8BNULS2F: { anyAuthor: true, rootOnly: true, withApm: true },
+  // globalReminder:false — 여기가 곧 글로벌팀(카카오엔터) 창구라 「글로벌팀에 알릴지 확인」은 군더더기다.
+  C0C8BNULS2F: { anyAuthor: true, rootOnly: true, withApm: true, globalReminder: false },
 };
 const INQUIRY_BOT_ID = process.env.INQUIRY_BOT_ID || "B0AL3E0RNCW";   // 문의봇(inquirybot)
 const RESUPPLY_RE = /재수급|재\s*수급|원본\s*다시|원고\s*다시|다시\s*수급/;
@@ -5326,6 +5327,19 @@ async function handleWorkLinkWatch({ text, channel, ts, threadTs, client, policy
       else lines.push("👤 담당 APM: 시트에서 확인 안 됨");
     }
     if (wantSrc) lines.push(hit.driveLink ? `📦 원본: ${hit.driveLink}` : `📦 원본: 시트에 링크 없음 — ${hit.originSearchSite || hit.publisher || "출판사"}에서 원제 「${hit.zhTitle || "?"}」로 검색`);
+    // 글로벌팀(카카오엔터 일한 현지화) 이관 대상이면 공유 여부를 확인하라고 한 줄 붙인다.
+    // 카카오엔터 채널 자신(globalReminder:false)에서는 붙이지 않는다 — 거기가 그 창구다.
+    if (policy.globalReminder !== false) {
+      try {
+        const gh = await globalHandoffIndex();
+        const g = gh.find((x) => (hit.pivoId && x.pivoId === String(hit.pivoId))
+          || (x.koNorm && hit.koTitle && norm(hit.koTitle) === x.koNorm));
+        if (g) {
+          lines.push(`🌐 *글로벌팀 공유 확인* — 카카오엔터 일한 현지화 대상이에요${g.jaKoTitle ? ` (일한: ${g.jaKoTitle})` : ""}.`
+            + ` 이 건도 알려야 하는지 확인해주세요.${g.note ? `\n　· 비고: ${g.note}` : ""}`);
+        }
+      } catch (e) { console.error("[worklink] 글로벌 이관 목록 조회 실패:", e?.message ?? e); }
+    }
     if (ORIGIN_ISSUE_RE.test(text) && REPORT_TO_CLIENT_PUBLISHERS.has(hit.publisher || "")) {
       lines.push(`⚠️ *${hit.publisher}* 소속 — 원본 관련 이슈는 내부에서 조용히 처리해도 고객사에 개별 보고 대상이에요(재수급까지 안 가는 사소한 작화/스토리 건도 포함). 잊지 말고 공유하세요.`);
     }
